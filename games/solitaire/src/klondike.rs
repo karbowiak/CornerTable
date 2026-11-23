@@ -16,7 +16,14 @@ pub(super) fn deal(game: &mut Game, mut deck: Vec<Card>) {
 
 pub(super) fn play(game: &mut Game, action: Move) -> bool {
     let (from, to) = match action {
-        Move::Draw => return game.draw_waste(true),
+        Move::Draw => {
+            let count = if game.mode() == DealMode::KlondikeDrawThree {
+                3
+            } else {
+                1
+            };
+            return game.draw_waste(count, true);
+        }
         Move::Transfer { from, to } => (from, to),
         _ => return false,
     };

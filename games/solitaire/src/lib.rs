@@ -33,6 +33,42 @@ impl Variant {
             Self::TriPeaks => "TriPeaks",
         }
     }
+
+    pub fn deal_modes(self) -> &'static [DealMode] {
+        use DealMode::*;
+        match self {
+            Self::Klondike => &[KlondikeDrawOne, KlondikeDrawThree],
+            Self::Spider => &[SpiderOneSuit, SpiderTwoSuits, SpiderFourSuits],
+            Self::FreeCell => &[FreeCell],
+            Self::Pyramid => &[Pyramid],
+            Self::TriPeaks => &[TriPeaks, TriPeaksSolvable],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DealMode {
+    KlondikeDrawOne,
+    KlondikeDrawThree,
+    SpiderOneSuit,
+    SpiderTwoSuits,
+    SpiderFourSuits,
+    FreeCell,
+    Pyramid,
+    TriPeaks,
+    TriPeaksSolvable,
+}
+
+impl DealMode {
+    fn variant(self) -> Variant {
+        match self {
+            Self::KlondikeDrawOne | Self::KlondikeDrawThree => Variant::Klondike,
+            Self::SpiderOneSuit | Self::SpiderTwoSuits | Self::SpiderFourSuits => Variant::Spider,
+            Self::FreeCell => Variant::FreeCell,
+            Self::Pyramid => Variant::Pyramid,
+            Self::TriPeaks | Self::TriPeaksSolvable => Variant::TriPeaks,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +119,7 @@ pub enum Move {
 #[derive(Clone, Debug)]
 pub struct Game {
     pub variant: Variant,
+    mode: DealMode,
     pub tableau: Vec<Vec<TableCard>>,
     pub stock: Vec<Card>,
     pub waste: Vec<Card>,
@@ -95,8 +132,13 @@ pub struct Game {
 
 impl Game {
     pub fn new(variant: Variant, seed: u64) -> Self {
+        Self::with_mode(variant.deal_modes()[0], seed)
+    }
+
+    pub fn with_mode(mode: DealMode, seed: u64) -> Self {
         let mut game = Self {
-            variant,
+            variant: mode.variant(),
+            mode,
             tableau: Vec::new(),
             stock: Vec::new(),
             waste: Vec::new(),
@@ -106,15 +148,22 @@ impl Game {
             runs: 0,
             moves: 0,
         };
-        let deck = shuffled_deck(seed, variant == Variant::Spider);
-        match variant {
+        let deck = shuffled_deck(seed, mode);
+        match game.variant {
             Variant::Klondike => klondike::deal(&mut game, deck),
             Variant::Spider => spider::deal(&mut game, deck),
             Variant::FreeCell => freecell::deal(&mut game, deck),
             Variant::Pyramid => pyramid::deal(&mut game, deck),
+            Variant::TriPeaks if mode == DealMode::TriPeaksSolvable => {
+                tripeaks::deal_solvable(&mut game, deck, seed);
+            }
             Variant::TriPeaks => tripeaks::deal(&mut game, deck),
         }
         game
+    }
+
+    pub fn mode(&self) -> DealMode {
+        self.mode
     }
 
     pub fn play(&mut self, action: Move) -> bool {
@@ -208,13 +257,16 @@ impl Game {
         }
     }
 
-    fn draw_waste(&mut self, recycle: bool) -> bool {
-        if let Some(card) = self.stock.pop() {
-            self.waste.push(card);
-        } else if recycle && !self.waste.is_empty() {
+    fn draw_waste(&mut self, count: usize, recycle: bool) -> bool {
+        if self.stock.is_empty() {
+            if !recycle || self.waste.is_empty() {
+                return false;
+            }
             self.stock.extend(self.waste.drain(..).rev());
         } else {
-            return false;
+            for _ in 0..count.min(self.stock.len()) {
+                self.waste.push(self.stock.pop().unwrap());
+            }
         }
         true
     }
@@ -227,25 +279,36 @@ fn face_up(card: Card) -> TableCard {
     }
 }
 
-fn shuffled_deck(mut seed: u64, spider: bool) -> Vec<Card> {
-    let suits = if spider {
-        &[Suit::Spades; 8][..]
-    } else {
-        &Suit::ALL
+fn shuffled_deck(seed: u64, mode: DealMode) -> Vec<Card> {
+    let (suits, copies) = match mode {
+        DealMode::SpiderOneSuit => (&Suit::ALL[..1], 8),
+        DealMode::SpiderTwoSuits => (&Suit::ALL[..2], 4),
+        DealMode::SpiderFourSuits => (&Suit::ALL[..], 2),
+        _ => (&Suit::ALL[..], 1),
     };
-    let mut deck: Vec<_> = suits
-        .iter()
+    let mut deck: Vec<_> = (0..copies)
+        .flat_map(|_| suits)
         .flat_map(|&suit| (1..=13).map(move |rank| Card { suit, rank }))
         .collect();
-    for index in (1..deck.len()).rev() {
-        seed = seed.wrapping_add(0x9e3779b97f4a7c15);
-        let mut value = seed;
-        value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
-        value ^= value >> 31;
-        deck.swap(index, (value % (index as u64 + 1)) as usize);
-    }
+    shuffle(&mut deck, seed);
     deck
+}
+
+fn shuffle<T>(values: &mut [T], mut seed: u64) {
+    for index in (1..values.len()).rev() {
+        values.swap(
+            index,
+            (next_random(&mut seed) % (index as u64 + 1)) as usize,
+        );
+    }
+}
+
+fn next_random(seed: &mut u64) -> u64 {
+    *seed = seed.wrapping_add(0x9e3779b97f4a7c15);
+    let mut value = *seed;
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
+    value ^ (value >> 31)
 }
 
 fn foundation_accepts(game: &Game, index: usize, card: Card) -> bool {
@@ -313,6 +376,32 @@ mod tests {
     }
 
     #[test]
+    fn klondike_draw_three_uses_the_same_deck_and_recycles_in_draw_order() {
+        let mut game = Game::with_mode(DealMode::KlondikeDrawThree, 18);
+        let standard = Game::new(Variant::Klondike, 18);
+        assert_eq!(game.tableau, standard.tableau);
+        assert_eq!(game.stock, standard.stock);
+
+        game.stock = vec![spade(1), spade(2), heart(5), heart(6), heart(7)];
+        assert!(game.play(Move::Draw));
+        assert_eq!(game.waste, [heart(7), heart(6), heart(5)]);
+        assert!(!transfer(&mut game, Place::Waste, Place::Foundation(0)));
+        assert!(game.play(Move::Draw));
+        assert!(game.stock.is_empty());
+        assert_eq!(
+            game.waste,
+            [heart(7), heart(6), heart(5), spade(2), spade(1)]
+        );
+        assert!(transfer(&mut game, Place::Waste, Place::Foundation(0)));
+        assert!(game.play(Move::Draw));
+        assert!(game.waste.is_empty());
+        assert_eq!(game.stock, [spade(2), heart(5), heart(6), heart(7)]);
+        assert!(game.play(Move::Draw));
+        assert!(game.play(Move::Draw));
+        assert!(transfer(&mut game, Place::Waste, Place::Foundation(0)));
+    }
+
+    #[test]
     fn spider_removes_completed_sequence_and_requires_filled_columns_to_deal() {
         let mut game = Game::new(Variant::Spider, 18);
         game.tableau[0] = vec![face_up(spade(1))];
@@ -325,6 +414,57 @@ mod tests {
         assert_eq!(game.runs, 1);
         assert!(game.tableau[1].is_empty());
         assert!(!game.play(Move::Draw));
+    }
+
+    #[test]
+    fn spider_uses_two_full_decks_and_moves_only_same_suit_runs() {
+        for (mode, copies) in [
+            (DealMode::SpiderOneSuit, [8, 0, 0, 0]),
+            (DealMode::SpiderTwoSuits, [4, 4, 0, 0]),
+            (DealMode::SpiderFourSuits, [2, 2, 2, 2]),
+        ] {
+            let game = Game::with_mode(mode, 18);
+            let cards: Vec<_> = game
+                .tableau
+                .iter()
+                .flatten()
+                .map(|entry| entry.card)
+                .chain(game.stock)
+                .collect();
+            assert_eq!(cards.len(), 104);
+            for (suit, count) in Suit::ALL.into_iter().zip(copies) {
+                for rank in 1..=13 {
+                    assert_eq!(
+                        cards
+                            .iter()
+                            .filter(|&&card| card == Card { suit, rank })
+                            .count(),
+                        count
+                    );
+                }
+            }
+        }
+
+        let mut game = Game::with_mode(DealMode::SpiderTwoSuits, 18);
+        game.tableau[0] = vec![face_up(heart(1))];
+        game.tableau[1] = (2..=13).rev().map(|rank| face_up(spade(rank))).collect();
+        game.tableau[2].clear();
+        assert!(transfer(
+            &mut game,
+            Place::Tableau(0, 0),
+            Place::Tableau(1, 11)
+        ));
+        assert_eq!(game.runs, 0);
+        assert!(!transfer(
+            &mut game,
+            Place::Tableau(1, 0),
+            Place::Tableau(2, 0)
+        ));
+        assert!(transfer(
+            &mut game,
+            Place::Tableau(1, 12),
+            Place::Tableau(2, 0)
+        ));
     }
 
     #[test]

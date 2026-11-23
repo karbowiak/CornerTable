@@ -20,7 +20,7 @@ pub(super) fn available(game: &Game, place: Place) -> Option<Card> {
 
 pub(super) fn play(game: &mut Game, action: Move) -> bool {
     match action {
-        Move::Draw => game.draw_waste(false),
+        Move::Draw => game.draw_waste(1, false),
         Move::Clear(place) if available(game, place).is_some_and(|card| card.rank == 13) => {
             remove(game, place);
             true
