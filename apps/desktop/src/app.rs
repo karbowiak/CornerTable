@@ -609,6 +609,18 @@ mod tests {
     }
 
     #[gpui::test]
+    fn reduce_motion_menu_action_updates_and_saves_the_preference(cx: &mut TestAppContext) {
+        cx.update(crate::install_shortcuts);
+        cx.update(|cx| {
+            for reduced in [true, false] {
+                cx.dispatch_action(&ToggleReducedMotion);
+                assert_eq!(cx.reduce_motion(), reduced);
+                assert_eq!(storage::always_reduce_motion(), reduced);
+            }
+        });
+    }
+
+    #[gpui::test]
     fn compact_sidebar_supports_tab_activation_and_preserves_focus_on_resize(
         cx: &mut TestAppContext,
     ) {
