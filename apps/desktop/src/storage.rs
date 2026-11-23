@@ -255,6 +255,18 @@ pub fn set_sound_enabled(enabled: bool) {
     }
 }
 
+pub fn always_reduce_motion() -> bool {
+    data_dir()
+        .and_then(|dir| read(&dir.join("reduce-motion.json")))
+        .unwrap_or_default()
+}
+
+pub fn set_always_reduce_motion(reduced: bool) {
+    if let Some(dir) = data_dir() {
+        write(&dir.join("reduce-motion.json"), &reduced);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct WindowSize {
     pub width: f32,

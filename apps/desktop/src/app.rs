@@ -23,6 +23,7 @@ gpui::actions!(
         OpenSearchResult,
         ToggleGuide,
         ToggleFullScreen,
+        ToggleReducedMotion,
         Quit,
     ]
 );

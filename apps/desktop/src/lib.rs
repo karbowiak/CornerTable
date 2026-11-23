@@ -31,7 +31,7 @@ pub fn run() -> anyhow::Result<()> {
         if let Err(error) = assets::register_fonts(cx) {
             eprintln!("Could not load bundled fonts: {error:#}");
         }
-        motion::sync_from_system(cx);
+        motion::set_always_reduce(cx, storage::always_reduce_motion());
         install_shortcuts(cx);
         open_main_window(fixtures, cx);
     });
@@ -40,6 +40,12 @@ pub fn run() -> anyhow::Result<()> {
 
 fn install_shortcuts(cx: &mut App) {
     cx.on_action(|_: &app::Quit, cx| cx.quit());
+    cx.on_action(|_: &app::ToggleReducedMotion, cx| {
+        let reduced = !motion::always_reduce(cx);
+        storage::set_always_reduce_motion(reduced);
+        motion::set_always_reduce(cx, reduced);
+        install_menus(cx);
+    });
     cx.bind_keys([
         KeyBinding::new("tab", app::FocusNext, None),
         KeyBinding::new("shift-tab", app::FocusPrevious, None),
@@ -65,6 +71,10 @@ fn install_shortcuts(cx: &mut App) {
     ]);
     // Search needs Option+Arrow for word movement while its field has focus.
     library_search::install_shortcuts(cx);
+    install_menus(cx);
+}
+
+fn install_menus(cx: &mut App) {
     cx.set_menus([
         Menu::new("Corner Table").items([MenuItem::action("Quit Corner Table", app::Quit)]),
         library_search::edit_menu(),
@@ -75,10 +85,11 @@ fn install_shortcuts(cx: &mut App) {
             MenuItem::action("Game Library", app::OpenLibrary),
             MenuItem::action("Find a Game", app::FindGame),
         ]),
-        Menu::new("View").items([MenuItem::action(
-            "Toggle Full Screen",
-            app::ToggleFullScreen,
-        )]),
+        Menu::new("View").items([
+            MenuItem::action("Toggle Full Screen", app::ToggleFullScreen),
+            MenuItem::action("Always Reduce Motion", app::ToggleReducedMotion)
+                .checked(motion::always_reduce(cx)),
+        ]),
         Menu::new("Help").items([MenuItem::action("How to Play", app::ToggleGuide)]),
     ]);
 }
