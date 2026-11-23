@@ -12,7 +12,11 @@ use self::state::{
     CrosswordPlay, Navigation, Play, PuzzleKey, Shelf, Source, Variant, WordPlay, plural, utc_day,
 };
 use super::{GameEntry, GameLaunch, board_space};
-use crate::{storage::Session, theme as t};
+use crate::{
+    audio::{self, Effect},
+    storage::{Outcome, Session},
+    theme as t,
+};
 
 const WOOD: u32 = 0xfff1cc;
 const WOOD_SHADE: u32 = 0xe9cfa0;
@@ -66,11 +70,14 @@ enum Action {
 impl GameView {
     pub fn new(launch: &GameLaunch, cx: &mut Context<Self>) -> Self {
         let navigation_session = Session::new(launch);
-        let navigation = navigation_session
+        let mut navigation = navigation_session
             .load::<Navigation>()
             .unwrap_or_else(|| Navigation::initial(&launch.entry));
         let challenge = matches!(launch.entry, GameEntry::Challenge(_)).then(|| launch.seed());
-        let current = navigation.key(utc_day(), challenge);
+        let current = navigation.resume(utc_day(), challenge);
+        if matches!(current.source, Source::Daily(_)) {
+            navigation_session.save(&navigation);
+        }
         let saved = puzzle_session(launch, current).load();
         Self {
             navigation,
@@ -96,7 +103,7 @@ impl GameView {
     }
 
     fn switch(&mut self) {
-        self.current = self.navigation.key(utc_day(), self.challenge);
+        self.current = self.navigation.resume(utc_day(), self.challenge);
         self.puzzles.entry(self.current).or_insert_with(|| {
             Play::load(
                 self.current,
@@ -111,6 +118,29 @@ impl GameView {
         puzzle_session(&self.launch, self.current).save(&self.play().save());
     }
 
+    fn save_action(&self, was_finished: bool, effect: Option<Effect>, cx: &Context<Self>) {
+        self.save();
+        let effect = if !was_finished && let Some((attempt, outcome, metric)) = self.play().result()
+        {
+            puzzle_session(&self.launch, self.current).record_result(
+                attempt,
+                self.current.result_mode(),
+                outcome,
+                metric,
+            );
+            Some(if outcome == Outcome::Won {
+                Effect::Complete
+            } else {
+                Effect::Move
+            })
+        } else {
+            effect
+        };
+        if let Some(effect) = effect {
+            audio::play(cx, effect);
+        }
+    }
+
     fn act(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             Action::Variant(variant) => {
@@ -118,7 +148,7 @@ impl GameView {
                 self.switch();
             }
             Action::Shelf(shelf) => {
-                self.navigation.edit().shelf = shelf;
+                self.navigation.select_shelf(shelf, utc_day());
                 self.switch();
             }
             Action::Puzzle(index) => {
@@ -151,11 +181,12 @@ impl GameView {
                 self.save();
             }
             action => {
-                match self.play_mut() {
+                let was_finished = self.play().is_finished();
+                let effect = match self.play_mut() {
                     Play::Words(play) => act_words(play, action),
                     Play::Crossword(play) => act_crossword(play, action),
-                }
-                self.save();
+                };
+                self.save_action(was_finished, effect, cx);
             }
         }
         if !matches!(action, Action::TogglePicker | Action::PickerPage(_)) {
@@ -175,10 +206,12 @@ impl GameView {
         }
         let key = key.key.as_str();
         let held = event.is_held;
+        let was_finished = self.play().is_finished();
+        let mut effect = None;
         let handled = match self.play_mut() {
             Play::Words(play) if !play.round.finished() => match key {
                 "enter" if !held => {
-                    play.submit();
+                    effect = play.submit();
                     true
                 }
                 "backspace" | "delete" => {
@@ -224,7 +257,7 @@ impl GameView {
                         let Some(letter) = key_letter(key, held) else {
                             return;
                         };
-                        play.type_letter(letter);
+                        effect = play.type_letter(letter);
                     }
                 }
                 true
@@ -232,7 +265,7 @@ impl GameView {
             _ => false,
         };
         if handled {
-            self.save();
+            self.save_action(was_finished, effect, cx);
             cx.stop_propagation();
             cx.notify();
         }
@@ -351,7 +384,16 @@ impl GameView {
                     .children(size)
                     .when(collection, |line| line.child(archive))
                     .when(daily, |line| {
-                        line.child(caption("Daily rotation · Midnight UTC", cx))
+                        let message = match self.current.source {
+                            Source::Daily(day) if day != utc_day() => {
+                                self.current.source.daily_date().map_or_else(
+                                    || "Previous daily".to_owned(),
+                                    |date| format!("Daily {date}"),
+                                ) + " · Select Daily for today’s puzzle."
+                            }
+                            _ => "Daily rotation · Midnight UTC".to_owned(),
+                        };
+                        line.child(caption(message, cx))
                     }),
             )
             .children(
@@ -1090,16 +1132,19 @@ impl Render for GameView {
     }
 }
 
-fn act_words(play: &mut WordPlay, action: Action) {
+fn act_words(play: &mut WordPlay, action: Action) -> Option<Effect> {
+    if play.round.finished() {
+        return None;
+    }
     match action {
         Action::Tile(index) => {
-            play.notice = if play.round.choose(index) {
-                String::new()
-            } else {
-                "Choose an unused tile that can follow this one.".into()
-            };
+            if !play.round.choose(index) {
+                play.notice = "Choose an unused tile that can follow this one.".into();
+                return Some(Effect::InvalidMove);
+            }
+            play.notice.clear();
         }
-        Action::AddWord => play.submit(),
+        Action::AddWord => return play.submit(),
         Action::UndoTile => {
             play.round.undo();
             play.notice.clear();
@@ -1111,6 +1156,7 @@ fn act_words(play: &mut WordPlay, action: Action) {
         Action::Shuffle => {
             play.shuffle = play.shuffle.wrapping_add(1);
             play.notice.clear();
+            return Some(Effect::Move);
         }
         Action::WordHint => play.hint(),
         Action::FinishWords if play.round.score() >= WORD_GOAL => play.finish(),
@@ -1119,13 +1165,14 @@ fn act_words(play: &mut WordPlay, action: Action) {
         Action::ConfirmFinish => play.finish(),
         _ => {}
     }
+    None
 }
 
-fn act_crossword(play: &mut CrosswordPlay, action: Action) {
+fn act_crossword(play: &mut CrosswordPlay, action: Action) -> Option<Effect> {
     match action {
         Action::CrosswordClue { index, down } => play.select_clue(index, down),
         Action::CheckCrossword => play.check(),
-        Action::HintSquare => play.hint(),
+        Action::HintSquare => return play.hint(),
         Action::RevealCrossword => play.confirm_reveal = true,
         Action::CancelReveal => play.confirm_reveal = false,
         Action::ConfirmReveal => {
@@ -1135,6 +1182,7 @@ fn act_crossword(play: &mut CrosswordPlay, action: Action) {
         }
         _ => {}
     }
+    None
 }
 
 fn puzzle_session(launch: &GameLaunch, key: PuzzleKey) -> Session {

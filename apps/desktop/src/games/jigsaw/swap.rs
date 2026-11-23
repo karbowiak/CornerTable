@@ -3,7 +3,10 @@ use gpui::{
     Context, Div, ObjectFit, Render, Role, Stateful, Window, div, img, prelude::*, px, rgb,
 };
 
-use crate::theme as t;
+use crate::{
+    audio::{self, Effect},
+    theme as t,
+};
 
 use super::{GameView, Mode, PuzzleKey, framed_board};
 
@@ -58,6 +61,23 @@ impl Render for DraggedTile {
 }
 
 impl GameView {
+    fn finish_selection(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        match selection {
+            Selection::Swapped | Selection::Completed => {
+                self.save();
+                if selection == Selection::Completed {
+                    self.record_win();
+                    audio::play(cx, Effect::Complete);
+                } else {
+                    audio::play(cx, Effect::Move);
+                }
+            }
+            Selection::Selected | Selection::Cleared => {}
+            Selection::Ignored => return,
+        }
+        cx.notify();
+    }
+
     fn tile(&self, position: usize, width: f32, height: f32, cx: &Context<Self>) -> Stateful<Div> {
         let puzzle = &self.round().swap;
         let piece = puzzle.pieces()[position];
@@ -112,22 +132,15 @@ impl GameView {
                     && view.key == dragged.key
                     && view.round().swap_deal == dragged.deal
                     && view.round().swap.pieces().get(dragged.position) == Some(&dragged.tile.piece)
-                    && view.round_mut().swap.swap(dragged.position, position) != Selection::Ignored
                 {
-                    view.save();
-                    cx.notify();
+                    let selection = view.round_mut().swap.swap(dragged.position, position);
+                    view.finish_selection(selection, cx);
                 }
             }))
-            .on_click(cx.listener(
-                move |view, _, _, cx| match view.round_mut().swap.select(position) {
-                    Selection::Swapped | Selection::Completed => {
-                        view.save();
-                        cx.notify();
-                    }
-                    Selection::Selected | Selection::Cleared => cx.notify(),
-                    Selection::Ignored => {}
-                },
-            ))
+            .on_click(cx.listener(move |view, _, _, cx| {
+                let selection = view.round_mut().swap.select(position);
+                view.finish_selection(selection, cx);
+            }))
     }
 
     pub(super) fn swap_board(&self, width: f32, cx: &Context<Self>) -> Div {

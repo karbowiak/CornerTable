@@ -3,6 +3,7 @@ mod persistence;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::NaiveDate;
 use corner_table_sudoku::{Difficulty, Format, Game, Hint, HintReason, Unit};
 use gpui::{
     Context, Div, FocusHandle, FontWeight, KeyDownEvent, SharedString, Stateful, Window, div,
@@ -10,8 +11,12 @@ use gpui::{
 };
 
 use super::{GameEntry, GameLaunch, board_space};
-use crate::storage::Session;
-use crate::theme as t;
+use crate::{
+    audio::{self, Effect},
+    daily,
+    storage::{AttemptId, Outcome, ResultMetric, Session},
+    theme as t,
+};
 use persistence::PracticeModes;
 
 const GRID_LINE: u32 = 0xd0d6c7;
@@ -51,6 +56,23 @@ impl Puzzle {
             Self::Challenge(seed) => Game::new(seed, Difficulty::Medium),
         }
     }
+
+    fn result_mode(self, launch: &GameLaunch) -> String {
+        match self {
+            Self::Practice(format, difficulty) => {
+                let size = format.size();
+                format!("{size}×{size} · {}", difficulty.label())
+            }
+            Self::Daily(day) => i32::try_from(day)
+                .ok()
+                .and_then(NaiveDate::from_epoch_days)
+                .map_or_else(|| "Daily".to_owned(), |date| format!("Daily {date}")),
+            Self::Challenge(_) => daily::from_launch(launch).map_or_else(
+                || "Challenge".to_owned(),
+                |puzzle| format!("Daily challenge · {}", puzzle.date),
+            ),
+        }
+    }
 }
 
 struct Round {
@@ -62,6 +84,8 @@ struct Round {
     hint_open: bool,
     hints_used: u32,
     best: Option<u32>,
+    attempt: AttemptId,
+    moves: u64,
 }
 
 impl Round {
@@ -80,26 +104,43 @@ impl Round {
             hint_open: false,
             hints_used: 0,
             best: None,
+            attempt: AttemptId::default(),
+            moves: 0,
         }
     }
 
-    fn edit(&mut self, digit: u8, note: bool) {
-        if self.game.enter(self.selected, digit, note) {
-            self.clear_hint();
-            self.record_result();
+    fn edit(&mut self, digit: u8, note: bool) -> Option<Effect> {
+        let value = self.game.value(self.selected);
+        if !self.game.enter(self.selected, digit, note) {
+            return None;
         }
+        self.clear_hint();
+        if value == self.game.value(self.selected) {
+            return None;
+        }
+        self.moves = self.moves.saturating_add(1);
+        self.update_best();
+        Some(if self.game.is_solved() {
+            Effect::Complete
+        } else {
+            Effect::Move
+        })
     }
 
-    fn record_result(&mut self) {
+    fn update_best(&mut self) {
         if self.game.is_solved() && self.best.is_none_or(|best| self.hints_used < best) {
             self.best = Some(self.hints_used);
         }
     }
 
-    fn undo(&mut self) {
-        if self.game.undo() {
-            self.clear_hint();
+    fn undo(&mut self) -> Option<Effect> {
+        let before = self.game.checkpoint(1).values;
+        let values_changed = before != self.game.checkpoint(0).values;
+        if !self.game.undo() {
+            return None;
         }
+        self.clear_hint();
+        values_changed.then_some(Effect::Move)
     }
 
     fn move_selection(&mut self, rows: isize, columns: isize) {
@@ -147,11 +188,10 @@ impl Round {
         self.hint.filter(|_| self.hint_open)
     }
 
-    fn apply_hint(&mut self) {
-        if let Some(hint) = self.visible_hint() {
-            self.selected = hint.index;
-            self.edit(hint.entry(), false);
-        }
+    fn apply_hint(&mut self) -> Option<Effect> {
+        let hint = self.visible_hint()?;
+        self.selected = hint.index;
+        self.edit(hint.entry(), false)
     }
 
     fn clear_hint(&mut self) {
@@ -227,8 +267,21 @@ impl GameView {
         self.rounds.insert(self.puzzle, next);
     }
 
-    fn save_round(&self) {
-        self.round().save(&self.puzzle.session(&self.launch));
+    fn save_round(&self, effect: Option<Effect>, cx: &Context<Self>) {
+        let round = self.round();
+        let session = self.puzzle.session(&self.launch);
+        round.save(&session);
+        if let Some(effect) = effect {
+            if matches!(effect, Effect::Complete) {
+                session.record_result(
+                    round.attempt,
+                    self.puzzle.result_mode(&self.launch),
+                    Outcome::Won,
+                    ResultMetric::Moves(round.moves),
+                );
+            }
+            audio::play(cx, effect);
+        }
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -239,12 +292,13 @@ impl GameView {
             return;
         }
         let round = self.round_mut();
+        let mut effect = None;
         if modifiers.control || modifiers.platform {
             if key != "z" || modifiers.shift {
                 return;
             }
             if !event.is_held {
-                round.undo();
+                effect = round.undo();
             }
         } else {
             match key {
@@ -253,10 +307,10 @@ impl GameView {
                 "left" => round.move_selection(0, -1),
                 "right" => round.move_selection(0, 1),
                 "space" => round.select_blank(modifiers.shift),
-                "backspace" | "delete" => round.edit(0, false),
+                "backspace" | "delete" => effect = round.edit(0, false),
                 "n" if !event.is_held => round.toggle_notes(),
                 "h" if !event.is_held => round.show_hint(),
-                "enter" if round.hint_open && !event.is_held => round.apply_hint(),
+                "enter" if round.hint_open && !event.is_held => effect = round.apply_hint(),
                 "escape" if round.hint_open => round.hint_open = false,
                 _ => {
                     let Some(digit) = stroke
@@ -269,13 +323,13 @@ impl GameView {
                         return;
                     };
                     if !event.is_held {
-                        round.edit(digit, round.note_mode);
+                        effect = round.edit(digit, round.note_mode);
                     }
                 }
             }
         }
         cx.stop_propagation();
-        self.save_round();
+        self.save_round(effect, cx);
         cx.notify();
     }
 
@@ -292,21 +346,30 @@ impl GameView {
                     "Classic 9×9",
                     ButtonStyle::selected(practice && format == Format::Standard),
                     cx,
-                    |view| view.open(view.modes.practice(Format::Standard)),
+                    |view| {
+                        view.open(view.modes.practice(Format::Standard));
+                        None
+                    },
                 ))
                 .child(control(
                     "sudoku-mini",
                     "Mini 6×6",
                     ButtonStyle::selected(practice && format == Format::Mini),
                     cx,
-                    |view| view.open(view.modes.practice(Format::Mini)),
+                    |view| {
+                        view.open(view.modes.practice(Format::Mini));
+                        None
+                    },
                 ))
                 .child(control(
                     "sudoku-daily",
                     "Daily puzzle",
                     ButtonStyle::selected(self.puzzle == Puzzle::Daily(today)),
                     cx,
-                    |view| view.open(Puzzle::Daily(utc_day())),
+                    |view| {
+                        view.open(Puzzle::Daily(utc_day()));
+                        None
+                    },
                 ))
             })
     }
@@ -396,7 +459,7 @@ impl GameView {
                     )
                     .on_click(cx.listener(move |view, _, window, cx| {
                         view.round_mut().selected = index;
-                        view.save_round();
+                        view.save_round(None, cx);
                         view.focus.focus(window, cx);
                         cx.notify();
                     }))
@@ -476,7 +539,10 @@ impl GameView {
                     difficulty.label(),
                     ButtonStyle::selected(selected == difficulty),
                     cx,
-                    move |view| view.open(Puzzle::Practice(format, difficulty)),
+                    move |view| {
+                        view.open(Puzzle::Practice(format, difficulty));
+                        None
+                    },
                 )
                 .flex_1()
             }))
@@ -515,7 +581,7 @@ impl GameView {
                         cx,
                         move |view| {
                             let round = view.round_mut();
-                            round.edit(digit, round.note_mode);
+                            round.edit(digit, round.note_mode)
                         },
                     )
                     .h(px(if compact { 36. } else { 43. }))
@@ -533,7 +599,10 @@ impl GameView {
                             if round.note_mode { "Notes on" } else { "Notes" },
                             ButtonStyle::selected(round.note_mode),
                             cx,
-                            |view| view.round_mut().toggle_notes(),
+                            |view| {
+                                view.round_mut().toggle_notes();
+                                None
+                            },
                         )
                         .flex_1(),
                     )
@@ -543,9 +612,7 @@ impl GameView {
                             "Erase",
                             ButtonStyle::enabled(can_erase),
                             cx,
-                            |view| {
-                                view.round_mut().edit(0, false);
-                            },
+                            |view| view.round_mut().edit(0, false),
                         )
                         .flex_1(),
                     ),
@@ -579,9 +646,7 @@ impl GameView {
                             action,
                             ButtonStyle::Primary,
                             cx,
-                            |view| {
-                                view.round_mut().apply_hint();
-                            },
+                            |view| view.round_mut().apply_hint(),
                         )
                         .flex_1(),
                     )
@@ -593,6 +658,7 @@ impl GameView {
                             cx,
                             |view| {
                                 view.round_mut().hint_open = false;
+                                None
                             },
                         )
                         .flex_1(),
@@ -642,9 +708,7 @@ impl GameView {
                             "Undo",
                             ButtonStyle::enabled(game.can_undo()),
                             cx,
-                            |view| {
-                                view.round_mut().undo();
-                            },
+                            |view| view.round_mut().undo(),
                         )
                         .flex_1(),
                     )
@@ -657,6 +721,7 @@ impl GameView {
                                 cx,
                                 |view| {
                                     view.round_mut().show_hint();
+                                    None
                                 },
                             )
                             .flex_1(),
@@ -678,7 +743,10 @@ impl GameView {
                     ButtonStyle::Normal
                 },
                 cx,
-                Self::start_over,
+                |view| {
+                    view.start_over();
+                    None
+                },
             ))
     }
 }
@@ -1021,7 +1089,7 @@ fn control(
     title: impl Into<SharedString>,
     style: ButtonStyle,
     cx: &Context<GameView>,
-    action: impl Fn(&mut GameView) + 'static,
+    action: impl Fn(&mut GameView) -> Option<Effect> + 'static,
 ) -> Stateful<Div> {
     let palette = t::colors(cx);
     let title = title.into();
@@ -1060,8 +1128,8 @@ fn control(
                 .hover(|style| style.bg(rgb(hover)))
                 .focus_visible(|style| style.border_color(rgb(palette.ink)).bg(rgb(hover)))
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    action(view);
-                    view.save_round();
+                    let effect = action(view);
+                    view.save_round(effect, cx);
                     view.focus.focus(window, cx);
                     cx.notify();
                 }))

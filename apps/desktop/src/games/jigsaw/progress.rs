@@ -1,7 +1,7 @@
 use corner_table_jigsaw::{Assembly, Placement, Puzzle, Size};
 use serde::{Deserialize, Serialize};
 
-use super::{GALLERY, GameView, Mode, PuzzleKey, Reference, Round, Tray};
+use super::{AttemptId, GALLERY, GameView, Mode, PuzzleKey, Reference, Round, Tray};
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct SavedGallery {
@@ -49,6 +49,10 @@ struct SavedAssembly {
     seed: u64,
     placements: Vec<usize>,
     hints_used: usize,
+    #[serde(default)]
+    attempt: AttemptId,
+    #[serde(default)]
+    moves: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -56,6 +60,8 @@ struct SavedSwap {
     seed: u64,
     tiles: Vec<usize>,
     moves: usize,
+    #[serde(default)]
+    attempt: AttemptId,
 }
 
 impl SavedRound {
@@ -66,11 +72,14 @@ impl SavedRound {
                 seed: round.assembly_deal,
                 placements: round.assembly.placements().to_vec(),
                 hints_used: round.tray.hints_used,
+                attempt: round.assembly_attempt,
+                moves: round.assembly_moves,
             },
             swap: SavedSwap {
                 seed: round.swap_deal,
                 tiles: round.swap.pieces().to_vec(),
                 moves: round.swap.moves(),
+                attempt: round.swap_attempt,
             },
         }
     }
@@ -84,18 +93,38 @@ impl SavedRound {
                 Placement::Placed | Placement::Completed
             )
         });
-        let (assembly, hints_used) = if valid {
-            (assembly, self.assembly.hints_used)
+        let (assembly, hints_used, assembly_moves, assembly_attempt) = if valid {
+            let moves = self.assembly.moves.max(assembly.placed_count() as u64);
+            (
+                assembly,
+                self.assembly.hints_used,
+                moves,
+                self.assembly.attempt,
+            )
         } else {
-            (Assembly::new(key.size, self.assembly.seed), 0)
+            (
+                Assembly::new(key.size, self.assembly.seed),
+                0,
+                0,
+                AttemptId::default(),
+            )
         };
-        let swap = Puzzle::restore(key.size, self.swap.tiles, self.swap.moves)
-            .unwrap_or_else(|| Puzzle::with_size(key.size, self.swap.seed));
+        let (swap, swap_attempt) = match Puzzle::restore(key.size, self.swap.tiles, self.swap.moves)
+        {
+            Some(swap) => (swap, self.swap.attempt),
+            None => (
+                Puzzle::with_size(key.size, self.swap.seed),
+                AttemptId::default(),
+            ),
+        };
         let round = Round {
             assembly,
             swap,
             assembly_deal: self.assembly.seed,
             swap_deal: self.swap.seed,
+            assembly_attempt,
+            swap_attempt,
+            assembly_moves,
             tray: Tray {
                 hints_used,
                 ..Tray::default()
@@ -150,6 +179,7 @@ mod tests {
         let mut round = Round::new(key.size, 32);
         round.assembly.place(18, 18);
         round.assembly.place(3, 3);
+        round.assembly_moves = 4;
         round.tray.hints_used = 1;
         round.swap_deal = 99;
         round.swap = Puzzle::with_size(key.size, round.swap_deal);
@@ -164,6 +194,10 @@ mod tests {
         assert!(loaded_key == key);
         assert_eq!(loaded.tray.hints_used, 1);
         assert_eq!(loaded.assembly_deal, round.assembly_deal);
+        assert_eq!(loaded.assembly_moves, 4);
+        assert!(loaded.assembly_attempt == round.assembly_attempt);
+        assert!(loaded.swap_attempt == round.swap_attempt);
+        assert!(loaded.assembly_attempt != loaded.swap_attempt);
         assert!(
             loaded
                 .assembly
@@ -175,6 +209,30 @@ mod tests {
         assert_eq!(loaded.swap_deal, round.swap_deal);
         assert_eq!(loaded.swap.pieces(), round.swap.pieces());
         assert_eq!(loaded.swap.moves(), 1);
+    }
+
+    #[test]
+    fn existing_painting_saves_start_with_their_already_placed_moves() {
+        let key = PuzzleKey {
+            painting: 1,
+            size: Size::Twelve,
+        };
+        let mut round = Round::new(key.size, 7);
+        round.assembly.place(5, 5);
+        let mut saved = serde_json::to_value(SavedRound::new(key, &round)).unwrap();
+        let assembly = saved["assembly"].as_object_mut().unwrap();
+        assembly.remove("attempt");
+        assembly.remove("moves");
+        saved["swap"].as_object_mut().unwrap().remove("attempt");
+
+        let (loaded_key, loaded) = serde_json::from_value::<SavedRound>(saved)
+            .unwrap()
+            .restore()
+            .unwrap();
+        assert!(loaded_key == key);
+        assert_eq!(loaded.assembly.placements(), &[5]);
+        assert_eq!(loaded.assembly_moves, 1);
+        assert!(loaded.assembly_attempt != loaded.swap_attempt);
     }
 
     #[test]

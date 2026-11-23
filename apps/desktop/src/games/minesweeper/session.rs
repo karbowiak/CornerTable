@@ -3,6 +3,8 @@ use std::{collections::BTreeMap, time::Duration};
 use corner_table_minesweeper::{Board, Checkpoint, Difficulty, Status};
 use serde::{Deserialize, Serialize};
 
+use crate::storage::{AttemptId, Outcome};
+
 const FORMAT: u8 = 1;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -50,6 +52,7 @@ pub(super) struct Round {
     pub(super) flag_mode: bool,
     pub(super) selected: (usize, usize),
     pub(super) replay: bool,
+    pub(super) attempt: AttemptId,
 }
 
 impl Round {
@@ -60,6 +63,7 @@ impl Round {
             flag_mode: false,
             selected: (0, 0),
             replay: false,
+            attempt: AttemptId::default(),
         }
     }
 
@@ -71,11 +75,23 @@ impl Round {
             mode: self.mode,
             flag_mode: false,
             replay: true,
+            attempt: AttemptId::default(),
         })
     }
 
     pub(super) fn limit(&self) -> Option<Duration> {
         self.mode.limit(self.board.difficulty())
+    }
+
+    pub(super) fn outcome(&self, elapsed: Duration) -> Option<Outcome> {
+        match self.board.status() {
+            Status::Ready | Status::Playing => None,
+            Status::Won if !self.replay && self.limit().is_some_and(|limit| elapsed >= limit) => {
+                Some(Outcome::Finished)
+            }
+            Status::Won => Some(Outcome::Won),
+            Status::Lost => Some(Outcome::Lost),
+        }
     }
 }
 
@@ -125,6 +141,8 @@ pub(super) struct SavedGame {
     replay: bool,
     elapsed_ms: u64,
     bests: Bests,
+    #[serde(default)]
+    attempt: AttemptId,
 }
 
 impl SavedGame {
@@ -152,6 +170,7 @@ impl SavedGame {
             replay: round.replay,
             elapsed_ms: milliseconds(elapsed),
             bests: bests.clone(),
+            attempt: round.attempt,
         }
     }
 
@@ -196,6 +215,7 @@ impl SavedGame {
                 flag_mode: self.flag_mode,
                 selected,
                 replay: self.replay,
+                attempt: self.attempt,
             },
             elapsed,
             self.bests,
@@ -203,7 +223,7 @@ impl SavedGame {
     }
 }
 
-fn milliseconds(elapsed: Duration) -> u64 {
+pub(super) fn milliseconds(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
@@ -224,6 +244,7 @@ mod tests {
         assert_eq!(restored.board.status(), Status::Playing);
         assert_eq!(restored.board.checkpoint(), round.board.checkpoint());
         assert_eq!(restored.mode, Mode::TimeTrial);
+        assert!(restored.attempt == round.attempt);
         assert!(restored.flag_mode);
         assert_eq!(restored.selected, (7, 3));
         assert_eq!(restored_elapsed, elapsed);
@@ -233,11 +254,14 @@ mod tests {
         let elapsed = Duration::from_millis(47_912);
         let (terminal, restored_elapsed, _) = round_trip(&round, elapsed, &bests);
         assert_eq!(terminal.board.status(), Status::Lost);
+        assert_eq!(terminal.outcome(elapsed), Some(Outcome::Lost));
+        assert!(terminal.attempt == round.attempt);
         assert_eq!(terminal.board.checkpoint(), round.board.checkpoint());
         assert_eq!(restored_elapsed, elapsed);
 
-        let replay = terminal.replay().unwrap();
-        let (replay, restored_elapsed, _) = round_trip(&replay, Duration::ZERO, &bests);
+        let next = terminal.replay().unwrap();
+        let (replay, restored_elapsed, _) = round_trip(&next, Duration::ZERO, &bests);
+        assert!(replay.attempt == next.attempt && replay.attempt != terminal.attempt);
         assert_eq!(replay.board.status(), Status::Ready);
         assert_eq!(replay.board.required_opening(), Some((7, 3)));
         assert_eq!(
@@ -257,13 +281,16 @@ mod tests {
         assert!(bests.time(&round).is_none());
 
         clear_field(&mut round);
-        bests.record(&round, round.limit().unwrap());
+        let limit = round.limit().unwrap();
+        bests.record(&round, limit);
         assert!(bests.time(&round).is_none());
+        assert_eq!(round.outcome(limit), Some(Outcome::Finished));
         let best = Duration::from_millis(31_594);
         bests.record(&round, Duration::from_secs(40));
         bests.record(&round, best);
         bests.record(&round, Duration::from_secs(32));
         assert_eq!(bests.time(&round), Some(best));
+        assert_eq!(round.outcome(best), Some(Outcome::Won));
 
         let mut replay = round.replay().unwrap();
         clear_field(&mut replay);

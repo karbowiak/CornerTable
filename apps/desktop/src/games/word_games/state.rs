@@ -1,9 +1,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use corner_table_word_games::{Crossword, GridSize, Mode, Rejection, WordRound};
+use chrono::NaiveDate;
+use corner_table_word_games::{Crossword, GridSize, Mode, Rejection, WORD_GOAL, WordRound};
 use serde::{Deserialize, Serialize};
 
-use crate::games::GameEntry;
+use crate::{
+    audio::Effect,
+    games::GameEntry,
+    storage::{AttemptId, Outcome, ResultMetric},
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -82,6 +87,13 @@ pub(super) enum Source {
     Challenge(u64),
 }
 
+impl Source {
+    pub fn daily_date(self) -> Option<NaiveDate> {
+        let Self::Daily(day) = self else { return None };
+        NaiveDate::from_epoch_days(day.try_into().ok()?)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct PuzzleKey {
     pub variant: Variant,
@@ -101,9 +113,27 @@ impl PuzzleKey {
     fn seed(self) -> u64 {
         match self.source {
             Source::Collection(index) => index as u64,
-            Source::Daily(day) => day + 19 * (self.variant.slot() as u64 + 1),
+            Source::Daily(day) => day.wrapping_add(19 * (self.variant.slot() as u64 + 1)),
             Source::Challenge(seed) => seed,
         }
+    }
+
+    pub fn result_mode(self) -> String {
+        let title = if let Some(grid) = self.variant.grid() {
+            let side = grid.side();
+            format!("{} {side}×{side}", self.variant.title())
+        } else {
+            self.variant.title().to_owned()
+        };
+        let source = match self.source {
+            Source::Collection(index) => format!("Puzzle {}", index + 1),
+            Source::Daily(_) => self
+                .source
+                .daily_date()
+                .map_or_else(|| "Daily".to_owned(), |date| format!("Daily {date}")),
+            Source::Challenge(_) => "Challenge".to_owned(),
+        };
+        format!("{title} · {source}")
     }
 }
 
@@ -117,6 +147,8 @@ pub(super) fn utc_day() -> u64 {
 pub(super) struct Cursor {
     pub index: usize,
     pub shelf: Shelf,
+    #[serde(default)]
+    day: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -167,10 +199,26 @@ impl Navigation {
         &mut self.cursors[self.variant.slot()]
     }
 
+    pub fn select_shelf(&mut self, shelf: Shelf, today: u64) {
+        let cursor = self.edit();
+        cursor.shelf = shelf;
+        if shelf == Shelf::Daily {
+            cursor.day = Some(today);
+        }
+    }
+
+    pub fn resume(&mut self, today: u64, challenge: Option<u64>) -> PuzzleKey {
+        let cursor = self.edit();
+        if cursor.shelf == Shelf::Daily {
+            cursor.day.get_or_insert(today);
+        }
+        self.key(today, challenge)
+    }
+
     pub fn key(&self, day: u64, challenge: Option<u64>) -> PuzzleKey {
         let cursor = self.cursor();
         let source = match (cursor.shelf, challenge) {
-            (Shelf::Daily, _) => Source::Daily(day),
+            (Shelf::Daily, _) => Source::Daily(cursor.day.unwrap_or(day)),
             (Shelf::Challenge, Some(seed)) => Source::Challenge(seed),
             _ => Source::Collection(cursor.index),
         };
@@ -181,7 +229,7 @@ impl Navigation {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 pub(super) enum Saved {
     Words {
         found: Vec<String>,
@@ -190,6 +238,8 @@ pub(super) enum Saved {
         hint: Option<WordHint>,
         hints_used: u32,
         shuffle: u32,
+        #[serde(default)]
+        attempt: AttemptId,
     },
     Crossword {
         letters: Vec<Option<u8>>,
@@ -198,6 +248,10 @@ pub(super) enum Saved {
         cursor: usize,
         down: bool,
         checked: u16,
+        #[serde(default)]
+        attempt: AttemptId,
+        #[serde(default)]
+        moves: Option<u64>,
     },
 }
 
@@ -214,10 +268,11 @@ pub(super) struct WordPlay {
     pub shuffle: u32,
     pub notice: String,
     pub confirm_finish: bool,
+    attempt: AttemptId,
 }
 
 impl WordPlay {
-    pub fn submit(&mut self) {
+    pub fn submit(&mut self) -> Option<Effect> {
         let candidate = self.round.candidate();
         let points = self.round.submit();
         self.notice = match points {
@@ -241,6 +296,11 @@ impl WordPlay {
             Err(Rejection::AlreadyFound) => "You’ve already found that word.".into(),
             Err(Rejection::Finished) => String::new(),
         };
+        match points {
+            Ok(_) => Some(Effect::Clear),
+            Err(Rejection::Finished) => None,
+            Err(_) => Some(Effect::InvalidMove),
+        }
     }
 
     pub fn hint(&mut self) {
@@ -286,6 +346,8 @@ pub(super) struct CrosswordPlay {
     pub checked: u16,
     pub notice: String,
     pub confirm_reveal: bool,
+    attempt: AttemptId,
+    moves: u64,
 }
 
 impl CrosswordPlay {
@@ -343,15 +405,16 @@ impl CrosswordPlay {
         self.down = y != 0;
     }
 
-    pub fn type_letter(&mut self, letter: char) {
+    pub fn type_letter(&mut self, letter: char) -> Option<Effect> {
         if self.board.hinted_at(self.cursor) {
             self.notice = "That square is locked by a hint. Move to another square.".into();
-            return;
+            return None;
         }
-        if self.board.put(self.cursor, Some(letter)) {
-            self.edited();
-            self.advance();
+        let previous = self.board.letters()[self.cursor];
+        if !self.board.put(self.cursor, Some(letter)) {
+            return None;
         }
+        self.entered_letter(previous)
     }
 
     pub fn erase(&mut self, backward: bool) {
@@ -372,19 +435,44 @@ impl CrosswordPlay {
                 self.cursor = previous;
             }
         }
+        let had_letter = self.board.letters()[self.cursor].is_some();
         if self.board.put(self.cursor, None) {
+            if had_letter {
+                self.moves = self.moves.saturating_add(1);
+            }
             self.edited();
         }
     }
 
-    pub fn hint(&mut self) {
+    pub fn hint(&mut self) -> Option<Effect> {
+        let previous = self.board.letters()[self.cursor];
         if self.board.hint(self.cursor) {
-            self.edited();
+            let effect = self.entered_letter(previous);
             self.notice = "Hinted letters are locked.".into();
-            self.advance();
+            effect.or(Some(Effect::Move))
         } else {
             self.notice = "This square already has the right letter.".into();
+            None
         }
+    }
+
+    fn entered_letter(&mut self, previous: Option<u8>) -> Option<Effect> {
+        let mut effect = None;
+        if previous != self.board.letters()[self.cursor] {
+            self.moves = self.moves.saturating_add(1);
+            let size = self.board.size();
+            if previous.is_none()
+                && [false, true].into_iter().any(|down| {
+                    size.line(size.line_at(self.cursor, down), down)
+                        .all(|square| self.board.letters()[square].is_some())
+                })
+            {
+                effect = Some(Effect::Clear);
+            }
+        }
+        self.edited();
+        self.advance();
+        effect
     }
 
     fn edited(&mut self) {
@@ -426,6 +514,8 @@ impl Play {
                 checked: 0,
                 notice: String::new(),
                 confirm_reveal: false,
+                attempt: AttemptId::default(),
+                moves: 0,
             };
             if let Some(Saved::Crossword {
                 letters,
@@ -434,12 +524,17 @@ impl Play {
                 cursor,
                 down,
                 checked,
+                attempt,
+                moves,
             }) = saved
             {
                 play.board.restore(&letters, hints, revealed);
                 play.cursor = cursor.min(play.board.letters().len() - 1);
                 play.down = down;
                 play.checked = checked & play.board.incorrect_squares();
+                play.attempt = attempt;
+                play.moves =
+                    moves.unwrap_or_else(|| play.board.letters().iter().flatten().count() as u64);
             }
             Self::Crossword(play)
         } else {
@@ -450,6 +545,7 @@ impl Play {
                 shuffle: 0,
                 notice: String::new(),
                 confirm_finish: false,
+                attempt: AttemptId::default(),
             };
             if let Some(Saved::Words {
                 found,
@@ -458,6 +554,7 @@ impl Play {
                 hint,
                 hints_used,
                 shuffle,
+                attempt,
             }) = saved
             {
                 play.round.restore(found, &selection, finished);
@@ -470,8 +567,32 @@ impl Play {
                 });
                 play.hints_used = hints_used;
                 play.shuffle = shuffle;
+                play.attempt = attempt;
             }
             Self::Words(play)
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        match self {
+            Self::Words(play) => play.round.finished(),
+            Self::Crossword(play) => play.board.complete(),
+        }
+    }
+
+    pub fn result(&self) -> Option<(AttemptId, Outcome, ResultMetric)> {
+        match self {
+            Self::Words(play) if play.round.finished() && play.round.score() > 0 => {
+                let score = play.round.score();
+                let won =
+                    score >= WORD_GOAL || play.round.found().len() == play.round.answer_count();
+                let outcome = if won { Outcome::Won } else { Outcome::Finished };
+                Some((play.attempt, outcome, ResultMetric::Points(score.into())))
+            }
+            Self::Crossword(play) if play.board.complete() && !play.board.revealed() => {
+                Some((play.attempt, Outcome::Won, ResultMetric::Moves(play.moves)))
+            }
+            _ => None,
         }
     }
 
@@ -489,6 +610,7 @@ impl Play {
                 hint: play.hint.clone(),
                 hints_used: play.hints_used,
                 shuffle: play.shuffle,
+                attempt: play.attempt,
             },
             Self::Crossword(play) => Saved::Crossword {
                 letters: play.board.letters().to_vec(),
@@ -497,6 +619,8 @@ impl Play {
                 cursor: play.cursor,
                 down: play.down,
                 checked: play.checked,
+                attempt: play.attempt,
+                moves: Some(play.moves),
             },
         }
     }
@@ -532,6 +656,24 @@ mod tests {
     }
 
     #[test]
+    fn resumes_the_saved_daily_after_midnight_until_today_is_selected() {
+        let mut nav = Navigation::initial(&GameEntry::Classic);
+        nav.select(Variant::Large);
+        nav.select_shelf(Shelf::Daily, 20_000);
+        let previous = nav.resume(20_000, None);
+        let saved = serde_json::to_string(&nav).unwrap();
+        let mut resumed: Navigation = serde_json::from_str(&saved).unwrap();
+        assert_eq!(resumed.resume(20_001, None), previous);
+
+        resumed.select(Variant::Grove);
+        assert_eq!(resumed.resume(20_001, None).source, Source::Collection(0));
+        resumed.select(resumed.crossword());
+        assert_eq!(resumed.resume(20_001, None), previous);
+        resumed.select_shelf(Shelf::Daily, 20_001);
+        assert_eq!(resumed.resume(20_001, None).source, Source::Daily(20_001));
+    }
+
+    #[test]
     fn serialization_preserves_an_in_progress_word_and_hint() {
         let key = PuzzleKey {
             variant: Variant::Rack,
@@ -543,7 +685,7 @@ mod tests {
         for letter in "garden".chars() {
             assert!(play.round.type_letter(letter));
         }
-        play.submit();
+        assert!(matches!(play.submit(), Some(Effect::Clear)));
         play.hint();
         for letter in "sand".chars() {
             assert!(play.round.type_letter(letter));
@@ -559,6 +701,37 @@ mod tests {
     }
 
     #[test]
+    fn word_results_use_the_played_score_and_ignore_an_empty_finish() {
+        let key = PuzzleKey {
+            variant: Variant::Rack,
+            source: Source::Collection(0),
+        };
+        let Play::Words(mut play) = Play::load(key, None) else {
+            panic!("expected a rack");
+        };
+        play.finish();
+        assert!(Play::Words(play).result().is_none());
+
+        let Play::Words(mut play) = Play::load(key, None) else {
+            panic!("expected a rack");
+        };
+        for letter in "garden".chars() {
+            assert!(play.round.type_letter(letter));
+        }
+        assert!(matches!(play.submit(), Some(Effect::Clear)));
+        let score = play.round.score();
+        let attempt = play.attempt;
+        assert!(score < WORD_GOAL);
+        play.finish();
+        let saved = serde_json::to_value(Play::Words(play).save()).unwrap();
+        let result = Play::load(key, Some(serde_json::from_value(saved).unwrap()));
+        let (restored, outcome, metric) = result.result().unwrap();
+        assert!(restored == attempt);
+        assert_eq!(outcome, Outcome::Finished);
+        assert_eq!(metric, ResultMetric::Points(score.into()));
+    }
+
+    #[test]
     fn crossword_typing_steps_to_the_next_clue_and_keeps_marks() {
         let key = PuzzleKey {
             variant: Variant::Mini,
@@ -567,9 +740,9 @@ mod tests {
         let Play::Crossword(mut play) = Play::load(key, None) else {
             panic!("expected a grid");
         };
-        for letter in "car".chars() {
-            play.type_letter(letter);
-        }
+        assert!(play.type_letter('c').is_none());
+        assert!(play.type_letter('a').is_none());
+        assert!(matches!(play.type_letter('r'), Some(Effect::Clear)));
         assert_eq!(play.cursor, 3);
         play.check();
         assert_eq!(play.checked, 1 << 2);
@@ -583,5 +756,38 @@ mod tests {
         restored.hint();
         assert_eq!(restored.board.hinted_squares(), 1 << 3);
         assert_eq!(restored.checked, 1 << 2);
+    }
+
+    #[test]
+    fn crossword_records_letter_moves_and_skips_the_revealed_solution() {
+        let key = PuzzleKey {
+            variant: Variant::Mini,
+            source: Source::Collection(0),
+        };
+        let Play::Crossword(mut play) = Play::load(key, None) else {
+            panic!("expected a grid");
+        };
+        for letter in "CATOREDE".chars() {
+            play.type_letter(letter);
+        }
+        let attempt = play.attempt;
+        let saved = serde_json::to_value(Play::Crossword(play).save()).unwrap();
+        let Play::Crossword(mut restored) =
+            Play::load(key, Some(serde_json::from_value(saved).unwrap()))
+        else {
+            panic!("expected a grid");
+        };
+        restored.type_letter('N');
+        let (restored_attempt, outcome, metric) = Play::Crossword(restored).result().unwrap();
+        assert!(restored_attempt == attempt);
+        assert_eq!(outcome, Outcome::Won);
+        assert_eq!(metric, ResultMetric::Moves(9));
+
+        let Play::Crossword(mut replay) = Play::load(key, None) else {
+            panic!("expected a grid");
+        };
+        assert!(replay.attempt != attempt);
+        replay.board.reveal();
+        assert!(Play::Crossword(replay).result().is_none());
     }
 }

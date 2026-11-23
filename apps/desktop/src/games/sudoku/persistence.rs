@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use corner_table_sudoku::{Difficulty, Edit, Format};
 use serde::{Deserialize, Serialize};
 
-use super::{GameEntry, GameLaunch, Puzzle, Round, Session, utc_day};
+use super::{AttemptId, GameEntry, GameLaunch, Puzzle, Round, Session, utc_day};
 
 const SAVED_UNDO_LIMIT: usize = 128;
 
@@ -108,6 +108,10 @@ struct SavedRound<Values, Notes> {
     hint_open: bool,
     hints_used: u32,
     best: Option<u32>,
+    #[serde(default)]
+    attempt: AttemptId,
+    #[serde(default)]
+    moves: Option<u64>,
 }
 
 impl Round {
@@ -137,7 +141,8 @@ impl Round {
             &saved.notes,
             saved
                 .edits
-                .into_iter()
+                .iter()
+                .copied()
                 .map(|(index, digit, note)| Edit { index, digit, note }),
         ) {
             return None;
@@ -149,7 +154,24 @@ impl Round {
         round.note_mode = saved.note_mode;
         round.hints_used = saved.hints_used;
         round.best = saved.best;
-        round.record_result();
+        round.attempt = saved.attempt;
+        round.moves = saved.moves.unwrap_or_else(|| {
+            let mut values = saved.values;
+            let placed = values
+                .iter()
+                .enumerate()
+                .filter(|&(index, &value)| value != 0 && !round.game.is_given(index))
+                .count();
+            let edits = saved
+                .edits
+                .into_iter()
+                .filter(|&(index, digit, note)| {
+                    (!note || digit == 0) && std::mem::replace(&mut values[index], digit) != digit
+                })
+                .count();
+            (placed + edits) as u64
+        });
+        round.update_best();
         round.hint = saved
             .hint_cell
             .filter(|&index| index < cells && round.hints_used > 0)
@@ -174,6 +196,8 @@ impl Round {
             hint_open: self.hint_open,
             hints_used: self.hints_used,
             best: self.best,
+            attempt: self.attempt,
+            moves: Some(self.moves),
         }
     }
 
@@ -185,6 +209,7 @@ impl Round {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::Effect;
 
     fn decoded(round: &Round) -> SavedRound<Vec<u8>, Vec<u16>> {
         serde_json::from_slice(&serde_json::to_vec(&round.saved()).unwrap()).unwrap()
@@ -196,7 +221,7 @@ mod tests {
         let mut round = Round::new(puzzle, 173);
         let index = round.selected;
         round.note_mode = true;
-        round.edit(6, true);
+        assert!(round.edit(6, true).is_none());
         round.show_hint();
         let hint = round.visible_hint().unwrap();
         round.hint_open = false;
@@ -210,7 +235,8 @@ mod tests {
         restored.show_hint();
         assert_eq!(restored.visible_hint(), Some(hint));
         assert_eq!(restored.hints_used, 1);
-        restored.undo();
+        assert!(restored.undo().is_none());
+        assert_eq!(restored.moves, 0);
         assert_eq!(restored.game.notes(index), 0);
         assert_eq!(restored.hints_used, 1);
     }
@@ -219,20 +245,43 @@ mod tests {
     fn keeps_a_clean_daily_result_after_reload_and_undo() {
         let puzzle = Puzzle::Daily(20_000);
         let mut round = Round::new(puzzle, 0);
+        let mut effect = None;
         while let Some(hint) = round.game.hint(round.selected) {
             round.selected = hint.index;
-            round.edit(hint.entry(), false);
+            effect = round.edit(hint.entry(), false);
         }
         assert!(round.game.is_solved());
+        assert!(matches!(effect, Some(Effect::Complete)));
 
         let mut restored = Round::restore(puzzle, decoded(&round)).unwrap();
         assert!(restored.game.is_solved());
+        assert!(restored.attempt == round.attempt);
+        assert_eq!(restored.moves, round.moves);
         assert_eq!(restored.best, Some(0));
-        restored.undo();
+        assert!(matches!(restored.undo(), Some(Effect::Move)));
         assert!(!restored.game.is_solved());
         assert_eq!(restored.best, Some(0));
         assert!(Round::restore(Puzzle::Daily(20_001), decoded(&round)).is_none());
         assert!(Round::restore(Puzzle::Challenge(20_001), decoded(&round)).is_none());
+    }
+
+    #[test]
+    fn legacy_move_count_includes_value_edits_and_skips_notes() {
+        let puzzle = Puzzle::Practice(Format::Mini, Difficulty::Hard);
+        let mut round = Round::new(puzzle, 173);
+        round.edit(1, true);
+        round.edit(0, false);
+        round.edit(1, false);
+        round.edit(2, false);
+        round.edit(0, false);
+        let mut saved = serde_json::to_value(round.saved()).unwrap();
+        saved.as_object_mut().unwrap().remove("attempt");
+        saved.as_object_mut().unwrap().remove("moves");
+        let restored = Round::restore(puzzle, serde_json::from_value(saved).unwrap()).unwrap();
+
+        assert_eq!(restored.moves, 3);
+        assert_eq!(restored.moves, round.moves);
+        assert_eq!(restored.game.value(round.selected), 0);
     }
 
     #[test]

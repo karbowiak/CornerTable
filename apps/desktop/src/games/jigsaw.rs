@@ -12,7 +12,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::storage::Session;
+use crate::storage::{AttemptId, Outcome, ResultMetric, Session};
 use crate::theme as t;
 
 use super::{GameLaunch, board_space, themed_control};
@@ -108,6 +108,9 @@ struct Round {
     swap: Puzzle,
     assembly_deal: u64,
     swap_deal: u64,
+    assembly_attempt: AttemptId,
+    swap_attempt: AttemptId,
+    assembly_moves: u64,
     tray: Tray,
 }
 
@@ -118,6 +121,9 @@ impl Round {
             swap: Puzzle::with_size(size, seed),
             assembly_deal: seed,
             swap_deal: seed,
+            assembly_attempt: AttemptId::default(),
+            swap_attempt: AttemptId::default(),
+            assembly_moves: 0,
             tray: Tray::default(),
         }
     }
@@ -236,11 +242,14 @@ impl GameView {
             Mode::Assemble => {
                 round.assembly = Assembly::new(size, seed);
                 round.assembly_deal = seed;
+                round.assembly_attempt = AttemptId::default();
+                round.assembly_moves = 0;
                 round.tray = Tray::default();
             }
             Mode::Swap => {
                 round.swap = Puzzle::with_size(size, seed);
                 round.swap_deal = seed;
+                round.swap_attempt = AttemptId::default();
             }
         }
         self.save();
@@ -252,6 +261,24 @@ impl GameView {
 
     fn is_complete(&self) -> bool {
         self.placed_count() == self.key.size.piece_count()
+    }
+
+    fn record_win(&self) {
+        let round = self.round();
+        let (attempt, mode, moves) = match self.mode {
+            Mode::Assemble => (round.assembly_attempt, "Assemble", round.assembly_moves),
+            Mode::Swap => (round.swap_attempt, "Swap", round.swap.moves() as u64),
+        };
+        self.storage.record_result(
+            attempt,
+            format!(
+                "{mode} · {} · {} pieces",
+                self.painting().title,
+                self.key.size.piece_count()
+            ),
+            Outcome::Won,
+            ResultMetric::Moves(moves),
+        );
     }
 
     fn reference(&self) -> Reference {
@@ -348,7 +375,7 @@ impl GameView {
                                 can_undo,
                                 |button| {
                                     button.on_click(cx.listener(move |view, _, _, cx| {
-                                        view.undo_placement(tray_layout.capacity());
+                                        view.undo_placement(tray_layout.capacity(), cx);
                                         cx.notify();
                                     }))
                                 },

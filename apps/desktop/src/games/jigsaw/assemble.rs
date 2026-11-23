@@ -6,7 +6,10 @@ use gpui::{
     Window, canvas, div, img, point, prelude::*, px, rgb, rgba,
 };
 
-use crate::theme as t;
+use crate::{
+    audio::{self, Effect},
+    theme as t,
+};
 
 use super::artwork::PieceArt;
 use super::{
@@ -107,7 +110,7 @@ impl GameView {
         }
     }
 
-    pub(super) fn undo_placement(&mut self, capacity: usize) {
+    pub(super) fn undo_placement(&mut self, capacity: usize, cx: &Context<Self>) {
         let round = self.round_mut();
         let Some(piece) = round.assembly.undo() else {
             return;
@@ -127,6 +130,7 @@ impl GameView {
         tray.hint = None;
         tray.missed = None;
         self.save();
+        audio::play(cx, Effect::Move);
     }
 
     fn select_piece(&mut self, piece: usize) {
@@ -156,7 +160,7 @@ impl GameView {
         }
     }
 
-    fn try_place(&mut self, piece: usize, target: usize) -> Placement {
+    fn try_place(&mut self, piece: usize, target: usize, cx: &Context<Self>) -> Placement {
         let round = self.round_mut();
         let tray = &mut round.tray;
         let result = round.assembly.place(piece, target);
@@ -168,13 +172,21 @@ impl GameView {
                 tray.selected = Some(piece);
                 tray.missed = Some(target);
                 tray.cursor = target;
+                audio::play(cx, Effect::InvalidMove);
             }
             Placement::Placed | Placement::Completed => {
+                round.assembly_moves = round.assembly_moves.saturating_add(1);
                 tray.selected = None;
                 tray.hint = None;
                 tray.missed = None;
                 tray.cursor = target;
                 self.save();
+                if result == Placement::Completed {
+                    self.record_win();
+                    audio::play(cx, Effect::Complete);
+                } else {
+                    audio::play(cx, Effect::Move);
+                }
             }
             Placement::Ignored => {}
         }
@@ -200,10 +212,12 @@ impl GameView {
             "up" => row.saturating_sub(1) * columns + column,
             "down" => (row + 1).min(rows - 1) * columns + column,
             "enter" | "space" => {
-                if matches!(
-                    self.try_place(piece, cursor),
-                    Placement::Placed | Placement::Completed
-                ) {
+                if !event.is_held
+                    && matches!(
+                        self.try_place(piece, cursor, cx),
+                        Placement::Placed | Placement::Completed
+                    )
+                {
                     self.focus_tray(capacity, window, cx);
                 }
                 cx.notify();
@@ -368,7 +382,7 @@ impl GameView {
                                 .hover(|style| style.bg(rgba(0xfffcf514)))
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     if let Some(piece) = view.round().tray.selected {
-                                        view.try_place(piece, target);
+                                        view.try_place(piece, target, cx);
                                         cx.notify();
                                     }
                                 }))
@@ -379,7 +393,7 @@ impl GameView {
                                 && view.key == drag.key
                                 && view.round().assembly_deal == drag.deal
                             {
-                                view.try_place(drag.piece, target);
+                                view.try_place(drag.piece, target, cx);
                                 cx.notify();
                             }
                         }))

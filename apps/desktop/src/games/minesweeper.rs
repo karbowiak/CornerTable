@@ -9,12 +9,14 @@ use gpui::{
 };
 
 use crate::{
+    audio::{self, Effect},
+    daily,
     games::{GameEntry, GameLaunch, themed_control},
-    storage::Session,
+    storage::{Outcome, ResultMetric, Session},
     theme as t,
 };
 
-use self::session::{Bests, Mode, Round, SavedGame};
+use self::session::{Bests, Mode, Round, SavedGame, milliseconds};
 
 const CELL_GAP: f32 = 2.;
 const FIELD_INSET: f32 = 10.;
@@ -51,6 +53,7 @@ pub struct GameView {
     round: Round,
     bests: Bests,
     challenge_seed: Option<u64>,
+    challenge_label: Option<String>,
     clock: Clock,
     clock_task: Option<Task<()>>,
     generation_task: Option<Task<()>>,
@@ -64,6 +67,12 @@ impl GameView {
             GameEntry::Challenge(id) => Some(stable_seed(id)),
             _ => None,
         };
+        let challenge_label = challenge_seed.map(|_| {
+            daily::from_launch(launch).map_or_else(
+                || "Challenge".to_owned(),
+                |puzzle| format!("Daily {}", puzzle.date),
+            )
+        });
         let storage = Session::new(launch);
         let (round, elapsed, bests) = storage
             .load::<SavedGame>()
@@ -84,6 +93,7 @@ impl GameView {
             round,
             bests,
             challenge_seed,
+            challenge_label,
             clock: Clock::Ready,
             clock_task: None,
             generation_task: None,
@@ -197,6 +207,7 @@ impl GameView {
                     view.play((x, y), Move::Reveal, cx);
                 } else {
                     view.generation_failed = true;
+                    audio::play(cx, Effect::InvalidMove);
                 }
                 cx.notify();
             });
@@ -207,14 +218,23 @@ impl GameView {
         let started = Instant::now();
         let board = &mut self.round.board;
         let previous = board.status();
+        let tile = board.tile(x, y);
         let changed = match action {
             Move::Flag => board.toggle_flag(x, y),
-            Move::Reveal if matches!(board.tile(x, y), Some(Tile::Open(_))) => board.chord(x, y),
+            Move::Reveal if matches!(tile, Some(Tile::Open(_))) => board.chord(x, y),
             Move::Reveal => board.reveal(x, y),
         };
         if !changed {
+            if matches!(action, Move::Reveal)
+                && !matches!(previous, Status::Won | Status::Lost)
+                && (tile == Some(Tile::Flagged)
+                    || (tile == Some(Tile::Covered) && board.required_opening().is_some()))
+            {
+                audio::play(cx, Effect::InvalidMove);
+            }
             return;
         }
+        let mut result = None;
         match board.status() {
             Status::Playing if previous == Status::Ready => {
                 self.start_clock(started, Duration::ZERO, cx)
@@ -230,10 +250,40 @@ impl GameView {
                 if self.challenge_seed.is_none() {
                     self.bests.record(&self.round, elapsed);
                 }
+                result = self
+                    .round
+                    .outcome(elapsed)
+                    .map(|outcome| (outcome, elapsed));
             }
             _ => {}
         }
         self.save();
+        let effect = if let Some((outcome, elapsed)) = result {
+            self.storage.record_result(
+                self.round.attempt,
+                self.result_mode(),
+                outcome,
+                ResultMetric::TimeMillis(milliseconds(elapsed)),
+            );
+            if outcome == Outcome::Won {
+                Effect::Complete
+            } else {
+                Effect::Move
+            }
+        } else {
+            Effect::Move
+        };
+        audio::play(cx, effect);
+    }
+
+    fn result_mode(&self) -> String {
+        let mode = self
+            .challenge_label
+            .as_deref()
+            .unwrap_or(self.round.mode.label());
+        let difficulty = self.round.board.difficulty().label();
+        let replay = if self.round.replay { " · Replay" } else { "" };
+        format!("{difficulty} · {mode}{replay}")
     }
 
     fn select_and_play(
