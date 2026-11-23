@@ -14,6 +14,8 @@ corner-table-api = { path = "../../crates/api" }
 corner-table-block-puzzle = { path = "../../games/block-puzzle" }
 corner-table-bubble-shooter = { path = "../../games/bubble-shooter" }
 corner-table-checkers = { path = "../../games/checkers" }
+corner-table-chess = { path = "../../games/chess" }
+corner-table-dominoes = { path = "../../games/dominoes" }
 corner-table-gem-cascade = { path = "../../games/gem-cascade" }
 corner-table-hearts = { path = "../../games/hearts" }
 corner-table-jigsaw = { path = "../../games/jigsaw" }

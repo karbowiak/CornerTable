@@ -6,6 +6,8 @@ members = [
     "games/block-puzzle",
     "games/bubble-shooter",
     "games/checkers",
+    "games/chess",
+    "games/dominoes",
     "games/gem-cascade",
     "games/hearts",
     "games/jigsaw",

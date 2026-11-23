@@ -3,6 +3,8 @@
 mod block_puzzle;
 mod bubble_shooter;
 mod checkers;
+pub(crate) mod chess;
+mod dominoes;
 mod gem_cascade;
 mod hearts;
 mod host;
@@ -66,6 +68,8 @@ pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
             .new(|cx| bubble_shooter::GameView::new(launch, cx))
             .into(),
         "checkers" => cx.new(|cx| checkers::GameView::new(launch, cx)).into(),
+        "chess" => cx.new(|cx| chess::GameView::new(launch, cx)).into(),
+        "dominoes" => cx.new(|cx| dominoes::GameView::new(launch, cx)).into(),
         "gem-cascade" => cx.new(|cx| gem_cascade::GameView::new(launch, cx)).into(),
         "hearts" => cx.new(|cx| hearts::GameView::new(launch, cx)).into(),
         "jigsaw" => cx.new(|cx| jigsaw::GameView::new(launch, cx)).into(),

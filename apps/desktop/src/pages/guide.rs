@@ -274,6 +274,14 @@ impl Guide {
                     ),
                 ],
             },
+            "chess" => Self {
+                title: "Chess",
+                sections: crate::games::chess::GUIDE_SECTIONS,
+            },
+            "dominoes" => Self {
+                title: "Dominoes",
+                sections: corner_table_dominoes::GUIDE_SECTIONS,
+            },
             "gem-cascade" => Self {
                 title: "Gem Cascade",
                 sections: &[
@@ -518,6 +526,10 @@ impl Guide {
                     (
                         "Mini Crossword",
                         "Click a clue or square and type. Move with the arrows and switch between Across and Down with Space. Enter checks letters and Backspace erases. Fill all nine squares correctly to solve it. Use Reveal solution if stuck. New puzzle starts a fresh round in any mode.",
+                    ),
+                    (
+                        "Word Search",
+                        "Find each listed word in a straight line. Drag between its first and last letters in either direction, or click both endpoints. On the keyboard, move with the arrows and press Space or Enter at each end. Press H for a first-letter hint.",
                     ),
                 ],
             },

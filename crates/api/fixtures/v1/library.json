@@ -1,11 +1,11 @@
 {
   "games": [
-    {"id": "solitaire", "title": "Solitaire", "description": "Five ways to clear a deck, from Klondike to TriPeaks.", "category": "cards", "search_terms": ["draw one", "draw three", "patience"]},
+    {"id": "solitaire", "title": "Solitaire", "description": "Five ways to clear a deck, from Klondike to TriPeaks.", "category": "cards", "search_terms": ["draw one", "draw three", "verified", "patience"]},
     {"id": "mahjong", "title": "Mahjong", "description": "Match pairs of free tiles and clear layered boards.", "category": "puzzles", "search_terms": ["tiles", "mahjongg", "shanghai"]},
     {"id": "minesweeper", "title": "Minesweeper", "description": "Read the number clues and uncover the safe squares.", "category": "puzzles", "search_terms": ["minefield", "logic", "flags"]},
     {"id": "sudoku", "title": "Sudoku", "description": "Fill the grid one deduction at a time.", "category": "puzzles", "search_terms": ["numbers", "logic", "mini", "pencil marks"]},
     {"id": "jigsaw", "title": "Jigsaw", "description": "Piece together landscapes, illustrations, and photographs.", "category": "puzzles", "search_terms": ["photo", "picture", "assemble", "swap"]},
-    {"id": "word-games", "title": "Word Games", "description": "Find words in a grid, rearrange letter tiles, or solve a crossword.", "category": "puzzles", "search_terms": ["letter rack", "letter grove", "mini crossword", "anagram"]},
+    {"id": "word-games", "title": "Word Games", "description": "Find hidden words, rearrange letter tiles, or solve a crossword.", "category": "puzzles", "search_terms": ["letter rack", "letter grove", "mini crossword", "word search", "anagram"]},
     {"id": "match-three", "title": "Match Three", "description": "Line up gems and set off chains across the board.", "category": "arcade", "search_terms": ["match 3", "jewels", "swap"]},
     {"id": "bubble-shooter", "title": "Bubble Shooter", "description": "Bank shots off the walls and clear clusters of bubbles.", "category": "arcade", "search_terms": ["aim", "bank shot", "bubble pop"]},
     {"id": "mine-trails", "title": "Mine Trails", "description": "Follow number clues through a network of underground rooms.", "category": "puzzles", "search_terms": ["minefield", "exploration", "logic"]},
@@ -17,7 +17,9 @@
     {"id": "hearts", "title": "Hearts", "description": "Play a four-player trick-taking game and keep penalty cards out of your pile.", "category": "cards", "search_terms": ["tricks", "queen of spades", "shoot the moon"]},
     {"id": "picture-logic", "title": "Picture Logic", "description": "Follow numbered row and column clues to uncover a hidden picture.", "category": "puzzles", "search_terms": ["nonogram", "picross", "griddler", "pixel art"]},
     {"id": "memory-match", "title": "Memory Match", "description": "Turn over illustrated tidepool cards and find each matching pair.", "category": "cards", "search_terms": ["concentration", "pairs", "matching", "tidepool"]},
-    {"id": "kakuro", "title": "Kakuro", "description": "Fill crossing runs of digits so they add up to the clues.", "category": "puzzles", "search_terms": ["cross sums", "numbers", "logic"]}
+    {"id": "kakuro", "title": "Kakuro", "description": "Fill crossing runs of digits so they add up to the clues.", "category": "puzzles", "search_terms": ["cross sums", "numbers", "logic"]},
+    {"id": "dominoes", "title": "Dominoes", "description": "Match pips at either end of the chain and empty your hand.", "category": "board", "search_terms": ["double six", "draw dominoes", "boneyard", "hot seat"]},
+    {"id": "chess", "title": "Chess", "description": "Play a match against a friend or an offline computer opponent.", "category": "board", "search_terms": ["checkmate", "strategy", "hot seat", "two players"]}
   ],
   "solitaire_modes": [
     {"id": "klondike", "title": "Klondike", "description": "Build four foundations, starting with the aces."},
