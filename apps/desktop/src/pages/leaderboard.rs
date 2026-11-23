@@ -1,8 +1,12 @@
+use chrono::{DateTime, Local};
 use corner_table_api::{Period, Standing};
-use gpui::{Context, Div, FontWeight, div, prelude::*, px, rgb};
+use gpui::{Context, Div, FontWeight, Role, Stateful, div, prelude::*, px, rgb};
 
 use crate::app::{Action, Desktop, Page};
+use crate::storage::{self, GameResult, Outcome, ResultMetric};
 use crate::{theme as t, widgets};
+
+const RECENT_RESULTS: usize = 5;
 
 pub fn leaderboard(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
     let palette = t::colors(cx);
@@ -63,7 +67,13 @@ pub fn leaderboard(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 .items_center()
                 .justify_between()
                 .gap_2()
-                .child(t::display_type("Leaderboard", 36.))
+                .child(
+                    t::display_type("Leaderboard", 36.)
+                        .id("board-title")
+                        .role(Role::Heading)
+                        .aria_level(1)
+                        .aria_label("Leaderboard"),
+                )
                 .child(widgets::button(
                     "board-daily",
                     "View daily challenge",
@@ -72,20 +82,183 @@ pub fn leaderboard(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                     cx,
                 )),
         )
-        .child(filters(app, narrow, cx))
-        .child(table)
-        .children(guest_row.map(|entry| {
-            t::panel(cx).overflow_hidden().child(standing_row(
-                entry,
-                Some(&guest.initials),
-                palette,
-            ))
-        }))
+        .child(your_results(app, cx))
         .child(
             div()
-                .text_size(px(13.))
-                .text_color(rgb(palette.muted))
-                .child("Preview rankings · Sample data"),
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    t::display_type("Sample rankings", 23.)
+                        .id("board-sample-title")
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label("Sample rankings"),
+                )
+                .child(filters(app, narrow, cx))
+                .child(table)
+                .children(guest_row.map(|entry| {
+                    t::panel(cx).overflow_hidden().child(standing_row(
+                        entry,
+                        Some(&guest.initials),
+                        palette,
+                    ))
+                })),
+        )
+}
+
+fn your_results(app: &Desktop, cx: &Context<Desktop>) -> Div {
+    const EMPTY_HELP: &str = "Clear a Solitaire or Mahjong board, finish a Match Three stage, or complete a Gem Cascade run.";
+    let palette = t::colors(cx);
+    let recent = storage::recent_results(RECENT_RESULTS);
+    let panel = t::panel(cx).id("board-results").overflow_hidden();
+    let panel = if recent.is_empty() {
+        panel.child(
+            div()
+                .id("board-results-empty")
+                .role(Role::Label)
+                .aria_label("No results yet")
+                .aria_description(EMPTY_HELP)
+                .px_4()
+                .py_3()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("No results yet"),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(rgb(palette.muted))
+                        .child(EMPTY_HELP),
+                ),
+        )
+    } else {
+        panel
+            .role(Role::List)
+            .aria_label("Recent results saved on this device")
+            .children(recent.iter().enumerate().map(|(index, result)| {
+                let title = app
+                    .api
+                    .game(&result.game)
+                    .map_or(result.game.0.as_str(), |game| game.title.as_str());
+                result_row(index, result, title, palette).when(index > 0, |row| {
+                    row.border_t_1().border_color(rgb(palette.border))
+                })
+            }))
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .justify_between()
+                .gap_2()
+                .child(
+                    t::display_type("Your results", 23.)
+                        .id("board-results-title")
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label("Your results"),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(palette.muted))
+                        .child("Saved on this device"),
+                ),
+        )
+        .child(panel)
+}
+
+fn result_row(
+    index: usize,
+    result: &GameResult,
+    title: &str,
+    palette: t::Palette,
+) -> Stateful<Div> {
+    let (outcome, outcome_color) = match result.outcome {
+        Outcome::Won => ("Won", palette.success),
+        Outcome::Lost => ("Lost", palette.muted),
+        Outcome::Finished => ("Finished", palette.ink),
+    };
+    let (value, unit) = match result.metric {
+        ResultMetric::Moves(count) => (count, if count == 1 { "move" } else { "moves" }),
+        ResultMetric::Pairs(count) => (count, if count == 1 { "pair" } else { "pairs" }),
+        ResultMetric::Points(count) => (count, if count == 1 { "point" } else { "points" }),
+    };
+    let metric = format!("{} {unit}", format_score(value));
+    let date = DateTime::from_timestamp_millis(result.completed_at_ms).map_or_else(
+        || "Date unavailable".to_owned(),
+        |date| {
+            date.with_timezone(&Local)
+                .format("%-d %b %Y · %H:%M")
+                .to_string()
+        },
+    );
+    div()
+        .id(("board-result", index))
+        .role(Role::ListItem)
+        .aria_label(format!(
+            "{title}, {}, {outcome}, {metric}, {date}",
+            result.mode
+        ))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .px_4()
+        .py_2()
+        .line_height(px(18.))
+        .child(
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title.to_owned()),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(rgb(palette.muted))
+                        .child(result.mode.clone()),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap_2()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(div().text_color(rgb(outcome_color)).child(outcome))
+                        .child(div().text_color(rgb(palette.muted)).child("·"))
+                        .child(metric),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(palette.muted))
+                        .child(date),
+                ),
         )
 }
 
@@ -183,7 +356,7 @@ fn standing_row(entry: &Standing, guest: Option<&str>, palette: t::Palette) -> D
         colors[entry.rank.saturating_sub(1) as usize % colors.len()]
     };
     let player = if guest.is_some() {
-        format!("{} (you)", entry.name)
+        format!("{} (sample guest)", entry.name)
     } else {
         entry.name.clone()
     };

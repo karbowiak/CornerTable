@@ -1,9 +1,13 @@
 use corner_table_match_three::{Cell, Game, STAGES, Status};
 use serde::{Deserialize, Serialize};
 
+use crate::storage::AttemptId;
+
 #[derive(Default, Deserialize, Serialize)]
 struct StageSave {
     layout: u64,
+    #[serde(default)]
+    attempt: AttemptId,
     swaps: Vec<[usize; 2]>,
     cleared: bool,
     best_score: u32,
@@ -47,6 +51,7 @@ impl Journal {
         {
             // A changed ruleset or a damaged log can always return to a fresh deal.
             stage.swaps.clear();
+            stage.attempt = AttemptId::default();
             return self.deal();
         }
         game
@@ -58,7 +63,12 @@ impl Journal {
             stage.layout = stage.layout.wrapping_add(1);
         }
         stage.swaps.clear();
+        stage.attempt = AttemptId::default();
         self.deal()
+    }
+
+    pub fn attempt(&self) -> AttemptId {
+        self.stages[self.active].attempt
     }
 
     pub fn add_move(&mut self, first: usize, second: usize, game: &Game) {

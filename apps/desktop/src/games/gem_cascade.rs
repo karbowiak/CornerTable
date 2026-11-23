@@ -14,7 +14,7 @@ use gpui::{
 
 use crate::{
     games::{GameEntry, GameLaunch},
-    storage::Session,
+    storage::{Outcome, ResultMetric, Session},
     theme::{self as t, Palette},
 };
 
@@ -270,6 +270,14 @@ impl GameView {
             }
             Fall::Moved => self.motion = None,
             Fall::Locked(result) => {
+                if run.game.is_over() {
+                    self.session.record_result(
+                        run.record.attempt,
+                        self.mode.label(),
+                        Outcome::Finished,
+                        ResultMetric::Points(run.game.score().into()),
+                    );
+                }
                 if !cx.reduce_motion() {
                     let started = Instant::now();
                     if result.waves.is_empty() {

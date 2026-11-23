@@ -1,6 +1,8 @@
 use corner_table_gem_cascade::{Clear, Direction, Fall, Game, Rotation};
 use serde::{Deserialize, Serialize};
 
+use crate::storage::AttemptId;
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum Mode {
@@ -65,6 +67,8 @@ pub(super) struct Record {
     seed: u64,
     best: u32,
     moves: Vec<Move>,
+    #[serde(default)]
+    pub attempt: AttemptId,
 }
 
 pub(super) struct Run {
@@ -81,6 +85,7 @@ impl Run {
                 seed,
                 best: 0,
                 moves: Vec::new(),
+                attempt: AttemptId::default(),
             },
             last_scoring: Clear::default(),
         }
@@ -138,6 +143,7 @@ impl Run {
             self.game.restart();
         }
         self.record.moves.clear();
+        self.record.attempt = AttemptId::default();
         self.last_scoring = Clear::default();
     }
 }

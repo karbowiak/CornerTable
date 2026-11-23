@@ -11,7 +11,10 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 
 use super::{GameEntry, GameLaunch, themed_control};
-use crate::{storage::Session, theme};
+use crate::{
+    storage::{AttemptId, Outcome, ResultMetric, Session},
+    theme,
+};
 use table::{TableColors, TilePosition, face_name};
 
 const INSTRUCTION: &str = "Match two free tiles with the same face.";
@@ -27,6 +30,8 @@ const LAYOUTS: [(Layout, &str, &str); 4] = [
 struct SavedRound {
     layout: String,
     seed: u64,
+    #[serde(default)]
+    attempt: AttemptId,
     matches: Vec<[usize; 2]>,
     assisted: bool,
     clean_clear: bool,
@@ -41,6 +46,7 @@ pub struct GameView {
     board: Board,
     session: Option<Session>,
     seed: u64,
+    attempt: AttemptId,
     clean_clear: bool,
     highlighted: Option<[usize; 2]>,
     departure: Option<Departure>,
@@ -71,6 +77,7 @@ impl GameView {
             board: Board::new(seed),
             session,
             seed,
+            attempt: AttemptId::default(),
             clean_clear: false,
             highlighted: None,
             departure: None,
@@ -96,6 +103,7 @@ impl GameView {
         };
         self.board = board;
         self.seed = saved.seed;
+        self.attempt = saved.attempt;
         self.clean_clear = saved.clean_clear;
         self.status = self.idle_status("Deal resumed.").into();
     }
@@ -109,6 +117,7 @@ impl GameView {
             session.save(&SavedRound {
                 layout: key.into(),
                 seed: self.seed,
+                attempt: self.attempt,
                 matches: self.board.matched_pairs().to_vec(),
                 assisted: self.board.used_assistance(),
                 clean_clear: self.clean_clear,
@@ -165,6 +174,20 @@ impl GameView {
                     sequence: self.sequence,
                 });
                 self.cursor = self.nearest_tile(id, None);
+                if self.board.remaining() == 0
+                    && let Some(session) = &self.session
+                {
+                    let (_, _, layout) = LAYOUTS
+                        .into_iter()
+                        .find(|(layout, _, _)| *layout == self.board.layout())
+                        .expect("every layout has a title");
+                    session.record_result(
+                        self.attempt,
+                        layout,
+                        Outcome::Won,
+                        ResultMetric::Pairs(self.board.matched_pairs().len() as u64),
+                    );
+                }
                 self.save();
                 self.idle_status("Pair matched.").into()
             }
@@ -175,12 +198,14 @@ impl GameView {
     fn new_deal(&mut self, layout: Layout) {
         self.seed = new_seed();
         self.board = Board::with_layout(layout, self.seed);
+        self.attempt = AttemptId::default();
         self.reset_feedback();
         self.save();
     }
 
     fn restart(&mut self) {
         self.board.restart();
+        self.attempt = AttemptId::default();
         self.reset_feedback();
         self.save();
     }

@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     games::{GameEntry, GameLaunch},
-    storage::Session,
+    storage::{AttemptId, Outcome, ResultMetric, Session},
 };
+
+use super::mode_label;
 
 // Increment when a deal generator or move encoding changes incompatibly.
 const REPLAY_VERSION: u32 = 1;
@@ -66,6 +68,8 @@ struct SavedDeal {
     seed: u64,
     turns: Vec<Turn>,
     #[serde(default)]
+    attempt: AttemptId,
+    #[serde(default)]
     best_moves: Option<usize>,
 }
 
@@ -75,6 +79,7 @@ impl SavedDeal {
             version: REPLAY_VERSION,
             seed,
             turns: Vec::new(),
+            attempt: AttemptId::default(),
             best_moves: None,
         }
     }
@@ -130,6 +135,7 @@ impl Deal {
         self.game = Game::with_mode(self.game.mode(), seed);
         self.saved.seed = seed;
         self.saved.turns.clear();
+        self.saved.attempt = AttemptId::default();
         self.save();
     }
 
@@ -139,6 +145,21 @@ impl Deal {
         }
         self.saved.turns.push(Turn(action));
         self.saved.record_win(&self.game);
+        if self.game.won() {
+            let mode = self.game.mode();
+            let variant = self.game.variant;
+            let label = if variant.deal_modes().len() == 1 {
+                variant.title().to_owned()
+            } else {
+                format!("{} · {}", variant.title(), mode_label(mode))
+            };
+            self.session.record_result(
+                self.saved.attempt,
+                label,
+                Outcome::Won,
+                ResultMetric::Moves(self.game.moves as u64),
+            );
+        }
         self.save();
         true
     }

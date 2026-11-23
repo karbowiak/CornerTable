@@ -4,14 +4,17 @@ mod journal;
 
 use std::{cell::Cell as ValueCell, rc::Rc, time::Instant};
 
-use corner_table_match_three::{CELLS, Cell, Game, SIDE, Status, SwapError};
+use corner_table_match_three::{CELLS, Cell, Game, SIDE, STAGES, Status, SwapError};
 use gpui::{
     Bounds, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Role, Stateful, Window, canvas, div, prelude::*,
     px, rgb,
 };
 
-use crate::{storage::Session, theme as t};
+use crate::{
+    storage::{Outcome, ResultMetric, Session},
+    theme as t,
+};
 
 use super::{GameLaunch, board_space};
 use field::{Exchange, Motion, Scene};
@@ -189,6 +192,19 @@ impl GameView {
                     second.index().expect("field cell"),
                     &self.game,
                 );
+                let outcome = match self.game.status() {
+                    Status::Playing => None,
+                    Status::Won => Some(Outcome::Won),
+                    Status::Lost => Some(Outcome::Lost),
+                };
+                if let Some(outcome) = outcome {
+                    self.session.record_result(
+                        self.journal.attempt(),
+                        STAGES[self.journal.active].name,
+                        outcome,
+                        ResultMetric::Points(self.game.score().into()),
+                    );
+                }
                 self.session.save(&self.journal);
                 self.feedback = Feedback::Turn {
                     points: turn.points,
