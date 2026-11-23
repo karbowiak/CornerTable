@@ -1,0 +1,4 @@
+[package]
+name = "corner-table-dominoes"
+version.workspace = true
+edition.workspace = true
