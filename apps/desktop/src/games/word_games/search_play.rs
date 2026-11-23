@@ -1,4 +1,4 @@
-use corner_table_word_games::{SearchRejection, WordSearch};
+use corner_table_word_games::{SearchLine, SearchRejection, WordSearch};
 
 use super::state::{PuzzleKey, Saved, Source};
 use crate::{audio::Effect, storage::AttemptId};
@@ -20,6 +20,7 @@ pub(super) struct SearchPlay {
     pub moves: u64,
     pub notice: String,
     pub attempt: AttemptId,
+    pub latest_mark: Option<(usize, SearchLine)>,
 }
 
 impl SearchPlay {
@@ -38,6 +39,7 @@ impl SearchPlay {
             moves: 0,
             notice: String::new(),
             attempt: AttemptId::default(),
+            latest_mark: None,
         };
         if let Some(Saved::Search {
             found,
@@ -95,6 +97,7 @@ impl SearchPlay {
         self.pointer = None;
         self.anchor = None;
         self.notice.clear();
+        self.latest_mark = None;
     }
 
     pub fn move_cursor(&mut self, dx: isize, dy: isize) {
@@ -169,6 +172,7 @@ impl SearchPlay {
         self.moves = self.moves.saturating_add(1);
         let (notice, effect) = match result {
             Ok(index) => {
+                self.latest_mark = Some((index, SearchLine { start, end }));
                 if self.hint == Some(index) {
                     self.hint = None;
                 }

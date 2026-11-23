@@ -4,20 +4,22 @@ mod gallery;
 mod photos;
 mod progress;
 mod swap;
+#[cfg(test)]
+mod tests;
 
 use std::{borrow::Cow, collections::HashMap, path::Path, sync::Arc};
 
 use corner_table_jigsaw::{Assembly, Puzzle, Size, TrayFilter};
 use gpui::{
-    App, Context, Div, FocusHandle, FontWeight, ObjectFit, Render, Role, SharedString, Stateful,
-    Toggled, Window, div, img, prelude::*, px, rgb,
+    AnyElement, App, Context, Div, FocusHandle, FontWeight, ObjectFit, Render, Role, SharedString,
+    Stateful, Toggled, Window, div, img, prelude::*, px, rgb,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::storage::{AttemptId, Outcome, ResultMetric, Session};
 use crate::theme as t;
 
-use super::{GameLaunch, board_space, themed_control};
+use super::{GameLaunch, board_space, round_result, themed_control};
 use artwork::PieceArt;
 use assemble::TrayLayout;
 use gallery::Gallery;
@@ -27,6 +29,7 @@ const MAT: u32 = 0x25463e;
 const FRAME_PADDING: f32 = 10.;
 const WORKSPACE_GAP: f32 = 18.;
 const MAX_TABLE_WIDTH: f32 = 1092.;
+const RESULT_WIDTH: f32 = 276.;
 
 struct Painting {
     id: Cow<'static, str>,
@@ -194,9 +197,12 @@ pub struct GameView {
     mode: Mode,
     reference: Reference,
     confirm_restart: bool,
+    settling_piece: Option<usize>,
     board_focus: FocusHandle,
     piece_focus: Vec<FocusHandle>,
     all_pieces_focus: FocusHandle,
+    mode_focus: FocusHandle,
+    result_focus: FocusHandle,
 }
 
 impl GameView {
@@ -218,11 +224,14 @@ impl GameView {
             mode: Mode::Assemble,
             reference: Reference::Photo,
             confirm_restart: false,
+            settling_piece: None,
             board_focus: cx.focus_handle(),
             piece_focus: (0..Size::FortyEight.piece_count())
                 .map(|_| cx.focus_handle())
                 .collect(),
             all_pieces_focus: cx.focus_handle(),
+            mode_focus: cx.focus_handle().tab_stop(true),
+            result_focus: cx.focus_handle().tab_stop(true),
         };
         if let Some(saved) = saved {
             view.restore(saved);
@@ -251,6 +260,7 @@ impl GameView {
     fn choose(&mut self, key: PuzzleKey) {
         self.confirm_restart = false;
         if self.key != key {
+            self.settling_piece = None;
             self.key = key;
             self.artwork
                 .retain(|cached, _| cached.painting < GALLERY.len() || *cached == key);
@@ -291,6 +301,7 @@ impl GameView {
 
     fn restart(&mut self) {
         self.confirm_restart = false;
+        self.settling_piece = None;
         self.seed = self.seed.wrapping_add(1);
         let (size, seed) = (self.key.size, self.seed);
         let mode = self.mode;
@@ -367,16 +378,21 @@ impl GameView {
                             ]
                             .into_iter()
                             .map(|(mode, id, name)| {
-                                segment(id, name, mode == self.mode, cx).on_click(cx.listener(
-                                    move |view, _, _, cx| {
+                                segment(id, name, mode == self.mode, cx)
+                                    .debug_selector(|| id.into())
+                                    .when(mode == self.mode, |button| {
+                                        button.track_focus(&self.mode_focus)
+                                    })
+                                    .on_click(cx.listener(move |view, _, window, cx| {
                                         view.confirm_restart = false;
                                         if view.mode != mode {
                                             view.mode = mode;
+                                            view.settling_piece = None;
                                             view.save();
+                                            view.mode_focus.focus(window, cx);
                                         }
                                         cx.notify();
-                                    },
-                                ))
+                                    }))
                             }),
                         ),
                     )
@@ -443,10 +459,7 @@ impl GameView {
                         row.child(
                             action_button("jigsaw-restart", "Restart", true, cx)
                                 .when(self.confirm_restart, |button| {
-                                    button
-                                        .bg(rgb(t::GOLD))
-                                        .text_color(rgb(t::INK))
-                                        .hover(|style| style.bg(rgb(t::GOLD_HOVER)))
+                                    button.border_color(rgb(t::colors(cx).gold_text))
                                 })
                                 .on_click(cx.listener(|view, _, _, cx| {
                                     let progressed = match view.mode {
@@ -740,72 +753,98 @@ impl GameView {
             )
     }
 
-    fn completion(&self, width: f32, cx: &Context<Self>) -> Div {
-        let summary = match self.mode {
-            Mode::Assemble => match self.round().tray.hints_used {
-                0 => "No hints used".into(),
-                1 => "1 hint used".into(),
-                hints => format!("{hints} hints used"),
-            },
-            Mode::Swap => self.moves_text(),
+    fn next_picture(&self) -> Option<usize> {
+        let end = if self.key.painting < GALLERY.len() {
+            GALLERY.len()
+        } else {
+            GALLERY.len() + self.gallery.photos().len()
         };
-        let palette = t::colors(cx);
-        div()
-            .w(px(width))
-            .flex_none()
+        let next = self.key.painting + 1;
+        (next < end).then_some(next)
+    }
+
+    fn completion(&self, cx: &Context<Self>) -> AnyElement {
+        let round = self.round();
+        let (title, stat) = match self.mode {
+            Mode::Assemble => {
+                let hints = match round.tray.hints_used {
+                    0 => "no hints".into(),
+                    1 => "1 hint".into(),
+                    count => format!("{count} hints"),
+                };
+                (
+                    "Assembled",
+                    format!("{} placements · {hints}", round.assembly_moves),
+                )
+            }
+            Mode::Swap => ("Solved", self.moves_text()),
+        };
+        let actions = div()
             .flex()
             .flex_wrap()
-            .justify_between()
-            .items_center()
-            .gap_3()
-            .p_3()
-            .rounded_md()
-            .bg(rgb(palette.hover))
-            .border_1()
-            .border_color(rgb(palette.border))
+            .gap_2()
             .child(
-                div()
-                    .id("jigsaw-complete")
-                    .role(Role::Status)
-                    .aria_label(format!(
-                        "Picture complete. {} pieces. {summary}.",
-                        self.key.size.piece_count()
-                    ))
-                    .min_w_0()
-                    .child(t::display_type("Picture complete", 20.))
-                    .child(small_text(
-                        format!("{} pieces · {summary}", self.key.size.piece_count()),
-                        cx,
-                    )),
-            )
-            .child(
-                action_button("jigsaw-play-again", "Play again", true, cx).on_click(cx.listener(
-                    |view, _, _, cx| {
+                action_button("jigsaw-play-again", "Play again", true, cx)
+                    .track_focus(&self.result_focus)
+                    .border_color(rgb(t::colors(cx).gold_text))
+                    .on_click(cx.listener(|view, _, window, cx| {
                         view.restart();
+                        view.mode_focus.focus(window, cx);
                         cx.notify();
-                    },
-                )),
+                    })),
             )
+            .children(self.next_picture().map(|painting| {
+                action_button("jigsaw-next-picture", "Next picture", true, cx).on_click(
+                    cx.listener(move |view, _, window, cx| {
+                        view.gallery.reveal(painting);
+                        view.choose(PuzzleKey {
+                            painting,
+                            ..view.key
+                        });
+                        if view.is_complete() {
+                            view.result_focus.focus(window, cx);
+                        } else {
+                            view.mode_focus.focus(window, cx);
+                        }
+                        cx.notify();
+                    }),
+                )
+            }));
+        round_result(
+            cx,
+            "jigsaw-complete",
+            Outcome::Won,
+            title,
+            format!(
+                "{} · {} pieces · {stat}",
+                self.painting().title,
+                self.key.size.piece_count(),
+            ),
+            actions,
+        )
     }
 }
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.mode == Mode::Assemble && !self.artwork.contains_key(&self.key) {
+        let complete = self.is_complete();
+        if self.mode == Mode::Assemble && !complete && !self.artwork.contains_key(&self.key) {
             self.prepare_artwork(cx);
         }
 
         let available = board_space(window).min(MAX_TABLE_WIDTH - 34.);
         let wide = available >= 710.;
+        let side_by_side = wide || (complete && available >= 600.);
         let side_width = if wide {
             (available * 0.28).clamp(235., 288.)
         } else {
             176.
         };
+        let workspace_side_width = if complete { RESULT_WIDTH } else { side_width };
         let height = f32::from(window.viewport_size().height);
         let max_image_height = (height - 425.).clamp(240., 516.);
-        let max_board_width = if wide {
-            available - side_width - WORKSPACE_GAP
+        let max_board_width = if side_by_side {
+            available - workspace_side_width - WORKSPACE_GAP
         } else {
             available
         };
@@ -819,7 +858,6 @@ impl Render for GameView {
             available - side_width - WORKSPACE_GAP
         };
         let tray_layout = TrayLayout::new(tray_width, wide, height);
-        let complete = self.is_complete();
         let art = match self.artwork.get(&self.key) {
             Some(Artwork::Ready(pieces)) => Some(pieces.as_slice()),
             _ => None,
@@ -837,14 +875,16 @@ impl Render for GameView {
             _ => None,
         };
         let reference = (!complete).then(|| self.reference_panel(side_width, height, cx));
-        let side = if wide {
+        let side = if side_by_side {
             div()
+                .w(px(workspace_side_width))
+                .flex_none()
                 .flex()
                 .flex_col()
                 .gap_4()
                 .children(reference)
                 .children(tray)
-                .when(complete, |side| side.child(self.completion(side_width, cx)))
+                .when(complete, |side| side.child(self.completion(cx)))
         } else {
             div()
                 .flex()
@@ -867,7 +907,7 @@ impl Render for GameView {
             .child(
                 div()
                     .flex()
-                    .when(!wide, |layout| layout.flex_col())
+                    .when(!side_by_side, |layout| layout.flex_col())
                     .items_start()
                     .gap(px(WORKSPACE_GAP))
                     .child(
@@ -877,8 +917,8 @@ impl Render for GameView {
                             .flex_none()
                             .w(px(frame_width))
                             .gap_2()
-                            .when(complete && !wide, |column| {
-                                column.child(self.completion(frame_width, cx))
+                            .when(complete && !side_by_side, |column| {
+                                column.child(self.completion(cx))
                             })
                             .child(board)
                             .when(!complete, |column| {
@@ -887,7 +927,7 @@ impl Render for GameView {
                                     .child(self.board_footer(window, cx))
                             }),
                     )
-                    .when(wide || !complete, |layout| layout.child(side)),
+                    .when(side_by_side || !complete, |layout| layout.child(side)),
             )
     }
 }
@@ -962,5 +1002,7 @@ fn segment(
 }
 
 fn action_button(id: &'static str, name: &'static str, enabled: bool, cx: &App) -> Stateful<Div> {
-    themed_control(cx, id, name, enabled).min_h(px(34.))
+    themed_control(cx, id, name, enabled)
+        .debug_selector(|| id.into())
+        .min_h(px(34.))
 }

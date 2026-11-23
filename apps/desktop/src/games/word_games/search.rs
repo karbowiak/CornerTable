@@ -1,16 +1,16 @@
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use corner_table_word_games::SearchLine;
 use gpui::{
-    Bounds, Context, Div, FontWeight, MouseButton, PathBuilder, Pixels, Point, Role, Stateful,
-    Window, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    Animation, AnimationExt, Bounds, Context, Div, FontWeight, MouseButton, PathBuilder, Pixels,
+    Point, Role, Stateful, Window, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
 };
 
 use super::{
-    Action, Button, GameView, board_space, button, caption, completion_actions, divider,
-    search_play::SearchPlay, state::Play, status,
+    Action, Button, GameView, button, caption, divider, search_play::SearchPlay, state::Play,
+    status,
 };
-use crate::theme as t;
+use crate::{motion, theme as t};
 
 const KEYBOARD: &str = "Arrows move. Space or Enter picks an end. Esc cancels.";
 
@@ -56,7 +56,13 @@ impl BoardColors {
 }
 
 impl GameView {
-    pub(super) fn search_key_down(&mut self, key: &str, held: bool, cx: &mut Context<Self>) {
+    pub(super) fn search_key_down(
+        &mut self,
+        key: &str,
+        held: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let was_finished = self.play().is_finished();
         let Play::Search(play) = self.play_mut() else {
             return;
@@ -82,16 +88,21 @@ impl GameView {
             _ => return,
         }
         if effect.is_some() {
-            self.save_action(was_finished, effect, cx);
+            self.save_action(was_finished, effect, window, cx);
         }
         cx.stop_propagation();
         cx.notify();
     }
 
-    pub(super) fn search(&self, play: &SearchPlay, window: &Window, cx: &Context<Self>) -> Div {
+    pub(super) fn search(
+        &self,
+        play: &SearchPlay,
+        content: f32,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
         let theme = play.board.theme();
         let colors = BoardColors::for_theme(t::colors(cx));
-        let content = (board_space(window) + 36.).min(1000.);
         let word_bank_width = (content - 490.).clamp(164., 320.);
         let stacked = content < 530.;
         let board_width = if stacked {
@@ -128,17 +139,17 @@ impl GameView {
                     .bg(rgb(colors.frame))
                     .child(self.search_grid(play, step, colors, window, cx)),
             )
-            .child(status(
-                &play.notice,
-                if play.board.complete() {
-                    "All words found."
-                } else if play.anchor.is_some() {
-                    "Choose the other end of the word."
-                } else {
-                    "Drag across a word or pick its two ends. Either direction works."
-                },
-                cx,
-            ));
+            .when(!play.board.complete(), |board| {
+                board.child(status(
+                    &play.notice,
+                    if play.anchor.is_some() {
+                        "Choose the other end of the word."
+                    } else {
+                        "Drag across a word or pick its two ends. Either direction works."
+                    },
+                    cx,
+                ))
+            });
         let list = self.search_word_bank(play, colors, compact, cx);
         let layout = div().flex().gap_3().items_start();
         if stacked {
@@ -171,12 +182,17 @@ impl GameView {
             .zip(end)
             .and_then(|(start, end)| SearchLine::between(side, start, end));
         let hinted = play.hint.map(|word| play.board.line(word).start);
+        let latest = play.latest_mark.filter(|_| motion::enabled(cx));
         let mut marks = (0..theme.words.len())
             .filter(|&index| play.board.found(index))
-            .map(|index| (play.board.line(index), colors.mark(index)))
+            .map(|index| {
+                let traced = latest.filter(|&(word, _)| word == index);
+                let line = traced.map_or_else(|| play.board.line(index), |(_, line)| line);
+                (line, colors.mark(index), traced.is_some())
+            })
             .collect::<Vec<_>>();
         if let Some(line) = preview {
-            marks.push((line, colors.active));
+            marks.push((line, colors.active, false));
         }
 
         let bounds = Rc::new(Cell::new(None));
@@ -184,12 +200,47 @@ impl GameView {
         let move_bounds = Rc::clone(&bounds);
         let up_bounds = Rc::clone(&bounds);
         let current_letter = char::from(play.board.letters()[play.cursor]);
+        let mark_progress = Rc::new(Cell::new(1.));
+        let paint_progress = Rc::clone(&mark_progress);
+        let highlights = canvas(
+            move |area, _, _| bounds.set(Some(area)),
+            move |area, (), window, _| {
+                for &(line, color, tracing) in &marks {
+                    let progress = if tracing { paint_progress.get() } else { 1. };
+                    paint_mark(line, color, area, step, side, progress, window);
+                }
+            },
+        )
+        .absolute()
+        .size_full();
+        let highlights = if let Some((word, _)) = latest {
+            highlights
+                .with_animation(
+                    ("word-search-found-mark", word),
+                    Animation::new(Duration::from_millis(230))
+                        .with_easing(|progress| 1. - (1. - progress).powi(3)),
+                    move |highlights, progress| {
+                        mark_progress.set(progress);
+                        highlights
+                    },
+                )
+                .into_any_element()
+        } else {
+            highlights.into_any_element()
+        };
         div()
             .id("word-search-grid")
+            .debug_selector(|| "word-search-grid".into())
             .role(Role::Grid)
             .aria_label(format!("{} word search", theme.title))
             .aria_description(format!(
-                "{KEYBOARD} H shows a hint. {current_letter}, row {}, column {}.",
+                "{}{} {current_letter}, row {}, column {}.",
+                if complete {
+                    "All words found. Arrows move."
+                } else {
+                    KEYBOARD
+                },
+                if complete { "" } else { " H shows a hint." },
                 play.cursor / side + 1,
                 play.cursor % side + 1,
             ))
@@ -246,30 +297,20 @@ impl GameView {
                     )
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(move |view, event: &gpui::MouseUpEvent, _, cx| {
+                        cx.listener(move |view, event: &gpui::MouseUpEvent, window, cx| {
                             view.search_release(
                                 hit(up_bounds.get(), event.position, step, side),
+                                window,
                                 cx,
                             );
                         }),
                     )
                     .on_mouse_up_out(
                         MouseButton::Left,
-                        cx.listener(|view, _, _, cx| view.search_release(None, cx)),
+                        cx.listener(|view, _, window, cx| view.search_release(None, window, cx)),
                     )
             })
-            .child(
-                canvas(
-                    move |area, _, _| bounds.set(Some(area)),
-                    move |area, (), window, _| {
-                        for &(line, color) in &marks {
-                            paint_mark(line, color, area, step, side, window);
-                        }
-                    },
-                )
-                .absolute()
-                .size_full(),
-            )
+            .child(highlights)
             .children(
                 play.board
                     .letters()
@@ -339,7 +380,7 @@ impl GameView {
             )
     }
 
-    fn search_release(&mut self, cell: Option<usize>, cx: &mut Context<Self>) {
+    fn search_release(&mut self, cell: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let Play::Search(play) = self.play_mut() else {
             return;
         };
@@ -349,7 +390,7 @@ impl GameView {
         let was_finished = play.board.complete();
         let effect = play.pointer_up(cell);
         if effect.is_some() {
-            self.save_action(was_finished, effect, cx);
+            self.save_action(was_finished, effect, window, cx);
         }
         cx.notify();
     }
@@ -457,25 +498,6 @@ impl GameView {
                     ),
             )
             .child(list)
-            .child(divider(cx))
-            .when(play.board.complete(), |panel| {
-                panel
-                    .child(t::display_type("Puzzle complete", 20.))
-                    .child(caption(
-                        format!(
-                            "{} moves · {} {} used",
-                            play.moves,
-                            play.hints_used,
-                            if play.hints_used == 1 {
-                                "hint"
-                            } else {
-                                "hints"
-                            }
-                        ),
-                        cx,
-                    ))
-                    .child(completion_actions(self.current, cx))
-            })
             .when(!play.board.complete(), |panel| {
                 let hint = play.hint.map(|index| {
                     let start = play.board.line(index).start;
@@ -491,6 +513,7 @@ impl GameView {
                     )
                 });
                 panel
+                    .child(divider(cx))
                     .child(div().flex().child(button(
                         "word-search-hint",
                         "First-letter hint",
@@ -530,6 +553,7 @@ fn paint_mark(
     area: Bounds<Pixels>,
     step: f32,
     side: usize,
+    progress: f32,
     window: &mut Window,
 ) {
     let center = |index| {
@@ -540,7 +564,7 @@ fn paint_mark(
             )
     };
     let start = center(line.start);
-    let end = center(line.end);
+    let end = start + (center(line.end) - start) * progress;
     let width = px(step * 0.67);
     let radius = width / 2.;
     let mut path = PathBuilder::stroke(width);

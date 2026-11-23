@@ -60,12 +60,18 @@ impl Render for DraggedTile {
 }
 
 impl GameView {
-    fn finish_selection(&mut self, selection: Selection, cx: &mut Context<Self>) {
+    fn finish_selection(
+        &mut self,
+        selection: Selection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match selection {
             Selection::Swapped | Selection::Completed => {
                 self.save();
                 if selection == Selection::Completed {
                     self.record_win();
+                    self.result_focus.focus(window, cx);
                     audio::play(cx, Effect::Complete);
                 } else {
                     audio::play(cx, Effect::Move);
@@ -92,6 +98,7 @@ impl GameView {
         let face = tile
             .render()
             .id(("jigsaw-tile", position))
+            .debug_selector(move || format!("jigsaw-tile-{position}"))
             .rounded_sm()
             .child(
                 div()
@@ -126,19 +133,19 @@ impl GameView {
                 },
                 |drag, _, _, cx| cx.new(|_| drag.clone()),
             )
-            .on_drop(cx.listener(move |view, dragged: &DraggedTile, _, cx| {
+            .on_drop(cx.listener(move |view, dragged: &DraggedTile, window, cx| {
                 if view.mode == Mode::Swap
                     && view.key == dragged.key
                     && view.round().swap_deal == dragged.deal
                     && view.round().swap.pieces().get(dragged.position) == Some(&dragged.tile.piece)
                 {
                     let selection = view.round_mut().swap.swap(dragged.position, position);
-                    view.finish_selection(selection, cx);
+                    view.finish_selection(selection, window, cx);
                 }
             }))
-            .on_click(cx.listener(move |view, _, _, cx| {
+            .on_click(cx.listener(move |view, _, window, cx| {
                 let selection = view.round_mut().swap.select(position);
-                view.finish_selection(selection, cx);
+                view.finish_selection(selection, window, cx);
             }))
     }
 

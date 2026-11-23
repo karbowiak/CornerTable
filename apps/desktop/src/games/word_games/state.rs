@@ -280,6 +280,8 @@ pub(super) enum Saved {
         attempt: AttemptId,
         #[serde(default)]
         moves: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correct_before_reveal: Option<usize>,
     },
     Search {
         found: Vec<String>,
@@ -307,6 +309,18 @@ pub(super) struct WordPlay {
 }
 
 impl WordPlay {
+    pub fn outcome(&self) -> Option<Outcome> {
+        self.round.finished().then(|| {
+            if self.round.score() >= WORD_GOAL
+                || self.round.found().len() == self.round.answer_count()
+            {
+                Outcome::Won
+            } else {
+                Outcome::Finished
+            }
+        })
+    }
+
     pub fn submit(&mut self) -> Option<Effect> {
         let candidate = self.round.candidate();
         let points = self.round.submit();
@@ -381,11 +395,25 @@ pub(super) struct CrosswordPlay {
     pub checked: u16,
     pub notice: String,
     pub confirm_reveal: bool,
+    pub correct_before_reveal: Option<usize>,
     attempt: AttemptId,
-    moves: u64,
+    pub moves: u64,
 }
 
 impl CrosswordPlay {
+    pub fn reveal(&mut self) {
+        if self.board.complete() {
+            return;
+        }
+        let filled = self.board.letters().iter().flatten().count();
+        let incorrect = self.board.incorrect_squares().count_ones() as usize;
+        let hinted = self.board.hinted_squares().count_ones() as usize;
+        self.correct_before_reveal = Some(filled - incorrect - hinted);
+        self.board.reveal();
+        self.checked = 0;
+        self.confirm_reveal = false;
+    }
+
     pub fn check(&mut self) {
         if self.board.complete() {
             return;
@@ -552,6 +580,7 @@ impl Play {
                 checked: 0,
                 notice: String::new(),
                 confirm_reveal: false,
+                correct_before_reveal: None,
                 attempt: AttemptId::default(),
                 moves: 0,
             };
@@ -564,6 +593,7 @@ impl Play {
                 checked,
                 attempt,
                 moves,
+                correct_before_reveal,
             }) = saved
             {
                 play.board.restore(&letters, hints, revealed);
@@ -573,6 +603,13 @@ impl Play {
                 play.attempt = attempt;
                 play.moves =
                     moves.unwrap_or_else(|| play.board.letters().iter().flatten().count() as u64);
+                if play.board.revealed() {
+                    play.correct_before_reveal = correct_before_reveal.filter(|&count| {
+                        count
+                            < play.board.letters().len()
+                                - play.board.hinted_squares().count_ones() as usize
+                    });
+                }
             }
             Self::Crossword(play)
         } else {
@@ -621,13 +658,11 @@ impl Play {
 
     pub fn result(&self) -> Option<(AttemptId, Outcome, ResultMetric)> {
         match self {
-            Self::Words(play) if play.round.finished() && play.round.score() > 0 => {
-                let score = play.round.score();
-                let won =
-                    score >= WORD_GOAL || play.round.found().len() == play.round.answer_count();
-                let outcome = if won { Outcome::Won } else { Outcome::Finished };
-                Some((play.attempt, outcome, ResultMetric::Points(score.into())))
-            }
+            Self::Words(play) if play.round.score() > 0 => Some((
+                play.attempt,
+                play.outcome()?,
+                ResultMetric::Points(play.round.score().into()),
+            )),
             Self::Crossword(play) if play.board.complete() && !play.board.revealed() => {
                 Some((play.attempt, Outcome::Won, ResultMetric::Moves(play.moves)))
             }
@@ -663,6 +698,7 @@ impl Play {
                 checked: play.checked,
                 attempt: play.attempt,
                 moves: Some(play.moves),
+                correct_before_reveal: play.correct_before_reveal,
             },
             Self::Search(play) => play.save(),
         }

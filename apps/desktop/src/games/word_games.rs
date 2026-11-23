@@ -1,21 +1,28 @@
 mod search;
 mod search_play;
 mod state;
+#[cfg(test)]
+mod tests;
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use corner_table_word_games::{WORD_BONUS, WORD_GOAL, WordSearch};
 use gpui::{
-    Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, Role, SharedString, Stateful,
-    Window, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgb,
+    Animation, AnimationExt, AnyElement, Context, Div, ElementId, FocusHandle, FontWeight,
+    KeyDownEvent, Role, SharedString, Stateful, Window, div, ease_out_quint, linear_color_stop,
+    linear_gradient, prelude::*, px, relative, rgb,
 };
 
 use self::state::{
     CrosswordPlay, Navigation, Play, PuzzleKey, Shelf, Source, Variant, WordPlay, plural, utc_day,
 };
-use super::{GameEntry, GameLaunch, board_space};
+use super::{GameEntry, GameLaunch, board_space, round_result};
 use crate::{
     audio::{self, Effect},
+    motion,
     storage::{Outcome, Session},
     theme as t,
 };
@@ -30,6 +37,11 @@ const HINT_EDGE: u32 = 0x376570;
 const ERROR_WASH: u32 = 0xf4d3c1;
 const ERROR_EDGE: u32 = 0x9b4c3e;
 const PAGE_SIZE: usize = 12;
+const MAX_WORD_WIDTH: f32 = 1000.;
+// Combined padding and borders around the board and its tray.
+const BOARD_PANEL_INSETS: f32 = 54.;
+const CROSSWORD_TILE: f32 = 57.;
+const CROSSWORD_SETTLE: Duration = Duration::from_millis(300);
 
 pub struct GameView {
     navigation: Navigation,
@@ -40,7 +52,10 @@ pub struct GameView {
     challenge: Option<u64>,
     picker: Option<usize>,
     focus: FocusHandle,
+    result_focus: FocusHandle,
     focus_on_open: bool,
+    animate_ledger: bool,
+    crossword_solved_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -90,7 +105,10 @@ impl GameView {
             challenge,
             picker: None,
             focus: cx.focus_handle().tab_stop(true),
+            result_focus: cx.focus_handle().tab_stop(true),
             focus_on_open: true,
+            animate_ledger: false,
+            crossword_solved_at: None,
         }
     }
 
@@ -114,14 +132,48 @@ impl GameView {
             .or_insert_with(|| load_puzzle(&self.launch, self.current));
         self.navigation_session.save(&self.navigation);
         self.picker = None;
+        self.animate_ledger = false;
+        self.crossword_solved_at = None;
     }
 
     fn save(&self) {
         puzzle_session(&self.launch, self.current).save(&self.play().save());
     }
 
-    fn save_action(&self, was_finished: bool, effect: Option<Effect>, cx: &Context<Self>) {
+    fn round_focus(&self) -> &FocusHandle {
+        if self.play().is_finished() {
+            &self.result_focus
+        } else {
+            &self.focus
+        }
+    }
+
+    fn save_action(
+        &mut self,
+        was_finished: bool,
+        effect: Option<Effect>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.save();
+        let finished = !was_finished && self.play().is_finished();
+        if matches!(effect, Some(Effect::Clear)) {
+            let animate = motion::enabled(cx);
+            match self.play_mut() {
+                Play::Words(_) => self.animate_ledger = animate,
+                Play::Search(play) if !animate => play.latest_mark = None,
+                _ => {}
+            }
+        }
+        if finished {
+            self.picker = None;
+            if matches!(self.play(), Play::Crossword(play) if !play.board.revealed())
+                && motion::enabled(cx)
+            {
+                self.crossword_solved_at = Some(Instant::now());
+            }
+            self.result_focus.focus(window, cx);
+        }
         let effect = if !was_finished && let Some((attempt, outcome, metric)) = self.play().result()
         {
             puzzle_session(&self.launch, self.current).record_result(
@@ -170,6 +222,9 @@ impl GameView {
             Action::Replay => {
                 self.puzzles
                     .insert(self.current, Play::load(self.current, None));
+                self.picker = None;
+                self.animate_ledger = false;
+                self.crossword_solved_at = None;
                 self.save();
             }
             Action::CrosswordSquare(index) => {
@@ -190,11 +245,11 @@ impl GameView {
                     Play::Search(play) if matches!(action, Action::SearchHint) => play.hint(),
                     Play::Search(_) => None,
                 };
-                self.save_action(was_finished, effect, cx);
+                self.save_action(was_finished, effect, window, cx);
             }
         }
         if !matches!(action, Action::TogglePicker | Action::PickerPage(_)) {
-            self.focus.focus(window, cx);
+            self.round_focus().focus(window, cx);
         }
         cx.notify();
     }
@@ -211,7 +266,7 @@ impl GameView {
         let key = key.key.as_str();
         let held = event.is_held;
         if self.current.variant == Variant::Search {
-            self.search_key_down(key, held, cx);
+            self.search_key_down(key, held, window, cx);
             return;
         }
         let was_finished = self.play().is_finished();
@@ -273,7 +328,7 @@ impl GameView {
             _ => false,
         };
         if handled {
-            self.save_action(was_finished, effect, cx);
+            self.save_action(was_finished, effect, window, cx);
             cx.stop_propagation();
             cx.notify();
         }
@@ -500,7 +555,87 @@ impl GameView {
             }))
     }
 
-    fn words(&self, play: &WordPlay, wide: bool, cx: &Context<Self>) -> Div {
+    fn summary(&self) -> Option<(Outcome, &'static str, String)> {
+        match self.play() {
+            Play::Words(play) => {
+                let outcome = play.outcome()?;
+                let score = play.round.score();
+                let words = play.round.found().len();
+                let title = if outcome == Outcome::Finished {
+                    "Round ended"
+                } else if words == play.round.answer_count() {
+                    "Every word found"
+                } else if score >= WORD_BONUS {
+                    "Bonus reached"
+                } else {
+                    "Goal reached"
+                };
+                let mut detail = format!(
+                    "{score} {} · {words} {} found",
+                    plural(score, "point", "points"),
+                    if words == 1 { "word" } else { "words" },
+                );
+                if outcome == Outcome::Finished {
+                    detail.push_str(&format!(" · Goal {WORD_GOAL} points"));
+                }
+                Some((outcome, title, detail))
+            }
+            Play::Crossword(play) if play.board.complete() => {
+                let hints = play.board.hinted_squares().count_ones();
+                let hints = format!("{hints} {} used", plural(hints, "hint", "hints"));
+                if play.board.revealed() {
+                    let side = play.board.size().side();
+                    let progress = play.correct_before_reveal.map_or_else(
+                        || format!("{side} × {side} grid"),
+                        |correct| {
+                            format!("{correct} of {} squares solved before reveal", side * side)
+                        },
+                    );
+                    Some((
+                        Outcome::Finished,
+                        "Solution shown",
+                        format!("{progress} · {hints}"),
+                    ))
+                } else {
+                    let moves = play.moves;
+                    let moves_label = if moves == 1 { "edit" } else { "edits" };
+                    Some((
+                        Outcome::Won,
+                        "Crossword solved",
+                        format!("{moves} {moves_label} · {hints}"),
+                    ))
+                }
+            }
+            Play::Search(play) if play.board.complete() => {
+                let words = play.board.found_count();
+                let moves = play.moves;
+                let hints = play.hints_used;
+                Some((
+                    Outcome::Won,
+                    "All words found",
+                    format!(
+                        "{words} words · {moves} moves · {hints} {} used",
+                        plural(hints, "hint", "hints")
+                    ),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    fn completion(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let (outcome, title, detail) = self.summary()?;
+        Some(round_result(
+            cx,
+            "word-round-result",
+            outcome,
+            title,
+            detail,
+            completion_actions(self.current, &self.result_focus, cx),
+        ))
+    }
+
+    fn words(&self, play: &WordPlay, available: f32, cx: &Context<Self>) -> Div {
         let variant = self.current.variant;
         let round = &play.round;
         let grove = variant == Variant::Grove;
@@ -514,6 +649,7 @@ impl GameView {
             .unwrap_or_default();
         let order = play.display_order();
         let size = if grove { 60. } else { 46. };
+        let columns = if grove { 4 } else { 7 };
         let board = self
             .tray(
                 if grove {
@@ -526,7 +662,7 @@ impl GameView {
             .flex()
             .flex_col()
             .gap_1p5()
-            .children(order.chunks(if grove { 4 } else { 7 }).map(|row| {
+            .children(order.chunks(columns).map(|row| {
                 div().flex().gap_1p5().children(row.iter().map(|&index| {
                     let chosen = round.selection().iter().position(|&tile| tile == index);
                     let hint = hint_path.iter().position(|&tile| tile == index);
@@ -574,13 +710,7 @@ impl GameView {
         } else {
             "Rearrange the tiles to make words. Use each tile once per word."
         };
-        let input = if finished {
-            format!(
-                "{} {}",
-                round.score(),
-                plural(round.score(), "point", "points")
-            )
-        } else if candidate.is_empty() {
+        let input = if candidate.is_empty() {
             "Type or tap letters".into()
         } else {
             candidate.clone()
@@ -592,7 +722,9 @@ impl GameView {
             .flex_wrap()
             .gap_1()
             .child(t::display_type(variant.title(), 23.))
-            .child(caption("3+ letters · Longer words score more", cx));
+            .when(!finished, |heading| {
+                heading.child(caption("3+ letters · Longer words score more", cx))
+            });
         let actions = div()
             .flex()
             .flex_wrap()
@@ -639,7 +771,7 @@ impl GameView {
             .flex_col()
             .gap_2()
             .child(heading)
-            .child(caption(instruction, cx))
+            .when(!finished, |panel| panel.child(caption(instruction, cx)))
             .child(
                 div()
                     .flex()
@@ -648,21 +780,24 @@ impl GameView {
                     .gap_2()
                     .py_1()
                     .child(board)
-                    .child(
-                        div()
-                            .id("word-entry")
-                            .role(Role::Status)
-                            .aria_label(input.clone())
-                            .text_color(rgb(if candidate.is_empty() && !finished {
-                                t::colors(cx).muted
-                            } else {
-                                t::colors(cx).ink
-                            }))
-                            .text_size(px(20.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(input),
-                    )
-                    .when(!finished, |board| board.child(actions)),
+                    .when(!finished, |board| {
+                        board
+                            .child(
+                                div()
+                                    .id("word-entry")
+                                    .role(Role::Status)
+                                    .aria_label(input.clone())
+                                    .text_color(rgb(if candidate.is_empty() {
+                                        t::colors(cx).muted
+                                    } else {
+                                        t::colors(cx).ink
+                                    }))
+                                    .text_size(px(20.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(input),
+                            )
+                            .child(actions)
+                    }),
             )
             .when(!finished, |panel| {
                 panel.child(status(
@@ -671,7 +806,8 @@ impl GameView {
                     cx,
                 ))
             });
-        layout(panel, self.score_panel(play, cx), wide)
+        let board_width = size * columns as f32 + 6. * (columns - 1) as f32;
+        layout(panel, self.score_panel(play, cx), available, board_width)
     }
 
     fn score_panel(&self, play: &WordPlay, cx: &Context<Self>) -> Div {
@@ -679,99 +815,84 @@ impl GameView {
         let round = &play.round;
         let score = round.score();
         let finished = round.finished();
-        let heading = if finished && score >= WORD_GOAL {
-            "Round complete"
-        } else if score >= WORD_BONUS {
-            "Bonus reached"
-        } else if score >= WORD_GOAL {
-            "Goal reached"
-        } else if finished {
-            "Round ended"
-        } else {
-            "Round score"
-        };
-        let mut panel = t::panel(cx)
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .gap_2()
-                    .child(t::display_type(heading, 20.))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::BOLD)
-                            .child(format!("{score} pts")),
-                    ),
-            )
-            .child(
-                div()
-                    .id("word-progress")
-                    .role(Role::ProgressIndicator)
-                    .aria_label(format!(
-                        "{score} {}. Goal {WORD_GOAL}. Bonus {WORD_BONUS}.",
-                        plural(score, "point", "points")
-                    ))
-                    .aria_numeric_value(f64::from(score.min(WORD_BONUS)))
-                    .aria_min_numeric_value(0.)
-                    .aria_max_numeric_value(f64::from(WORD_BONUS))
-                    .h(px(7.))
-                    .relative()
-                    .rounded_full()
-                    .overflow_hidden()
-                    .bg(rgb(palette.hover))
-                    .child(
-                        div()
-                            .h_full()
-                            .w(relative(score.min(WORD_BONUS) as f32 / WORD_BONUS as f32))
-                            .bg(rgb(t::GOLD)),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left(relative(WORD_GOAL as f32 / WORD_BONUS as f32))
-                            .h_full()
-                            .w(px(2.))
-                            .bg(rgb(palette.surface)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .gap_1()
-                    .child(caption(format!("Goal {WORD_GOAL}"), cx))
-                    .child(caption(format!("Bonus {WORD_BONUS}"), cx)),
-            );
-        if finished {
+        let panel = t::panel(cx).p_4().flex().flex_col().gap_2();
+        let panel = if finished {
             let mut missed: Vec<_> = round.familiar_remaining().collect();
             missed.sort_by_key(|word| (std::cmp::Reverse(word.len()), *word));
             missed.truncate(30);
-            panel = panel.child(completion_actions(self.current, cx)).when(
-                !missed.is_empty(),
-                |panel| {
-                    panel
+            panel.when(!missed.is_empty(), |panel| {
+                panel
+                    .child(t::display_type("More words you could make", 19.))
+                    .child(caption(missed.join(" · "), cx))
+            })
+        } else {
+            let heading = if score >= WORD_BONUS {
+                "Bonus reached"
+            } else if score >= WORD_GOAL {
+                "Goal reached"
+            } else {
+                "Round score"
+            };
+            let panel = panel
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .items_center()
+                        .gap_2()
+                        .child(t::display_type(heading, 20.))
                         .child(
                             div()
-                                .mt_1()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("More words you could make"),
+                                .font_weight(FontWeight::BOLD)
+                                .child(format!("{score} pts")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("word-progress")
+                        .role(Role::ProgressIndicator)
+                        .aria_label(format!(
+                            "{score} {}. Goal {WORD_GOAL}. Bonus {WORD_BONUS}.",
+                            plural(score, "point", "points")
+                        ))
+                        .aria_numeric_value(f64::from(score.min(WORD_BONUS)))
+                        .aria_min_numeric_value(0.)
+                        .aria_max_numeric_value(f64::from(WORD_BONUS))
+                        .h(px(7.))
+                        .relative()
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(rgb(palette.hover))
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(score.min(WORD_BONUS) as f32 / WORD_BONUS as f32))
+                                .bg(rgb(t::GOLD)),
                         )
-                        .child(caption(missed.join(" · "), cx))
-                },
-            );
-        } else {
+                        .child(
+                            div()
+                                .absolute()
+                                .left(relative(WORD_GOAL as f32 / WORD_BONUS as f32))
+                                .h_full()
+                                .w(px(2.))
+                                .bg(rgb(palette.surface)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .gap_1()
+                        .child(caption(format!("Goal {WORD_GOAL}"), cx))
+                        .child(caption(format!("Bonus {WORD_BONUS}"), cx)),
+                );
             let hint_ack = play.hint.as_ref();
             let hint_step = if hint_ack.is_some_and(|hint| hint.show_path) {
                 Button::Disabled
             } else {
                 Button::enabled(hint_ack.is_some() || round.hint_word().is_some())
             };
-            panel = panel
+            panel
                 .child(
                     div()
                         .flex()
@@ -829,22 +950,43 @@ impl GameView {
                         Action::CancelFinish,
                         cx,
                     ))
-                });
-        }
+                })
+        };
+        let animate_word = self.animate_ledger && motion::enabled(cx);
         let words = div()
             .id("word-ledger")
             .max_h(px(170.))
             .overflow_y_scroll()
-            .children(round.found().iter().rev().map(|(word, points)| {
-                divider(cx)
-                    .flex()
-                    .justify_between()
-                    .gap_1()
-                    .py_1p5()
-                    .text_size(px(13.))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(word.clone()))
-                    .child(caption(format!("+{points}"), cx))
-            }));
+            .children(
+                round
+                    .found()
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .map(|(index, (word, points))| {
+                        let row = divider(cx)
+                            .flex()
+                            .justify_between()
+                            .gap_1()
+                            .py_1p5()
+                            .text_size(px(13.))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(word.clone()))
+                            .child(caption(format!("+{points}"), cx));
+                        if animate_word && index + 1 == round.found().len() {
+                            row.with_animation(
+                                ("word-scored", index),
+                                Animation::new(Duration::from_millis(340))
+                                    .with_easing(ease_out_quint()),
+                                move |row, progress| {
+                                    row.bg(rgb(palette.success).opacity(0.32 * (1. - progress)))
+                                },
+                            )
+                            .into_any_element()
+                        } else {
+                            row.into_any_element()
+                        }
+                    }),
+            );
         panel
             .child(
                 divider(cx)
@@ -875,12 +1017,19 @@ impl GameView {
             .when(!round.found().is_empty(), |panel| panel.child(words))
     }
 
-    fn crossword(&self, play: &CrosswordPlay, wide: bool, cx: &Context<Self>) -> Div {
+    fn crossword(
+        &self,
+        play: &CrosswordPlay,
+        available: f32,
+        settle: f32,
+        cx: &Context<Self>,
+    ) -> Div {
         let board = &play.board;
         let size = board.size();
         let side = size.side();
         let line = size.line_at(play.cursor, play.down);
         let active = board.puzzle().clues(play.down)[line];
+        let solved = board.complete() && !board.revealed();
         let squares = self
             .tray("Crossword grid", cx)
             .flex()
@@ -906,7 +1055,22 @@ impl GameView {
                     };
                     let number = size.square_number(index);
                     let letter = board.letters()[index].map(char::from);
-                    material(("crossword-square", index), 57., face, face, edge)
+                    let square = material(
+                        ("crossword-square", index),
+                        CROSSWORD_TILE,
+                        face,
+                        face,
+                        edge,
+                    );
+                    square
+                        .when(solved && !hinted, |tile| {
+                            // Carry the set glaze across the board after the last letter lands.
+                            let delay = (row + column) as f32 / (2 * (side - 1)) as f32 * 0.38;
+                            let value = ((settle - delay) / 0.62).clamp(0., 1.);
+                            let value = 1. - (1. - value).powi(3);
+                            tile.bg(rgb(CERAMIC).blend(rgb(CLUE_WASH).opacity(value)))
+                                .border_color(rgb(WOOD_EDGE).blend(rgb(0x80976e).opacity(value)))
+                        })
                         .role(Role::GridCell)
                         .aria_selected(selected)
                         .aria_row_index(row)
@@ -1033,19 +1197,6 @@ impl GameView {
                     Action::CancelReveal,
                     cx,
                 ))
-            })
-            .when(board.complete(), |panel| {
-                let hints = board.hinted_squares().count_ones();
-                let message = if board.revealed() {
-                    "Solution shown".into()
-                } else if hints == 0 {
-                    "Crossword solved".into()
-                } else {
-                    format!("Solved with {hints} {}.", plural(hints, "hint", "hints"))
-                };
-                panel
-                    .child(t::display_type(message, 19.))
-                    .child(completion_actions(self.current, cx))
             });
         let clues =
             t::panel(cx)
@@ -1126,28 +1277,41 @@ impl GameView {
                             },
                         ))
                 }));
-        layout(panel, clues, wide)
+        let board_width = CROSSWORD_TILE * side as f32 + 4. * (side - 1) as f32;
+        layout(panel, clues, available, board_width)
     }
 }
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if std::mem::take(&mut self.focus_on_open) {
-            let focus = self.focus.clone();
+            let focus = self.round_focus().clone();
             window.on_next_frame(move |window, cx| focus.focus(window, cx));
         }
-        let wide = board_space(window) >= 740.;
+        let settle = self
+            .crossword_solved_at
+            .filter(|_| motion::enabled(cx))
+            .map_or(1., |started| {
+                started.elapsed().as_secs_f32() / CROSSWORD_SETTLE.as_secs_f32()
+            });
+        if settle < 1. {
+            window.request_animation_frame();
+        } else {
+            self.crossword_solved_at = None;
+        }
+        let available = (board_space(window) + 36.).min(MAX_WORD_WIDTH);
         div()
             .flex()
             .flex_col()
             .gap_3()
             .w_full()
-            .max_w(px(1000.))
+            .max_w(px(MAX_WORD_WIDTH))
             .child(self.selector(cx))
+            .children(self.completion(cx))
             .child(match self.play() {
-                Play::Words(play) => self.words(play, wide, cx),
-                Play::Crossword(play) => self.crossword(play, wide, cx),
-                Play::Search(play) => self.search(play, window, cx),
+                Play::Words(play) => self.words(play, available, cx),
+                Play::Crossword(play) => self.crossword(play, available, settle, cx),
+                Play::Search(play) => self.search(play, available, window, cx),
             })
     }
 }
@@ -1195,11 +1359,7 @@ fn act_crossword(play: &mut CrosswordPlay, action: Action) -> Option<Effect> {
         Action::HintSquare => return play.hint(),
         Action::RevealCrossword => play.confirm_reveal = true,
         Action::CancelReveal => play.confirm_reveal = false,
-        Action::ConfirmReveal => {
-            play.board.reveal();
-            play.checked = 0;
-            play.confirm_reveal = false;
-        }
+        Action::ConfirmReveal => play.reveal(),
         _ => {}
     }
     None
@@ -1234,12 +1394,13 @@ fn direction(down: bool) -> &'static str {
     if down { "Down" } else { "Across" }
 }
 
-fn layout(play: Div, aside: Div, wide: bool) -> Div {
+fn layout(play: Div, aside: Div, available: f32, board_width: f32) -> Div {
     let layout = div().flex().gap_3().items_start();
-    if wide {
+    let aside_width = (available - board_width - BOARD_PANEL_INSETS - 12.).min(320.);
+    if aside_width >= 224. {
         layout
             .child(play.flex_1())
-            .child(aside.w(px(320.)).flex_shrink_0())
+            .child(aside.w(px(aside_width)).flex_shrink_0())
     } else {
         layout.flex_col().child(play.w_full()).child(aside.w_full())
     }
@@ -1339,7 +1500,10 @@ fn confirm(
                 .flex()
                 .flex_wrap()
                 .gap_1()
-                .child(button("word-confirm", label, Button::Primary, yes, cx))
+                .child(
+                    button("word-confirm", label, Button::Primary, yes, cx)
+                        .debug_selector(|| "word-confirm".into()),
+                )
                 .child(button(
                     "word-cancel",
                     "Keep playing",
@@ -1350,11 +1514,12 @@ fn confirm(
         )
 }
 
-fn completion_actions(key: PuzzleKey, cx: &Context<GameView>) -> Div {
+fn completion_actions(key: PuzzleKey, focus: &FocusHandle, cx: &Context<GameView>) -> Div {
     let next = match key.source {
         Source::Collection(index) if index + 1 < key.variant.puzzle_count() => {
             Some(("Next puzzle", Action::Puzzle(index + 1)))
         }
+        Source::Collection(index) if index > 0 => Some(("First puzzle", Action::Puzzle(0))),
         Source::Daily(_) | Source::Challenge(_) => {
             Some(("Browse collection", Action::Shelf(Shelf::Collection)))
         }
@@ -1366,14 +1531,24 @@ fn completion_actions(key: PuzzleKey, cx: &Context<GameView>) -> Div {
         .gap_1()
         .children(next.map(|(label, action)| {
             button("word-complete-next", label, Button::Primary, action, cx)
+                .debug_selector(|| "word-complete-next".into())
+                .track_focus(focus)
         }))
-        .child(button(
-            "word-replay",
-            "Replay",
-            Button::Normal,
-            Action::Replay,
-            cx,
-        ))
+        .child(
+            button(
+                "word-replay",
+                "Replay",
+                if next.is_some() {
+                    Button::Normal
+                } else {
+                    Button::Primary
+                },
+                Action::Replay,
+                cx,
+            )
+            .debug_selector(|| "word-replay".into())
+            .when(next.is_none(), |button| button.track_focus(focus)),
+        )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

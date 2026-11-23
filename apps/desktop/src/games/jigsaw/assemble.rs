@@ -1,14 +1,15 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use corner_table_jigsaw::{OutlinePoint, Placement, TrayFilter};
 use gpui::{
-    Bounds, Context, Div, KeyDownEvent, ObjectFit, PathBuilder, Pixels, Rgba, Role, Stateful,
-    Window, canvas, div, img, point, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt, Bounds, Context, Div, Img, KeyDownEvent, ObjectFit, PathBuilder,
+    Pixels, Rgba, Role, Stateful, Window, canvas, div, ease_out_quint, img, point, prelude::*, px,
+    rgb, rgba,
 };
 
 use crate::{
     audio::{self, Effect},
-    theme as t,
+    motion, theme as t,
 };
 
 use super::artwork::PieceArt;
@@ -129,6 +130,7 @@ impl GameView {
         tray.cursor = piece;
         tray.hint = None;
         tray.missed = None;
+        self.settling_piece = None;
         self.save();
         audio::play(cx, Effect::Move);
     }
@@ -160,7 +162,13 @@ impl GameView {
         }
     }
 
-    fn try_place(&mut self, piece: usize, target: usize, cx: &Context<Self>) -> Placement {
+    fn try_place(
+        &mut self,
+        piece: usize,
+        target: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Placement {
         let round = self.round_mut();
         let tray = &mut round.tray;
         let result = round.assembly.place(piece, target);
@@ -180,9 +188,12 @@ impl GameView {
                 tray.hint = None;
                 tray.missed = None;
                 tray.cursor = target;
+                self.settling_piece =
+                    (result == Placement::Placed && motion::enabled(cx)).then_some(piece);
                 self.save();
                 if result == Placement::Completed {
                     self.record_win();
+                    self.result_focus.focus(window, cx);
                     audio::play(cx, Effect::Complete);
                 } else {
                     audio::play(cx, Effect::Move);
@@ -212,11 +223,7 @@ impl GameView {
             "up" => row.saturating_sub(1) * columns + column,
             "down" => (row + 1).min(rows - 1) * columns + column,
             "enter" | "space" => {
-                if !event.is_held
-                    && matches!(
-                        self.try_place(piece, cursor, cx),
-                        Placement::Placed | Placement::Completed
-                    )
+                if !event.is_held && self.try_place(piece, cursor, window, cx) == Placement::Placed
                 {
                     self.focus_tray(capacity, window, cx);
                 }
@@ -243,8 +250,6 @@ impl GameView {
     fn focus_tray(&self, capacity: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(&next) = self.tray_page(capacity).pieces.first() {
             self.piece_focus[next].focus(window, cx);
-        } else if self.is_complete() {
-            window.focus_prev(cx);
         } else {
             self.all_pieces_focus.focus(window, cx);
         }
@@ -307,6 +312,7 @@ impl GameView {
         let selected = round.tray.selected.is_some();
         let capacity = tray_layout.capacity();
         let has_cursor = selected && self.board_focus.is_focused(window);
+        let settling = self.settling_piece.filter(|_| motion::enabled(cx));
         let outlines: Vec<_> = art
             .iter()
             .enumerate()
@@ -352,17 +358,25 @@ impl GameView {
                 })
                 .children(
                     art.iter().enumerate()
-                        .filter(|(piece, _)| round.assembly.is_placed(*piece))
-                        .map(|(_, piece)| {
-                            img(piece.image.clone())
-                                .absolute()
-                                .left(px(piece.left * width))
-                                .top(px(piece.top * height))
-                                .w(px(piece.width * width))
-                                .h(px(piece.height * height))
-                                .object_fit(ObjectFit::Fill)
-                        }),
+                        .filter(|(piece, _)| round.assembly.is_placed(*piece) && Some(*piece) != settling)
+                        .map(|(_, piece)| placed_image(piece, dimensions)),
                 )
+                .children(settling.map(|piece| {
+                    let art = &art[piece];
+                    let (x, y) = (art.left * width, art.top * height);
+                    let (w, h) = (art.width * width, art.height * height);
+                    placed_image(art, dimensions).with_animation(
+                        ("jigsaw-piece-settle", round.assembly_moves as usize),
+                        Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+                        move |image, progress| {
+                            let lift = 1. - progress;
+                            image.left(px(x - w * 0.025 * lift))
+                                .top(px(y - (6. + h * 0.025) * lift))
+                                .w(px(w * (1. + 0.05 * lift)))
+                                .h(px(h * (1. + 0.05 * lift)))
+                        },
+                    )
+                }))
                 .child(canvas(
                     |_, _, _| (),
                     move |bounds, _, window, _| paint_outlines(bounds, (cell_width, cell_height), &outlines, window),
@@ -382,20 +396,20 @@ impl GameView {
                                     .aria_label(format!("Row {}, column {}", row + 1, column + 1))
                                     .cursor_pointer()
                                 .hover(|style| style.bg(rgba(0xfffcf514)))
-                                .on_click(cx.listener(move |view, _, _, cx| {
+                                .on_click(cx.listener(move |view, _, window, cx| {
                                     if let Some(piece) = view.round().tray.selected {
-                                        view.try_place(piece, target, cx);
+                                        view.try_place(piece, target, window, cx);
                                         cx.notify();
                                     }
                                 }))
                         })
                         .drag_over::<DraggedPiece>(|style, _, _, _| style.bg(rgba(0xfffcf524)))
-                        .on_drop(cx.listener(move |view, drag: &DraggedPiece, _, cx| {
+                        .on_drop(cx.listener(move |view, drag: &DraggedPiece, window, cx| {
                             if view.mode == Mode::Assemble
                                 && view.key == drag.key
                                 && view.round().assembly_deal == drag.deal
                             {
-                                view.try_place(drag.piece, target, cx);
+                                view.try_place(drag.piece, target, window, cx);
                                 cx.notify();
                             }
                         }))
@@ -661,6 +675,16 @@ impl GameView {
                 }),
             )
     }
+}
+
+fn placed_image(art: &PieceArt, (width, height): (f32, f32)) -> Img {
+    img(art.image.clone())
+        .absolute()
+        .left(px(art.left * width))
+        .top(px(art.top * height))
+        .w(px(art.width * width))
+        .h(px(art.height * height))
+        .object_fit(ObjectFit::Fill)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
