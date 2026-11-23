@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::games::{GameEntry, GameLaunch};
-use crate::{pages, storage, theme, widgets};
+use crate::{audio, pages, storage, theme, widgets};
 
 gpui::actions!(
     corner_table,
@@ -43,6 +43,7 @@ pub enum Action {
     ToggleFavorite(GameId),
     ShowFavorites(bool),
     SetAppearance(theme::Appearance),
+    SetSound(bool),
     OpenGuide,
     CloseGuide,
 }
@@ -65,6 +66,7 @@ pub struct Desktop {
     pub favorites: Vec<GameId>,
     pub favorites_only: bool,
     pub appearance: theme::Appearance,
+    pub sound_enabled: bool,
     pub guide: pages::GuideOverlay,
     scroll: ScrollHandle,
     back: Vec<Visit>,
@@ -84,6 +86,8 @@ impl Desktop {
         let recent = storage::recent_game().filter(|launch| api.game(&launch.game).is_some());
         let mut favorites = storage::favorites();
         favorites.retain(|id| api.game(id).is_some());
+        let sound_enabled = audio::is_supported() && storage::sound_enabled();
+        audio::set_enabled(cx, sound_enabled);
         theme::apply(appearance, window, cx);
         cx.observe_window_appearance(window, |desktop, window, cx| {
             theme::apply(desktop.appearance, window, cx);
@@ -102,6 +106,7 @@ impl Desktop {
             favorites,
             favorites_only: false,
             appearance,
+            sound_enabled,
             guide: pages::GuideOverlay::new(cx),
             scroll: ScrollHandle::new(),
             back: Vec::new(),
@@ -149,6 +154,14 @@ impl Desktop {
                     storage::set_appearance(appearance);
                     cx.set_window_appearance(appearance.native());
                     theme::apply(appearance, window, cx);
+                }
+            }
+            Action::SetSound(enabled) => {
+                self.sound_enabled = audio::is_supported() && enabled;
+                storage::set_sound_enabled(self.sound_enabled);
+                audio::set_enabled(cx, self.sound_enabled);
+                if self.sound_enabled {
+                    audio::play(cx, audio::Effect::Move);
                 }
             }
             Action::OpenGuide => {
@@ -287,7 +300,12 @@ impl Render for Desktop {
             .line_height(px(23.))
             .text_color(rgb(palette.ink))
             .bg(rgb(palette.paper))
-            .child(widgets::sidebar(self, narrow, cx))
+            .child(widgets::sidebar(
+                self,
+                narrow,
+                window.viewport_size().height < px(630.),
+                cx,
+            ))
             .child(
                 div()
                     .id("page-scroll")

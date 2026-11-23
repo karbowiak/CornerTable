@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use crate::app::{Action, Desktop, Page};
-use crate::{games::GameEntry, theme as t};
+use crate::{audio, games::GameEntry, theme as t};
 
 pub fn clickable(id: impl Into<ElementId>, action: Action, cx: &Context<Desktop>) -> Stateful<Div> {
     div()
@@ -50,7 +50,7 @@ pub fn button(
         .child(label)
 }
 
-pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
+pub fn sidebar(app: &Desktop, narrow: bool, short: bool, cx: &Context<Desktop>) -> Div {
     let palette = t::colors(cx);
     let current = match &app.page {
         Page::Game(launch) => match launch.entry {
@@ -60,7 +60,6 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         },
         page => page.clone(),
     };
-    let guest = &app.api.home.guest;
     let pages = [
         ("nav-library", "library", "Library", Page::Library),
         ("nav-solitaire", "solitaire", "Solitaire", Page::Solitaire),
@@ -86,13 +85,13 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         .flex_col()
         .justify_between()
         .px_3()
-        .pt_7()
-        .pb_5()
+        .pt(px(if short { 16. } else { 28. }))
+        .pb(px(if short { 12. } else { 20. }))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap_4()
+                .gap(px(if short { 12. } else { 16. }))
                 .child(
                     div()
                         .flex()
@@ -121,7 +120,7 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         clickable(id, Action::Navigate(page), cx)
                             .aria_label(label)
                             .w_full()
-                            .h(px(46.))
+                            .h(px(if short { 38. } else { 46. }))
                             .flex()
                             .items_center()
                             .gap_3()
@@ -205,31 +204,35 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
             div()
                 .flex()
                 .flex_col()
-                .gap_4()
-                .child(appearance_control(app, cx))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .px_2()
-                        .child(avatar(&guest.initials, t::PAPER, t::INK))
-                        .child(
-                            div()
-                                .line_height(px(20.))
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(guest.name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(13.))
-                                        .text_color(rgb(0xcad6cc))
-                                        .child("Guest"),
-                                ),
-                        ),
-                ),
+                .gap_2()
+                .when(audio::is_supported(), |settings| {
+                    settings.child(sound_control(app, cx))
+                })
+                .child(appearance_control(app, cx)),
+        )
+}
+
+fn sound_control(app: &Desktop, cx: &Context<Desktop>) -> Stateful<Div> {
+    let palette = t::colors(cx);
+    clickable("audio-toggle", Action::SetSound(!app.sound_enabled), cx)
+        .aria_label("Game sounds")
+        .aria_toggled(app.sound_enabled.into())
+        .flex()
+        .items_center()
+        .justify_between()
+        .h(px(32.))
+        .px_2()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(0x587669))
+        .text_size(px(12.))
+        .hover(|style| style.bg(rgb(palette.rail_active)))
+        .focus_visible(|style| style.border_color(rgb(t::GOLD)))
+        .child("Game sounds")
+        .child(
+            div()
+                .text_color(rgb(if app.sound_enabled { t::GOLD } else { 0xb9c9bd }))
+                .child(if app.sound_enabled { "On" } else { "Off" }),
         )
 }
 

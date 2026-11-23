@@ -188,12 +188,27 @@ fn result_row(
         Outcome::Lost => ("Lost", palette.muted),
         Outcome::Finished => ("Finished", palette.ink),
     };
-    let (value, unit) = match result.metric {
-        ResultMetric::Moves(count) => (count, if count == 1 { "move" } else { "moves" }),
-        ResultMetric::Pairs(count) => (count, if count == 1 { "pair" } else { "pairs" }),
-        ResultMetric::Points(count) => (count, if count == 1 { "point" } else { "points" }),
+    let count_label = |count, singular, plural| {
+        format!(
+            "{} {}",
+            format_score(count),
+            if count == 1 { singular } else { plural }
+        )
     };
-    let metric = format!("{} {unit}", format_score(value));
+    let metric = match result.metric {
+        ResultMetric::Moves(count) => count_label(count, "move", "moves"),
+        ResultMetric::Pairs(count) => count_label(count, "pair", "pairs"),
+        ResultMetric::Points(count) => count_label(count, "point", "points"),
+        ResultMetric::TimeMillis(milliseconds) => {
+            let seconds = milliseconds / 1_000;
+            format!(
+                "{}:{:02}.{}",
+                seconds / 60,
+                seconds % 60,
+                milliseconds / 100 % 10
+            )
+        }
+    };
     let date = DateTime::from_timestamp_millis(result.completed_at_ms).map_or_else(
         || "Date unavailable".to_owned(),
         |date| {

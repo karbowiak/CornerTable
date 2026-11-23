@@ -70,6 +70,7 @@ pub enum ResultMetric {
     Moves(u64),
     Pairs(u64),
     Points(u64),
+    TimeMillis(u64),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -218,6 +219,18 @@ pub fn appearance() -> Appearance {
 pub fn set_appearance(appearance: Appearance) {
     if let Some(dir) = data_dir() {
         write(&dir.join("appearance.json"), &appearance);
+    }
+}
+
+pub fn sound_enabled() -> bool {
+    data_dir()
+        .and_then(|dir| read(&dir.join("sound.json")))
+        .unwrap_or(false)
+}
+
+pub fn set_sound_enabled(enabled: bool) {
+    if let Some(dir) = data_dir() {
+        write(&dir.join("sound.json"), &enabled);
     }
 }
 
