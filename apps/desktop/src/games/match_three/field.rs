@@ -8,8 +8,8 @@ use gpui::{
 };
 
 const FIELD: u32 = 0x132a27;
-const WELL: [u32; 2] = [0x24423a, 0x203e37];
-const LIP: u32 = 0x2d4d43;
+const WELL: [u32; 2] = [0x2c4b41, 0x25443a];
+const LIP: u32 = 0x36554a;
 const INLAY_LIGHT: u32 = 0xaeefdb;
 const RIM_DARK: u32 = 0x675639;
 const RIM_LIGHT: u32 = 0xad8f56;
@@ -89,7 +89,11 @@ pub fn well(step: f32, cell: Cell, inlay_opacity: f32) -> Div {
         .rounded(px((step * 0.15).clamp(4., 9.)))
         .border_1()
         .border_color(rgb(LIP))
-        .bg(rgb(fill))
+        .bg(linear_gradient(
+            165.,
+            linear_color_stop(rgb(0x172e28), 0.),
+            linear_color_stop(rgb(fill), 1.),
+        ))
         .when(inlay_opacity > 0., |well| {
             well.child(inlay(step - 4.).opacity(inlay_opacity))
         })
@@ -205,8 +209,16 @@ impl Scene<'_> {
                         opacity = 1. - progress.powi(2);
                     }
                     Self::Fall(cascade, progress) => {
+                        const SETTLE_START: f32 = 0.82;
                         let distance = f32::from(cascade.fall_distance[index]);
-                        y -= distance * (1. - progress);
+                        let travel = (progress / SETTLE_START).min(1.).powi(2);
+                        y -= distance * (1. - travel);
+                        // Settle only the gems that moved, with their bases held at the well.
+                        let settling =
+                            ((progress - SETTLE_START) / (1. - SETTLE_START)).clamp(0., 1.);
+                        let compression = settling * (1. - settling) * 0.26 * distance.min(1.);
+                        scale -= compression;
+                        y += compression * 0.47;
                     }
                     Self::Shuffle(_, fraction) => {
                         scale = 0.84 + 0.16 * fraction;
@@ -425,7 +437,7 @@ impl Motion {
                 },
             ),
             Phase::Clear(index) => Scene::Clear(&self.cascades()[index], fraction),
-            Phase::Fall(index) => Scene::Fall(&self.cascades()[index], fraction.powi(2)),
+            Phase::Fall(index) => Scene::Fall(&self.cascades()[index], fraction),
             Phase::Shuffle if fraction < 0.42 => {
                 Scene::Shuffle(&self.cascades().last().unwrap().after, 1. - fraction / 0.42)
             }

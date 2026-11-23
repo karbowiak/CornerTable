@@ -1,12 +1,12 @@
-use std::time::Instant;
+use std::{f32::consts::TAU, time::Instant};
 
 use corner_table_bubble_shooter::{
     Aim, Angle, Cell, Color, DANGER_Y, FIELD_HEIGHT, FIELD_WIDTH, Point, RADIUS, ROW_SPACING, ROWS,
     Round, SHOOTER, Shot, Status,
 };
 use gpui::{
-    Background, Bounds, ContentMask, Hsla, PathBuilder, Pixels, Window, fill, linear_color_stop,
-    linear_gradient, point, px, rgb, size,
+    Background, Bounds, BoxShadow, ContentMask, Hsla, LineCap, PathBuilder, PathStyle, Pixels,
+    StrokeOptions, Window, fill, linear_color_stop, linear_gradient, point, px, rgb, size,
 };
 
 const SIDE_RAIL: f64 = 0.36;
@@ -14,6 +14,10 @@ const TOP_RAIL: f64 = 0.31;
 pub(super) const TABLE_WIDTH: f64 = FIELD_WIDTH + 2. * SIDE_RAIL;
 pub(super) const TABLE_HEIGHT: f64 = FIELD_HEIGHT + TOP_RAIL + 0.25;
 const IVORY: u32 = 0xfff4d2;
+const BRASS: u32 = 0xd6b37b;
+const WELL_SHADOW: u32 = 0x0c211f;
+const POP_SECONDS: f64 = 0.26;
+const DROP_SECONDS: f64 = 0.50;
 
 #[derive(Clone, Copy)]
 pub(super) struct Playfield {
@@ -97,23 +101,42 @@ impl Playfield {
         });
         let ready = flight.is_none() && round.status() == Status::Playing;
         if ready {
-            paint_line(window, launcher, muzzle, radius * 0.18, tint(IVORY, 0.62));
-            circle(window, muzzle, radius * 0.15, tint(IVORY, 0.9));
+            paint_line(window, launcher, muzzle, radius * 0.16, tint(BRASS, 0.85));
+            circle(window, muzzle, radius * 0.12, tint(IVORY, 0.98));
         }
+        let socket_radius = radius * 1.23;
+        let socket = disc(launcher, socket_radius);
+        cast_shadow(window, socket, socket_radius, radius * 0.31, 0.9);
         window.paint_quad(
             fill(
-                disc(launcher, radius * 1.25),
-                glaze(140., tint(0x61827b, 1.), tint(0x193b3b, 1.)),
+                socket,
+                glaze(150., rgb(0xb18c57).into(), rgb(0x493a26).into()),
             )
-            .corner_radii(radius * 1.25)
-            .border_color(tint(0xaac3a7, 0.78))
+            .corner_radii(socket_radius)
+            .border_color(tint(BRASS, 0.82))
             .border_widths(px(1.)),
         );
-        ring(window, launcher, radius * 1.10, tint(0x0c2626, 0.9), px(1.));
+        let seat = radius * 1.02;
+        window.paint_quad(
+            fill(
+                disc(launcher, seat),
+                glaze(156., rgb(0x132421).into(), rgb(0x31504a).into()),
+            )
+            .corner_radii(seat)
+            .border_color(tint(WELL_SHADOW, 0.85))
+            .border_widths(px(1.)),
+        );
         if let Some(flight) = flight {
             self.paint_bank_contacts(flight, radius, window);
-            if let Some(trail) = flight.position(0.042) {
-                circle(window, self.screen(trail), radius * 0.54, tint(IVORY, 0.15));
+            for (behind, scale, opacity) in [(0.035, 0.26, 0.16), (0.018, 0.52, 0.26)] {
+                if let Some(trail) = flight.position(behind) {
+                    circle(
+                        window,
+                        self.screen(trail),
+                        radius * scale,
+                        tint(Glass::of(round.current()).light, opacity),
+                    );
+                }
             }
             if let Some(at) = flight.position(0.) {
                 paint_bubble(window, self.screen(at), radius, round.current(), 1.);
@@ -157,33 +180,53 @@ impl Playfield {
         window.paint_quad(
             fill(
                 self.frame,
-                glaze(130., tint(0x49665d, 1.), tint(0x1b3935, 1.)),
+                glaze(135., rgb(0x516055).into(), rgb(0x222f29).into()),
             )
             .corner_radii(px(12.))
-            .border_color(tint(0x80917b, 0.7))
+            .border_color(tint(BRASS, 0.54))
             .border_widths(px(1.)),
         );
+        let well = self.rect(-0.11, -0.13, FIELD_WIDTH + 0.22, FIELD_HEIGHT + 0.23);
+        let well_corners = px(7.);
         window.paint_quad(
             fill(
-                self.rect(-0.09, -0.12, FIELD_WIDTH + 0.18, FIELD_HEIGHT + 0.22),
-                glaze(165., tint(0x2b5551, 1.), tint(0x102d2e, 1.)),
+                well,
+                glaze(162., rgb(0x294d45).into(), rgb(0x142d2b).into()),
             )
-            .corner_radii(px(6.))
-            .border_color(tint(0x071f1d, 0.85))
+            .corner_radii(well_corners)
+            .border_color(tint(BRASS, 0.34))
             .border_widths(px(1.)),
         );
-        for side in [-0.15, FIELD_WIDTH + 0.13] {
-            let seam = self.rect(side, 0., 0.022, FIELD_HEIGHT);
-            window.paint_quad(fill(seam, tint(0xb3c1a2, 0.34)));
-        }
+        window.paint_inset_shadows(
+            well,
+            well_corners.into(),
+            &[BoxShadow::new(px(0.), px(2.), tint(WELL_SHADOW, 0.8))
+                .blur_radius(px(11.))
+                .spread_radius(px(2.))
+                .inset()],
+        );
+        // Scribe the row marks into the rails at the same height as the cell centers.
         for row in 0..ROWS {
             let y = f64::from(row as u32) * ROW_SPACING + RADIUS;
-            for x in [-0.25, FIELD_WIDTH + 0.17] {
-                window.paint_quad(fill(self.rect(x, y, 0.08, 0.024), tint(0xd6d6ac, 0.44)));
+            let width = if row % 3 == 0 { 0.12 } else { 0.07 };
+            for x in [-0.16 - width, FIELD_WIDTH + 0.16] {
+                window.paint_quad(fill(self.rect(x, y, width, 0.026), tint(BRASS, 0.51)));
             }
         }
-        let top = self.rect(-0.08, -0.086, FIELD_WIDTH + 0.16, 0.023);
-        window.paint_quad(fill(top, tint(0xe1c894, 0.55)));
+        let top = self.rect(0.12, -0.218, FIELD_WIDTH - 0.24, 0.024);
+        window.paint_quad(fill(top, tint(BRASS, 0.57)).corner_radii(px(1.)));
+        for x in [-0.19, FIELD_WIDTH + 0.19] {
+            for y in [-0.18, FIELD_HEIGHT + 0.10] {
+                let pin = self.screen(Point { x, y });
+                circle(window, pin, px(2.1), tint(WELL_SHADOW, 0.9));
+                circle(
+                    window,
+                    pin - point(px(0.2), px(0.3)),
+                    px(1.2),
+                    tint(BRASS, 0.88),
+                );
+            }
+        }
 
         let warning = if lost {
             tint(0xffae95, 1.)
@@ -194,7 +237,7 @@ impl Playfield {
         };
         for step in 0..40 {
             let x = 0.062 + f64::from(step) * 0.25;
-            let dash = self.rect(x, DANGER_Y, 0.126, 0.032);
+            let dash = self.rect(x, DANGER_Y - 0.02, 0.126, 0.04);
             window.paint_quad(fill(dash, warning).corner_radii(px(1.)));
         }
         for x in [-0.19, FIELD_WIDTH + 0.19] {
@@ -209,7 +252,7 @@ impl Playfield {
 
     fn paint_aim(self, window: &mut Window, aim: &Aim, color: Color) {
         let dot = (self.scale * 0.037).max(px(1.35));
-        let mut offset = 0.85;
+        let mut offset = 0.95;
         for segment in aim.path.windows(2) {
             let length = distance(segment[0], segment[1]);
             while offset < length {
@@ -222,27 +265,29 @@ impl Playfield {
         }
         for &bounce in &aim.path[1..aim.path.len() - 1] {
             let center = self.screen(bounce);
-            let radius = (self.scale * 0.092).max(px(2.6));
-            circle(window, center, radius, tint(0x143331, 1.));
-            ring(window, center, radius, tint(IVORY, 0.92), px(1.));
+            let radius = (self.scale * 0.112).max(px(3.2));
+            circle(window, center, radius, rgb(WELL_SHADOW).into());
+            ring(window, center, radius, tint(IVORY, 0.94), px(1.));
+            circle(window, center, px(1.), tint(IVORY, 0.94));
         }
 
         let surface = Glass::of(color);
         let center = self.screen(aim.landing.center());
         let radius = self.scale * 0.43;
         let match_ready = aim.matching >= 3;
+        circle(window, center, radius, tint(WELL_SHADOW, 0.88));
         circle(
             window,
             center,
             radius,
-            tint(surface.body, if match_ready { 0.36 } else { 0.13 }),
+            tint(surface.body, if match_ready { 0.28 } else { 0.12 }),
         );
         ring(
             window,
             center,
             radius,
             tint(surface.rim, 0.96),
-            if match_ready { px(2.25) } else { px(1.5) },
+            if match_ready { px(2.) } else { px(1.25) },
         );
         if match_ready {
             ring(
@@ -264,66 +309,54 @@ impl Playfield {
 
     fn paint_impact(self, window: &mut Window, impact: &Impact, shot: &Shot) {
         let seconds = impact.started.elapsed().as_secs_f64();
-        let progress = (seconds / 0.26).min(1.) as f32;
         let radius = self.scale * RADIUS as f32;
-        if progress < 1. {
-            if shot.popped.is_empty() {
-                ring(
-                    window,
-                    self.screen(impact.landing.center()),
-                    radius * (0.95 + progress * 0.26),
-                    tint(IVORY, (1. - progress) * 0.75),
-                    px(1.5),
-                );
-            }
-            for &(cell, color) in &shot.popped {
-                let center = self.screen(cell.center());
-                let surface = Glass::of(color);
-                ring(
-                    window,
-                    center,
-                    radius * (0.62 + progress * 0.47),
-                    tint(surface.rim, 1. - progress),
-                    px(1.8),
-                );
-                for ray in 0..4 {
-                    let angle = (ray as f32 + 0.25) * std::f32::consts::FRAC_PI_2;
-                    let reach = radius * (0.22 + progress * 0.53);
-                    let spark = center + point(reach * angle.cos(), reach * angle.sin());
-                    circle(
-                        window,
-                        spark,
-                        radius * (1. - progress) * 0.105,
-                        tint(surface.light, 1. - progress),
-                    );
-                }
-            }
-        }
-        if !shot.dropped.is_empty() {
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: self.bounds,
-                }),
-                |window| {
-                    let fade = (1. - (seconds / 0.50).powi(2)).clamp(0., 1.) as f32;
-                    for &(cell, color) in &shot.dropped {
-                        let at = cell.center();
-                        let drift = (at.x - FIELD_WIDTH / 2.) * seconds * 0.28;
-                        let fall = 24. * seconds * seconds + seconds * 1.2;
-                        paint_bubble(
+        let landing = impact.landing.center();
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: self.bounds,
+            }),
+            |window| {
+                if seconds < POP_SECONDS {
+                    if shot.popped.is_empty() {
+                        let progress = (seconds / POP_SECONDS) as f32;
+                        ring(
                             window,
-                            self.screen(Point {
-                                x: at.x + drift,
-                                y: at.y + fall,
-                            }),
-                            radius * (0.72 + fade * 0.28),
-                            color,
-                            fade,
+                            self.screen(landing),
+                            radius * (0.98 + progress * 0.32),
+                            tint(IVORY, (1. - progress).powi(2) * 0.85),
+                            px(1.4),
                         );
                     }
-                },
-            );
-        }
+                    for &(cell, color) in &shot.popped {
+                        let center = self.screen(cell.center());
+                        let delay = (distance(landing, cell.center()) * 0.012).min(0.045);
+                        if seconds < delay {
+                            paint_bubble(window, center, radius, color, 1.);
+                        } else {
+                            let progress = ((seconds - delay) / (POP_SECONDS - delay)) as f32;
+                            paint_pop(window, center, radius, cell, color, progress);
+                        }
+                    }
+                }
+
+                let fade = (1. - (seconds / DROP_SECONDS).powi(2)).clamp(0., 1.) as f32;
+                for &(cell, color) in &shot.dropped {
+                    let at = cell.center();
+                    let drift = (at.x - FIELD_WIDTH / 2.) * seconds * 0.28;
+                    let fall = 24. * seconds * seconds + seconds * 1.2;
+                    paint_bubble(
+                        window,
+                        self.screen(Point {
+                            x: at.x + drift,
+                            y: at.y + fall,
+                        }),
+                        radius * (0.72 + fade * 0.28),
+                        color,
+                        fade,
+                    );
+                }
+            },
+        );
     }
 }
 
@@ -372,7 +405,11 @@ pub(super) struct Impact {
 
 impl Impact {
     pub fn new(landing: Cell, shot: &Shot) -> Self {
-        let duration = if shot.dropped.is_empty() { 0.26 } else { 0.50 };
+        let duration = if shot.dropped.is_empty() {
+            POP_SECONDS
+        } else {
+            DROP_SECONDS
+        };
         Self {
             landing,
             started: Instant::now(),
@@ -405,10 +442,10 @@ struct Glass {
 impl Glass {
     fn of(color: Color) -> Self {
         let (light, body, deep, rim, mark) = match color {
-            Color::Coral => (0xffc1ae, 0xea8479, 0xba5150, 0xffb4a3, 0x642323),
-            Color::Gold => (0xffe29c, 0xedbb5c, 0xa97830, 0xffda81, 0x553812),
-            Color::Jade => (0xb4e6ce, 0x70c5a6, 0x3b8274, 0xa5e8cc, 0x144734),
-            Color::Violet => (0xe5d3fb, 0xbb9ddf, 0x7656a7, 0xdac2f2, 0x482963),
+            Color::Coral => (0xffc6b5, 0xeb8073, 0x9f3b43, 0xffa98e, 0x511e25),
+            Color::Gold => (0xffe4a0, 0xeaba54, 0x946025, 0xffd980, 0x4c310e),
+            Color::Jade => (0xb7f1d8, 0x62c6a3, 0x276c60, 0x99e7c8, 0x153c32),
+            Color::Violet => (0xe9d5ff, 0xb799e2, 0x66488f, 0xd4b8f7, 0x392457),
         };
         Self {
             light,
@@ -427,50 +464,129 @@ pub(super) fn paint_bubble(
     color: Color,
     opacity: f32,
 ) {
-    let g = Glass::of(color);
-    let r = radius * 0.951;
+    let glass = Glass::of(color);
+    let r = radius * 0.944;
     let alpha = |hex, a: f32| tint(hex, a * opacity);
-    circle(
-        window,
-        center + point(r * 0.047, r * 0.08),
-        r * 0.99,
-        alpha(0x071816, 0.43),
-    );
+    let bounds = disc(center, r);
+    cast_shadow(window, bounds, r, r * 0.13, opacity);
     window.paint_quad(
         fill(
-            disc(center, r),
-            glaze(142., alpha(g.light, 0.97), alpha(g.deep, 0.86)),
+            bounds,
+            glaze(145., alpha(glass.body, 1.), alpha(glass.deep, 1.)),
         )
         .corner_radii(r)
-        .border_color(alpha(g.rim, 0.96))
+        .border_color(alpha(glass.rim, 0.68))
         .border_widths(px(1.)),
     );
-    let lens = r * 0.85;
+    let lens = r * 0.91;
     window.paint_quad(
         fill(
-            disc(center - point(r * 0.055, r * 0.075), lens),
-            glaze(151., alpha(g.light, 0.31), alpha(g.body, 0.62)),
+            disc(center - point(r * 0.025, r * 0.046), lens),
+            glaze(158., alpha(glass.light, 0.92), alpha(glass.body, 0.22)),
         )
         .corner_radii(lens),
     );
-    let glint = Bounds::new(
-        center - point(r * 0.55, r * 0.66),
-        size(r * 0.39, r * 0.173),
+    window.paint_inset_shadows(
+        bounds,
+        r.into(),
+        &[
+            BoxShadow::new(-r * 0.075, -r * 0.12, alpha(glass.deep, 0.56))
+                .blur_radius(r * 0.31)
+                .inset(),
+        ],
     );
-    window.paint_quad(fill(glint, alpha(0xfffbeb, 0.82)).corner_radii(r * 0.10));
+
+    // The reflection follows the upper left of the sphere. The dimmer lower edge is
+    // light transmitted through the glass, leaving the center clear for the symbol.
+    paint_arc(
+        window,
+        center,
+        r * 0.68,
+        3.55,
+        4.70,
+        (r * 0.12).max(px(1.)),
+        alpha(0xfff7e4, 0.86),
+    );
+    paint_arc(
+        window,
+        center,
+        r * 0.80,
+        0.50,
+        1.38,
+        (r * 0.085).max(px(0.7)),
+        alpha(glass.light, 0.51),
+    );
     circle(
         window,
-        center + point(r * 0.47, r * 0.49),
-        r * 0.09,
-        alpha(g.rim, 0.60),
+        center + point(r * 0.16, -r * 0.67),
+        (r * 0.057).max(px(0.65)),
+        alpha(0xfff7e4, 0.79),
     );
     paint_mark(
         window,
         center + point(px(0.), r * 0.04),
-        r * 0.33,
+        r * 0.36,
         color,
-        alpha(g.mark, 0.96),
+        alpha(glass.mark, 0.98),
     );
+}
+
+fn paint_pop(
+    window: &mut Window,
+    center: gpui::Point<Pixels>,
+    radius: Pixels,
+    cell: Cell,
+    color: Color,
+    progress: f32,
+) {
+    let glass = Glass::of(color);
+    let fade = (1. - progress).powi(2);
+    let expansion = 1. - (1. - progress).powi(3);
+    let reach = radius * (0.92 + 0.46 * expansion);
+    let tilt = (cell.column() + cell.row() * 2) as f32 * 0.29;
+
+    circle(
+        window,
+        center,
+        radius * (0.78 - 0.35 * progress),
+        tint(glass.body, 0.38 * fade),
+    );
+    for (from, length, strength) in [(0.12, 1.52, 0.84), (2.35, 0.75, 0.58), (3.85, 1.12, 0.93)] {
+        let from = tilt + from + 0.26 * progress;
+        let to = from + length * (1. - 0.57 * expansion);
+        paint_arc(
+            window,
+            center,
+            reach,
+            from,
+            to,
+            (radius * 0.10).max(px(1.1)),
+            tint(glass.rim, strength * fade),
+        );
+    }
+
+    let mut shards = PathBuilder::fill();
+    for (index, offset) in [0.1, 0.9, 1.9, 3.15, 4.2, 5.4].into_iter().enumerate() {
+        let angle = tilt + offset;
+        let (sine, cosine) = angle.sin_cos();
+        let travel = radius * (0.34 + (0.65 + 0.12 * (index % 3) as f32) * expansion);
+        let at = center
+            + point(
+                travel * cosine,
+                travel * sine + radius * progress.powi(2) * 0.30,
+            );
+        let length = radius * (0.06 + 0.11 * fade);
+        let radial = point(length * cosine, length * sine);
+        let edge = point(-length * sine, length * cosine) * 0.52;
+        shards.move_to(at + radial);
+        shards.line_to(at + edge);
+        shards.line_to(at - radial * 0.7);
+        shards.line_to(at - edge);
+        shards.close();
+    }
+    if let Ok(path) = shards.build() {
+        window.paint_path(path, tint(glass.light, 0.94 * (1. - progress)));
+    }
 }
 
 fn paint_mark(
@@ -503,7 +619,7 @@ fn paint_mark(
 pub(super) fn paint_star(window: &mut Window, center: gpui::Point<Pixels>, r: Pixels, color: u32) {
     let mut shape = PathBuilder::fill();
     for tip in 0..10 {
-        let angle = tip as f32 * std::f32::consts::TAU / 10. - std::f32::consts::FRAC_PI_2;
+        let angle = tip as f32 * TAU / 10. - std::f32::consts::FRAC_PI_2;
         let reach = if tip % 2 == 0 { r } else { r * 0.47 };
         let at = center + point(reach * angle.cos(), reach * angle.sin());
         if tip == 0 {
@@ -515,6 +631,45 @@ pub(super) fn paint_star(window: &mut Window, center: gpui::Point<Pixels>, r: Pi
     shape.close();
     if let Ok(path) = shape.build() {
         window.paint_path(path, rgb(color));
+    }
+}
+
+fn cast_shadow(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    r: Pixels,
+    offset: Pixels,
+    opacity: f32,
+) {
+    window.paint_drop_shadows(
+        bounds,
+        r.into(),
+        &[
+            BoxShadow::new(r * 0.055, offset, tint(0x081913, 0.72 * opacity))
+                .blur_radius((r * 0.19).max(px(1.))),
+        ],
+    );
+}
+
+fn paint_arc(
+    window: &mut Window,
+    center: gpui::Point<Pixels>,
+    radius: Pixels,
+    from: f32,
+    to: f32,
+    width: Pixels,
+    color: Hsla,
+) {
+    let at = |angle: f32| center + point(radius * angle.cos(), radius * angle.sin());
+    let mut arc = PathBuilder::default().with_style(PathStyle::Stroke(StrokeOptions {
+        line_width: f32::from(width),
+        line_cap: LineCap::Round,
+        ..Default::default()
+    }));
+    arc.move_to(at(from));
+    arc.arc_to(point(radius, radius), px(0.), false, true, at(to));
+    if let Ok(path) = arc.build() {
+        window.paint_path(path, color);
     }
 }
 
