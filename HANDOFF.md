@@ -2,17 +2,17 @@
 
 Corner Table is an offline desktop games collection built in Rust and GPUI. The current app launches twenty game families from the illustrated library. It supports category filters, native search, Surprise me, System, Light, and Dark appearances, favorites, Last Played, and Back and Forward navigation with mouse buttons and keyboard shortcuts. The Daily Challenge calendar marks completed puzzles, and Records shows local results and personal bests and can open the recorded game or dated challenge.
 
-The games present a result when a round ends. Results include the actual score or completion statistics and actions that fit the rules, such as replay, undo, a new deal, or the next stage. The app follows macOS Reduce Motion for gameplay effects.
+The games present a result when a round ends. Results include the actual score or completion statistics and actions that fit the rules, such as replay, undo, a new deal, or the next stage. The app follows macOS Reduce Motion for gameplay effects, and View → Always Reduce Motion can reduce effects in Corner Table at any time.
 
 ## Playable games
 
 | Game | Current features |
 | --- | --- |
-| Solitaire | Klondike, Spider, FreeCell, Pyramid, and TriPeaks. Animated stock deals, card and stack dragging, twelve original court illustrations and four engraved aces, three table styles, 1,024 Verified Draw 1 Klondike deals, hints, safe foundation collection, and per-mode progress and undo. Spider detects when no legal draw or transfer remains. |
-| Mahjong | Six solvable layouts from a 24-tile Tea Tray to a 144-tile Koi. Thirty-six original ceramic faces, keyboard controls, Clean Clear, hints, undo, and saved practice and Daily boards. |
+| Solitaire | Klondike, Spider, FreeCell, Pyramid, and TriPeaks. Animated stock deals, card and stack dragging, arrow-key play, twelve original court illustrations and four engraved aces, three table styles, 1,024 Verified Draw 1 Klondike deals, hints, safe foundation collection, and per-mode progress and undo. Spider detects when no legal draw or transfer remains. |
+| Mahjong | Six solvable layouts from a 24-tile Tea Tray to a 144-tile Koi. Thirty-six original ceramic faces, keyboard controls, shareable practice deal codes, Clean Clear, hints, undo, and saved practice and Daily boards. |
 | Minesweeper | Three carved fields, animated reveals and flags, a clock and time trial, chording, exact-layout practice replays, visible-clue hints, deduction-certified Logic only, and restored progress and bests. |
 | Sudoku | 9×9 and 6×6 practice, three uniquely solvable Killer puzzles, daily clean solves, deduction hints, notes, undo, and saved rounds. |
-| Jigsaw | Seven original scenes plus a gallery for local photo imports. Interlocking assembly and square swaps at three sizes, drag and keyboard controls, filters, hints, and gallery saves. |
+| Jigsaw | Nine original scenes plus a gallery for local photo imports. Interlocking assembly and square swaps at three sizes, drag and keyboard controls, filters, hints, and gallery saves. |
 | Word Games | Letter Grove, Letter Rack, two crossword sizes, and Word Search with 96 themed layouts. Collection, daily puzzles, hints, and separate saves. |
 | Match Three | Seven campaign stages with points, collection, chains, and marked-cell objectives. Animated cascades, hints, keyboard controls, and exact resume. |
 | Block Puzzle | Classic, Ten Trays, and nine verified Puzzle Boards. Exact tray dragging, click and keyboard placement, animated line clears, and saved progress and bests. |

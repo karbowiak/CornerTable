@@ -373,6 +373,10 @@ impl Guide {
                         "Find another route",
                         "Use Hint (H) to find a pair or Undo (U) to try a different order. For a Clean Clear, remove all tiles without using either. Restart replays the same layout.",
                     ),
+                    (
+                        "Share a practice deal",
+                        "Use Copy deal code to share the exact layout and starting tiles. Copy a code you received, then choose Play from clipboard in Practice to start that deal.",
+                    ),
                 ],
             },
             "mahjong-cubes" => Self {
@@ -553,11 +557,11 @@ impl Guide {
         };
         const MOVE_CARDS: (&str, &str) = (
             "Move cards",
-            "Click a card and then its destination, or drag it there. With the keyboard, Tab to a card or pile and press Enter or Space to activate it.",
+            "Click a card and then its destination, or drag it there. With the keyboard, Tab to the table, move between cards and piles with the arrows, and press Enter or Space to activate the focused spot.",
         );
         const TRY_AGAIN: (&str, &str) = (
             "Try another move",
-            "Press H to highlight a suggested move. Undo takes back your last move. Replay starts this deal again. New deal shuffles a fresh board.",
+            "Press H for a hint, U to undo, or Escape to cancel a selection. D draws where there is a stock. Replay starts this deal again, and New deal shuffles a fresh board.",
         );
         const FINISH: (&str, &str) = (
             "Collect the last cards",
@@ -609,8 +613,9 @@ impl Guide {
                 ),
                 (
                     "Choose a pair or draw",
-                    "Select the two cards or drag one onto the other. Draw from Stock to use the top waste card as a partner. The stock runs through once. Tab to a card or pile and press Enter or Space to activate it.",
+                    "Select the two cards or drag one onto the other. Draw from Stock to use the top waste card as a partner. The stock runs through once.",
                 ),
+                MOVE_CARDS,
                 TRY_AGAIN,
             ],
             Variant::TriPeaks => &[
@@ -620,8 +625,9 @@ impl Guide {
                 ),
                 (
                     "Play a card or draw",
-                    "Click a card or drag it to the waste. With the keyboard, Tab to a card or pile and press Enter or Space to activate it. If no exposed card fits, draw from Stock. The Solvable mode gives you a deal with a known solution.",
+                    "Click a card or drag it to the waste. If no exposed card fits, draw from Stock. The Solvable mode gives you a deal with a known solution.",
                 ),
+                MOVE_CARDS,
                 TRY_AGAIN,
             ],
         };
