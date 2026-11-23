@@ -38,7 +38,7 @@ struct SavedRound {
     clean_clear: bool,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 struct DailyAttempt {
     #[serde(default)]
     attempt: Option<AttemptId>,
@@ -91,40 +91,42 @@ impl GameView {
             focus_on_open: true,
             cursor: None,
         };
-        if view.daily() {
+        let restored = view
+            .session
+            .load::<SavedRound>()
+            .is_some_and(|saved| view.resume(saved));
+        if view.daily() && !restored {
             if let Some(attempt) = view
                 .session
                 .load::<DailyAttempt>()
                 .and_then(|saved| saved.attempt)
             {
                 view.attempt = attempt;
-            } else {
-                view.save_daily_attempt();
             }
-        } else if let Some(saved) = view.session.load::<SavedRound>() {
-            view.resume(saved);
+            view.save();
         }
         view
     }
 
-    fn resume(&mut self, saved: SavedRound) {
+    fn resume(&mut self, saved: SavedRound) -> bool {
         let Some(&(layout, _, _)) = LAYOUTS.iter().find(|(_, key, _)| *key == saved.layout) else {
-            return;
+            return false;
         };
+        if self.daily() && (saved.seed != self.seed || layout != self.board.layout()) {
+            return false;
+        }
         let Some(board) = Board::resume(layout, saved.seed, &saved.matches, saved.assisted) else {
-            return;
+            return false;
         };
         self.board = board;
         self.seed = saved.seed;
         self.attempt = saved.attempt;
         self.clean_clear = saved.clean_clear;
         self.status = self.idle_status("Deal resumed.").into();
+        true
     }
 
     fn save(&self) {
-        if self.daily() {
-            return;
-        }
         let (_, key, _) = LAYOUTS
             .into_iter()
             .find(|(layout, _, _)| *layout == self.board.layout())
@@ -136,13 +138,6 @@ impl GameView {
             matches: self.board.matched_pairs().to_vec(),
             assisted: self.board.used_assistance(),
             clean_clear: self.clean_clear,
-        });
-    }
-
-    fn save_daily_attempt(&self) {
-        // Daily always opens on a fresh board. Keep its attempt ID until Restart.
-        self.session.save(&DailyAttempt {
-            attempt: Some(self.attempt),
         });
     }
 
@@ -244,11 +239,7 @@ impl GameView {
         self.board.restart();
         self.attempt = AttemptId::default();
         self.reset_feedback();
-        if self.daily() {
-            self.save_daily_attempt();
-        } else {
-            self.save();
-        }
+        self.save();
     }
 
     fn reset_feedback(&mut self) {

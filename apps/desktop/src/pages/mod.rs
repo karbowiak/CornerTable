@@ -61,7 +61,7 @@ pub fn daily_challenge(app: &Desktop, cx: &Context<Desktop>) -> Div {
             widgets::button(
                 "launch-daily",
                 if won_today {
-                    "Play again"
+                    "Open completed puzzle"
                 } else {
                     "Play today’s puzzle"
                 },
