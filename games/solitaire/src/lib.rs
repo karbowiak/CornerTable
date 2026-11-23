@@ -1,8 +1,11 @@
 mod freecell;
+mod hint;
 mod klondike;
 mod pyramid;
 mod spider;
 mod tripeaks;
+
+pub use hint::{Hint, HintReason};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Variant {

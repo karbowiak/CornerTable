@@ -1,12 +1,13 @@
 mod session;
 mod style;
+mod suggestion;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use corner_table_solitaire::{Card, DealMode, Game, Move, Place, Suit, Variant};
 use gpui::{
-    BoxShadow, Context, Div, EntityId, FontWeight, ObjectFit, Render, Role, SharedString, Stateful,
-    Window, div, img, prelude::*, px, relative, rgb, rgba, svg,
+    BoxShadow, Context, Div, EntityId, FocusHandle, FontWeight, KeyDownEvent, ObjectFit, Render,
+    Role, SharedString, Stateful, Window, div, img, prelude::*, px, relative, rgb, rgba, svg,
 };
 
 use crate::{
@@ -18,6 +19,7 @@ use crate::{
 use self::{
     session::{Deal, TableSession},
     style::{TablePalette, TableStyle},
+    suggestion::{Marker, Suggestion},
 };
 
 const CARD_RATIO: f32 = 1.4;
@@ -106,6 +108,9 @@ pub struct GameView {
     other_deals: Vec<Deal>,
     revision: u64,
     show_title: bool,
+    focus: FocusHandle,
+    initial_focus: bool,
+    suggestion: Option<Suggestion>,
 }
 
 impl GameView {
@@ -122,12 +127,15 @@ impl GameView {
             other_deals,
             revision: 0,
             show_title: !matches!(launch.entry, GameEntry::Mode(_)),
+            focus: cx.focus_handle(),
+            initial_focus: true,
+            suggestion: None,
         }
     }
 
     fn restart(&mut self, seed: Option<u64>) {
         self.deal.restart(seed);
-        self.revision += 1;
+        self.board_changed();
     }
 
     fn switch_mode(&mut self, mode: DealMode) {
@@ -138,8 +146,27 @@ impl GameView {
         {
             std::mem::swap(&mut self.deal, deal);
             self.session.save_mode(mode);
-            self.revision += 1;
+            self.board_changed();
         }
+    }
+
+    fn board_changed(&mut self) {
+        self.suggestion = None;
+        self.revision += 1;
+    }
+
+    fn show_hint(&mut self, cx: &mut Context<Self>) {
+        if self.deal.game.won() {
+            return;
+        }
+        self.deal.selected = None;
+        self.deal.status = "";
+        self.suggestion = Some(
+            self.deal
+                .hint()
+                .map_or(Suggestion::NoneAvailable, Suggestion::Move),
+        );
+        cx.notify();
     }
 
     fn apply(&mut self, action: Move, cx: &mut Context<Self>) -> bool {
@@ -147,7 +174,7 @@ impl GameView {
         if !self.deal.apply(action) {
             return false;
         }
-        self.revision += 1;
+        self.board_changed();
         let game = &self.deal.game;
         let effect = if game.won() {
             Effect::Complete
@@ -166,6 +193,13 @@ impl GameView {
     fn play_at(&mut self, place: Place, cx: &mut Context<Self>) {
         if self.deal.game.won() {
             return;
+        }
+        let choosing_source = self.deal.selected.is_none()
+            && self.suggestion.as_ref().is_some_and(|hint| {
+                matches!(hint.marker(&self.deal.game, place), Some(Marker::Source))
+            });
+        if !choosing_source {
+            self.suggestion = None;
         }
         if place == Place::Stock {
             if !self.apply(Move::Draw, cx) {
@@ -282,6 +316,10 @@ impl GameView {
         let palette = TableStyle::active(cx).palette();
         let game = &self.deal.game;
         let selected = self.deal.selected == Some(place);
+        let marker = self
+            .suggestion
+            .as_ref()
+            .and_then(|hint| hint.marker(game, place));
         let clickable = !game.won()
             && match place {
                 Place::Stock | Place::Foundation(_) | Place::Cell(_) => true,
@@ -295,12 +333,16 @@ impl GameView {
         let drag = self.drag_source(place, face, size, owner);
         let draggable = drag.is_some();
         card_surface(face, size, selected, palette)
+            .when_some(marker, |surface, marker| {
+                marker.mark(surface, size, palette)
+            })
             .id(SharedString::from(format!("solitaire-{place:?}")))
             .block_mouse_except_scroll()
             .when(clickable, |element| {
                 element
                     .role(Role::Button)
                     .aria_label(card_label(place, face, game))
+                    .when_some(marker, |card, marker| card.aria_description(marker.label()))
                     .aria_selected(selected)
                     .when(
                         !matches!(face, CardFace::Back) || place == Place::Stock,
@@ -617,17 +659,59 @@ impl GameView {
 
     fn undo_button(&self, cx: &Context<Self>) -> Stateful<Div> {
         let can_undo = self.deal.can_undo();
-        super::themed_control(cx, "solitaire-undo", "Undo", can_undo).when(can_undo, |button| {
-            button
-                .aria_label("Undo move")
+        super::themed_control(cx, "solitaire-undo", "Undo", can_undo)
+            .when(cfg!(test), |button| {
+                button.debug_selector(|| "solitaire-undo-button".into())
+            })
+            .when(can_undo, |button| {
+                button
+                    .aria_label("Undo move")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        if view.deal.undo() {
+                            view.board_changed();
+                            audio::play(cx, Effect::Move);
+                            cx.notify();
+                        }
+                    }))
+            })
+    }
+
+    fn hint_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let active = !self.deal.game.won();
+        super::themed_control(cx, "solitaire-hint", "Hint", active)
+            .when(cfg!(test), |button| {
+                button.debug_selector(|| "solitaire-hint-button".into())
+            })
+            .when(active, |button| {
+                button
+                    .aria_label("Hint (H)")
+                    .child(
+                        div()
+                            .pl_2()
+                            .text_size(px(11.))
+                            .text_color(rgb(t::colors(cx).muted))
+                            .child("H"),
+                    )
+                    .on_click(cx.listener(|view, _, _, cx| view.show_hint(cx)))
+            })
+    }
+
+    fn finish_button(&self, cx: &Context<Self>) -> Option<Stateful<Div>> {
+        self.deal.game.collection_moves()?;
+        Some(
+            super::themed_control(cx, "solitaire-collect", "Finish", true)
+                .aria_label("Finish by collecting the remaining cards")
+                .when(cfg!(test), |button| {
+                    button.debug_selector(|| "solitaire-finish-button".into())
+                })
                 .on_click(cx.listener(|view, _, _, cx| {
-                    if view.deal.undo() {
-                        view.revision += 1;
-                        audio::play(cx, Effect::Move);
+                    if view.deal.finish() {
+                        view.board_changed();
+                        audio::play(cx, Effect::Complete);
                         cx.notify();
                     }
-                }))
-        })
+                })),
+        )
     }
 
     fn replay_button(id: &'static str, on_table: bool, cx: &Context<Self>) -> Stateful<Div> {
@@ -765,12 +849,26 @@ impl GameView {
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.initial_focus) {
+            let previous = window.focused(cx);
+            cx.on_next_frame(window, move |view, window, cx| {
+                if window.focused(cx) == previous
+                    && (previous.is_none() || view.focus.within_focused(window, cx))
+                {
+                    view.focus.focus(window, cx);
+                }
+            });
+        }
         let game = &self.deal.game;
         let style = TableStyle::active(cx);
         let palette = style.palette();
         let table = TableSize::new(game, window, self.show_title);
         let won = game.won();
         let stalled = game.layout_stalled();
+        let note: SharedString = self.suggestion.as_ref().map_or_else(
+            || self.note(stalled).into(),
+            |hint| hint.message(game).into(),
+        );
         let has_layout = !game.layout.is_empty();
         let field = div()
             .flex_1()
@@ -792,6 +890,17 @@ impl Render for GameView {
         };
         div()
             .w_full()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "h"
+                    && !event.keystroke.modifiers.modified()
+                    && !event.is_held
+                    && !view.deal.game.won()
+                {
+                    view.show_hint(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .flex()
             .flex_col()
             .gap_3()
@@ -808,9 +917,12 @@ impl Render for GameView {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .ml_auto()
                             .gap_2()
+                            .child(self.hint_button(cx))
                             .child(self.undo_button(cx))
+                            .children(self.finish_button(cx))
                             .child(Self::replay_button("solitaire-replay", false, cx))
                             .child(Self::new_deal_button("solitaire-new", false, cx)),
                     ),
@@ -866,13 +978,22 @@ impl Render for GameView {
                                         .text_size(px(13.))
                                         .line_height(px(19.))
                                         .text_color(rgb(
-                                            if stalled || !self.deal.status.is_empty() {
+                                            if stalled
+                                                || self.suggestion.is_some()
+                                                || !self.deal.status.is_empty()
+                                            {
                                                 palette.accent
                                             } else {
                                                 palette.text
                                             },
                                         ))
-                                        .child(self.note(stalled))
+                                        .child(
+                                            div()
+                                                .id("solitaire-status")
+                                                .role(Role::Status)
+                                                .aria_label(note.clone())
+                                                .child(note),
+                                        )
                                         .when(
                                             game.mode() == DealMode::KlondikeDrawOneVerified,
                                             |note| {
