@@ -10,8 +10,7 @@ use corner_table_block_puzzle::{
 };
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, Div, EntityId, FocusHandle, FontWeight, KeyDownEvent,
-    MouseButton, ObjectFit, Pixels, Point, Role, Stateful, Window, canvas, div, img, prelude::*,
-    px, rgb, rgba,
+    MouseButton, Pixels, Point, Role, Stateful, Window, canvas, div, prelude::*, px, rgb, rgba,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,9 +22,11 @@ use crate::{
 
 use super::{GameLaunch, board_space, round_result, themed_control};
 
+mod material;
 mod puzzle_controls;
 mod puzzle_progress;
 
+use material::{board_frame, wood_tile};
 use puzzle_controls::marked_square;
 use puzzle_progress::{PuzzleBook, SavedPuzzleBook};
 
@@ -786,14 +787,7 @@ impl GameView {
             .bg(rgb(WALNUT))
             .shadow_md()
             .when(self.selection.is_some(), |board| board.cursor_pointer())
-            .child(
-                img("games/block-puzzle/walnut-board.jpg")
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .object_fit(ObjectFit::Fill)
-                    .rounded(px(11.)),
-            )
+            .child(board_frame())
             .child(
                 div()
                     .relative()
@@ -839,8 +833,8 @@ impl GameView {
                                     .size(px(cell))
                                     .rounded_sm()
                                     .border_1()
-                                    .border_color(rgba(0x1d1009b8))
-                                    .bg(rgba(0x28180d96))
+                                    .border_color(rgba(0x1d1009db))
+                                    .bg(material::recess())
                                     .children(wood.map(|wood| {
                                         div()
                                             .absolute()
@@ -1528,41 +1522,6 @@ fn wood_name(wood: Wood) -> &'static str {
         Wood::Plum => "Plum",
         Wood::Lagoon => "Lagoon",
     }
-}
-
-fn wood_material(wood: Wood) -> (u32, &'static str) {
-    match wood {
-        Wood::Amber => (0xd6a456, "games/block-puzzle/amber.jpg"),
-        Wood::Cherry => (0xd38374, "games/block-puzzle/cherry.jpg"),
-        Wood::Juniper => (0xa3ae70, "games/block-puzzle/juniper.jpg"),
-        Wood::Plum => (0xb096b8, "games/block-puzzle/plum.jpg"),
-        Wood::Lagoon => (0x76adb2, "games/block-puzzle/lagoon.jpg"),
-    }
-}
-
-fn wood_tile(wood: Wood, cell: f32) -> Div {
-    let (base, texture) = wood_material(wood);
-    div()
-        .relative()
-        .size(px(cell))
-        .rounded_sm()
-        .bg(rgba(0x23130cdd))
-        .child(
-            div()
-                .absolute()
-                .top(px(0.))
-                .left(px(0.))
-                .right(px(0.))
-                .bottom(px(if cell > 19. { 2. } else { 1. }))
-                .rounded_sm()
-                .bg(rgb(base))
-                .child(
-                    img(texture)
-                        .size_full()
-                        .rounded_sm()
-                        .object_fit(ObjectFit::Fill),
-                ),
-        )
 }
 
 fn placement_ghost(preview: Preview, cell: f32) -> Div {

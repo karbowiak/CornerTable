@@ -1,18 +1,97 @@
 use gpui::{
-    AnyElement, ObjectFit, PathBuilder, Pixels, Point, Rgba, Window, canvas, div, img, point,
-    prelude::*, px, rgb, rgba,
+    AnyElement, BoxShadow, ObjectFit, PathBuilder, Pixels, Point, Rgba, Window, canvas, div, img,
+    linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba,
 };
 
 pub(super) const ENTRANCE: &str = "games/mine-trails/mine-entrance.jpg";
 pub(super) const SLATE: &str = "games/mine-trails/slate-bed.jpg";
 pub(super) const TUNNELS: &str = "games/mine-trails/tunnel-strata.jpg";
 pub(super) const VAULT: &str = "games/mine-trails/vault-chamber.jpg";
+const SLATE_FACE: &str = "games/mine-trails/slate-face.jpg";
 
 pub(super) fn painting(asset: &'static str) -> impl IntoElement {
     div()
         .size_full()
         .overflow_hidden()
         .child(img(asset).size_full().object_fit(ObjectFit::Cover))
+}
+
+pub(super) enum Chip {
+    Reachable,
+    OutOfReach,
+    Flagged,
+}
+
+pub(super) fn stone_chip(chip: Chip, size: f32) -> impl IntoElement {
+    let (edge, body, light, shade) = match chip {
+        Chip::Reachable => (0xc59a6c, 0x493021, 0xa67c52, 0x684831),
+        Chip::OutOfReach => (0x676b6d, 0x27282d, 0x54585e, 0x393c43),
+        Chip::Flagged => (0x9d7b54, 0x342618, 0x795c3c, 0x4e3b2c),
+    };
+    let bevel = px((size * 0.035).clamp(1., 2.));
+    let depth = px((size * 0.09).clamp(3., 6.));
+
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(4.))
+        .bg(linear_gradient(
+            154.,
+            linear_color_stop(rgb(edge), 0.),
+            linear_color_stop(rgb(body), 0.9),
+        ))
+        .shadow(vec![BoxShadow {
+            inset: false,
+            color: rgba(0x15110faa).into(),
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(2.),
+            spread_radius: px(0.),
+        }])
+        .child(
+            div()
+                .absolute()
+                .top(bevel)
+                .left(bevel)
+                .right(bevel)
+                .bottom(depth)
+                .rounded(px(3.))
+                .bg(linear_gradient(
+                    145.,
+                    linear_color_stop(rgb(light), 0.),
+                    linear_color_stop(rgb(shade), 1.),
+                ))
+                .child(
+                    img(SLATE_FACE)
+                        .size_full()
+                        .rounded(px(3.))
+                        .object_fit(ObjectFit::Cover)
+                        .opacity(0.36),
+                ),
+        )
+}
+
+pub(super) fn excavated_floor(diamond: bool) -> impl IntoElement {
+    let (shadow, stone) = if diamond {
+        (0x182d31, 0x315357)
+    } else {
+        (0x181c20, 0x33383a)
+    };
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(4.))
+        .bg(linear_gradient(
+            155.,
+            linear_color_stop(rgb(shadow), 0.12),
+            linear_color_stop(rgb(stone), 1.),
+        ))
+        .child(
+            img(SLATE_FACE)
+                .size_full()
+                .rounded(px(4.))
+                .object_fit(ObjectFit::Cover)
+                .opacity(0.11),
+        )
 }
 
 #[derive(Clone, Copy)]

@@ -4,7 +4,7 @@ use gpui::{Context, Div, FontWeight, Role, Stateful, Window, div, prelude::*, px
 use crate::theme as t;
 
 use super::{GameView, Strike, Tool, art, button, record::Move};
-use art::Mark;
+use art::{Chip, Mark};
 
 pub(super) const TILE_GAP: f32 = 4.;
 
@@ -129,29 +129,18 @@ impl GameView {
             .justify_center();
 
         if covered {
-            cell = cell
-                .child(
-                    div()
-                        .absolute()
-                        .bottom_0()
-                        .left_0()
-                        .right_0()
-                        .h(px(4.))
-                        .rounded_b(px(4.))
-                        .bg(rgba(0x1415147c)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_1()
-                        .right_1()
-                        .h(px(1.))
-                        .bg(rgba(if digging { 0xf4bf7b9e } else { 0xafafad38 })),
-                );
+            let chip = if tile == Tile::Flagged {
+                Chip::Flagged
+            } else if digging {
+                Chip::Reachable
+            } else {
+                Chip::OutOfReach
+            };
+            cell = cell.child(art::stone_chip(chip, size));
         }
         cell = match tile {
             Tile::Open { clue, diamond } => cell
+                .child(art::excavated_floor(diamond))
                 .when(clue > 0, |tile| {
                     tile.font_weight(FontWeight::BOLD)
                         .text_size(px((size * 0.41).clamp(17., 29.)))
