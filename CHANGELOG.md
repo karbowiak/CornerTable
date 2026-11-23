@@ -14,7 +14,7 @@ All notable changes to Corner Table are recorded here. The format follows
 - A Club opponent in Reversi between Casual and Strategist, with its own saved table.
 - Word Search reaches 24 themes. **New layout** generates a fresh board for the selected
   theme and saves it separately from the collection board and daily puzzle.
-- Picture Logic reaches 45 prints, with 15 each in Pocket, Postcard, and Full Sheet.
+- Picture Logic reaches 45 prints across Pocket, Postcard, and Full Sheet.
   Each new print has a unique solution that can be found without guessing.
 
 ## [0.1.1] - 2026-11-23
