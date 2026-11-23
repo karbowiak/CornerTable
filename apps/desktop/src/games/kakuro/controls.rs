@@ -1,11 +1,18 @@
 use corner_table_kakuro::{Direction, Hint, HintKind, RunConflict, Size};
-use gpui::{Context, Div, FontWeight, Role, SharedString, Stateful, div, prelude::*, px, rgb};
+use gpui::{
+    AnyElement, Context, Div, FontWeight, Role, SharedString, Stateful, div, prelude::*, px, rgb,
+};
 
 use super::GameView;
-use crate::{audio::Effect, games::round_result, storage::Outcome, theme};
+use crate::{
+    audio::Effect,
+    games::{round_result, stage},
+    storage::Outcome,
+    theme,
+};
 
 impl GameView {
-    pub(super) fn toolbar(&self, width: f32, cx: &Context<Self>) -> Div {
+    pub(super) fn toolbar(&self, cx: &Context<Self>) -> Div {
         let size = self.round.game.puzzle().size();
         let number = self.round.number;
         let count = size.puzzle_count();
@@ -14,12 +21,11 @@ impl GameView {
             return div().font_weight(FontWeight::SEMIBOLD).child(size.label());
         }
         div()
-            .w(px(width))
             .flex()
             .flex_wrap()
-            .justify_between()
             .items_center()
-            .gap_2()
+            .gap_x_4()
+            .gap_y_2()
             .child(div().flex().gap_1().children(Size::ALL.map(|option| {
                 let id = match option {
                     Size::Compact => "kakuro-compact",
@@ -71,76 +77,66 @@ impl GameView {
             )
     }
 
-    pub(super) fn controls(&self, width: f32, stacked: bool, cx: &Context<Self>) -> Div {
+    pub(super) fn rail(&self, compact: bool, cx: &Context<Self>) -> Div {
         let round = &self.round;
         let game = &round.game;
-        if game.is_solved() {
-            return self.completion(width, cx);
-        }
         let palette = theme::colors(cx);
+        let solved = game.is_solved();
         let empty = game.empty_count();
-        let status = if empty == 1 {
+        let status = if solved {
+            "Puzzle solved".to_string()
+        } else if empty == 1 {
             "1 square left".to_string()
         } else {
             format!("{empty} squares left")
         };
-        let status_line = div()
-            .flex()
-            .flex_wrap()
-            .justify_between()
-            .items_center()
-            .gap_x_2()
-            .gap_y_1()
-            .child(div().font_weight(FontWeight::BOLD).child(status))
-            .when(game.has_conflicts(), |line| {
-                line.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(palette.danger))
-                        .child("Check red clues"),
-                )
-            });
-        let clues = div().flex().gap_2().children(
-            [Direction::Across, Direction::Down]
-                .map(|direction| self.clue_summary(direction, palette)),
-        );
-        let keypad = self.keypad(stacked, cx);
-        let actions = self.actions(width < 224., cx);
-        let mut panel = theme::panel(cx)
-            .w(px(width))
-            .flex_shrink_0()
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_3();
-        if stacked {
-            panel = panel
-                .child(keypad)
-                .child(actions)
-                .child(status_line)
-                .child(clues);
-        } else {
-            panel = panel
-                .child(status_line)
-                .child(clues)
-                .child(keypad)
-                .child(actions);
-        }
-        panel
-            .when_some(round.hint, |panel, hint| panel.child(self.hint_card(hint, cx)))
+        let heading = stage::rail_heading(cx, game.puzzle().size().label(), Some(status.into()));
+        stage::rail(cx)
             .child(
-                div()
-                    .pt_2()
-                    .border_t_1()
-                    .border_color(rgb(palette.border))
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(rgb(palette.muted))
-                    .child("Digits 1–9 must add to each run’s clue without repeats. Read upper-right clues across and lower-left clues down."),
+                stage::rail_section(cx)
+                    .child(heading)
+                    .when(game.has_conflicts(), |section| {
+                        section.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(rgb(palette.danger))
+                                .child("Check the red clues."),
+                        )
+                    })
+                    .when(!solved, |section| {
+                        section.child(div().flex().gap_2().children(
+                            [Direction::Across, Direction::Down]
+                                .map(|direction| self.clue_summary(direction, palette)),
+                        ))
+                    }),
             )
+            .when(!solved, |rail| {
+                rail.child(
+                    stage::rail_section(cx)
+                        .child(self.keypad(compact, cx))
+                        .child(self.actions(false, cx))
+                        .when_some(round.hint, |section, hint| {
+                            section.child(self.hint_card(hint, cx))
+                        }),
+                )
+                .child(
+                    stage::rail_section(cx)
+                        .text_size(px(12.))
+                        .line_height(px(17.))
+                        .text_color(rgb(palette.muted))
+                        .child("Digits 1–9 must add to each run’s clue without repeats. Read upper-right clues across and lower-left clues down."),
+                )
+            })
+            .child(stage::controls_help(
+                cx,
+                &[
+                    "Arrows move · Space finds the next blank",
+                    "1–9 enter · N toggles pencil · H opens a hint",
+                ],
+            ))
     }
 
-    fn completion(&self, width: f32, cx: &Context<Self>) -> Div {
+    pub(super) fn completion(&self, cx: &Context<Self>) -> AnyElement {
         let round = &self.round;
         let puzzle = round.game.puzzle();
         let title = match round.used_hint {
@@ -184,14 +180,7 @@ impl GameView {
                 },
             ))
             .child(self.undo_button(cx));
-        div().w(px(width)).flex_shrink_0().child(round_result(
-            cx,
-            "kakuro-result",
-            Outcome::Won,
-            title,
-            detail,
-            actions,
-        ))
+        round_result(cx, "kakuro-result", Outcome::Won, title, detail, actions)
     }
 
     fn clue_summary(&self, direction: Direction, palette: theme::Palette) -> Div {
@@ -439,17 +428,16 @@ fn control(
     cx: &Context<GameView>,
     action: impl Fn(&mut GameView) -> Option<Effect> + 'static,
 ) -> Stateful<Div> {
-    let palette = theme::colors(cx);
-    super::super::themed_control(cx, id, label, enabled)
+    let button = if active {
+        super::super::themed_choice(cx, id, label, true)
+    } else {
+        super::super::themed_control(cx, id, label, enabled)
+    };
+    button
         .debug_selector(move || id.into())
         .justify_center()
         .min_h(px(33.))
         .px_2()
-        .when(active, |button| {
-            button
-                .bg(rgb(palette.hover))
-                .border_color(rgb(palette.success))
-        })
         .when(enabled, |button| {
             button.on_click(cx.listener(move |view, _, window, cx| {
                 let effect = action(view);

@@ -71,6 +71,31 @@ pub(crate) struct ShellLayout {
     viewport_width: f32,
 }
 
+/// Height of the app-drawn header: a strip for the macOS traffic lights above the top bar.
+pub(crate) fn header_height(window: &Window) -> f32 {
+    let lights = if cfg!(target_os = "macos") && !window.is_fullscreen() {
+        widgets::TRAFFIC_LIGHT_STRIP
+    } else {
+        0.
+    };
+    lights + widgets::TOP_BAR_HEIGHT
+}
+
+/// The window height a page can use inside the shell's header and the content card's margins.
+#[cfg(not(test))]
+pub(crate) fn content_height(window: &Window) -> f32 {
+    f32::from(window.viewport_size().height) - header_height(window) - CARD_MARGIN
+}
+
+/// Game tests render a view on its own, without the shell around it.
+#[cfg(test)]
+pub(crate) fn content_height(window: &Window) -> f32 {
+    f32::from(window.viewport_size().height)
+}
+
+/// Space around the content card, between it and the window edge or sidebar.
+pub(crate) const CARD_MARGIN: f32 = 8.;
+
 impl ShellLayout {
     const MAX_PAGE_WIDTH: f32 = 1440.;
 
@@ -90,7 +115,7 @@ impl ShellLayout {
     }
 
     pub fn page_width(&self) -> f32 {
-        (self.viewport_width - self.sidebar_width()).clamp(0., Self::MAX_PAGE_WIDTH)
+        (self.viewport_width - self.sidebar_width() - CARD_MARGIN).clamp(0., Self::MAX_PAGE_WIDTH)
     }
 
     pub fn content_width(&self) -> f32 {
@@ -477,29 +502,53 @@ impl Render for Desktop {
             ))
             .size_full()
             .flex()
+            .flex_col()
             .tab_group()
             .font_family(theme::BODY)
             .text_size(px(15.))
             .line_height(px(23.))
             .text_color(rgb(palette.ink))
-            .bg(rgb(palette.paper))
-            .child(widgets::sidebar(self, &layout, short, cx))
+            .relative()
+            .bg(rgb(palette.rail))
             .child(
                 div()
-                    .id("page-scroll")
                     .flex_1()
-                    .h_full()
-                    .min_w_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
+                    .min_h_0()
+                    .flex()
+                    .pt(px(header_height(window)))
+                    .pr(px(CARD_MARGIN))
+                    .pb(px(CARD_MARGIN))
+                    .child(widgets::sidebar(self, &layout, short, cx))
                     .child(
                         div()
-                            .w(px(layout.page_width()))
-                            .mx_auto()
-                            .px(px(layout.page_gutter()))
-                            .py(px(page_padding))
-                            .child(content),
+                            .id("page-scroll")
+                            .flex_1()
+                            .h_full()
+                            .min_w_0()
+                            .rounded_xl()
+                            .border_1()
+                            .border_color(rgb(palette.border))
+                            .bg(rgb(palette.paper))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .child(
+                                div()
+                                    .w(px(layout.page_width()))
+                                    .max_w_full()
+                                    .mx_auto()
+                                    .px(px(layout.page_gutter()))
+                                    .py(px(page_padding))
+                                    .child(content),
+                            ),
                     ),
+            )
+            // Drawn after the page so keyboard focus reaches navigation before the header.
+            .child(
+                widgets::top_bar(self, window, cx)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0(),
             )
             .children(guide)
     }
@@ -562,10 +611,10 @@ mod tests {
     #[test]
     fn shell_widths_account_for_sidebar_gutters_and_page_cap() {
         for (viewport, sidebar, content) in [
-            (760., 64., 664.),
-            (900., 64., 804.),
-            (960., 174., 742.),
-            (1080., 220., 792.),
+            (760., 64., 656.),
+            (900., 64., 796.),
+            (960., 174., 734.),
+            (1080., 220., 784.),
             (1800., 220., 1372.),
         ] {
             let layout = ShellLayout::new(px(viewport));
@@ -753,13 +802,15 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "tab shift-tab");
         assert_eq!(focused(cx), library);
 
+        // Opening a page returns focus to the window, so each step tabs in from the top of the
+        // sidebar. The header's history and settings controls come after the page.
         for (tabs, key, page) in [
             ("tab", "enter", Page::Solitaire),
             ("tab", "space", Page::Library),
-            ("tab", "enter", Page::Solitaire),
-            ("tab tab tab tab", "enter", Page::DailyChallenge),
-            ("tab tab tab tab tab", "enter", Page::Records),
-            ("tab tab", "enter", Page::Library),
+            ("tab tab", "enter", Page::Solitaire),
+            ("tab tab tab", "enter", Page::DailyChallenge),
+            ("tab tab tab tab", "enter", Page::Records),
+            ("tab", "enter", Page::Library),
         ] {
             cx.simulate_keystrokes(window.into(), tabs);
             let keystroke = Keystroke::parse(key).unwrap();

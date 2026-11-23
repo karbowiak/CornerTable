@@ -15,7 +15,10 @@ use self::{
 };
 use crate::{audio, games::round_result, storage::Outcome as RecordOutcome, theme as t};
 
-use super::GameLaunch;
+use super::{
+    GameLaunch,
+    stage::{self, Layout, Stage},
+};
 
 pub struct GameView {
     table: Table,
@@ -214,44 +217,34 @@ impl GameView {
         }
     }
 
-    fn status(&self, beside: bool, legal: &[Step], cx: &Context<Self>) -> AnyElement {
-        let game = self.table.game();
-        if let Some((outcome, title, detail)) = result_copy(game, self.table.mode) {
-            return round_result(
-                cx,
-                "checkers-result",
-                outcome,
-                title,
-                detail,
-                self.actions(cx),
-            );
-        }
+    fn result_card(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let (outcome, title, detail) = result_copy(self.table.game(), self.table.mode)?;
+        Some(round_result(
+            cx,
+            "checkers-result",
+            outcome,
+            title,
+            detail,
+            self.actions(cx),
+        ))
+    }
+
+    fn status(&self, legal: &[Step], cx: &Context<Self>) -> Stateful<Div> {
         let colors = t::colors(cx);
-        let (title, detail) = self.status_copy(legal);
-        t::panel(cx)
+        let game = self.table.game();
+        let (title, detail) = if game.outcome() == Outcome::Playing {
+            self.status_copy(legal)
+        } else {
+            ("Match over", "Undo to review, or play again.")
+        };
+        div()
             .id("checkers-status")
             .role(Role::Status)
             .aria_label(format!("{title}. {detail}"))
             .flex()
-            .when(beside, |panel| panel.flex_col())
-            .when(!beside, |panel| panel.items_center().justify_between())
-            .gap_2()
-            .px_3()
-            .py_2()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(t::display_type(title, 20.))
-                    .child(
-                        div()
-                            .mt_1()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .text_color(rgb(colors.muted))
-                            .child(detail),
-                    ),
-            )
+            .flex_col()
+            .gap_3()
+            .child(stage::rail_heading(cx, title, Some(detail.into())))
             .child(
                 div()
                     .flex()
@@ -259,11 +252,9 @@ impl GameView {
                     .gap_1()
                     .children([Side::Red, Side::Light].map(|side| {
                         let (pieces, kings) = game.material(side);
-                        side_count(side, pieces, kings, game.side() == side, colors)
-                            .when(beside, |count| count.flex_1())
+                        side_count(side, pieces, kings, game.side() == side, colors).flex_1()
                     })),
             )
-            .into_any_element()
     }
 
     fn status_copy(&self, legal: &[Step]) -> (&'static str, &'static str) {
@@ -375,27 +366,31 @@ impl GameView {
     fn match_panel(&self, cx: &Context<Self>) -> Div {
         let colors = t::colors(cx);
         let computer = self.table.mode == Mode::Computer;
-        t::panel(cx)
+        div()
             .w_full()
             .flex()
             .flex_col()
             .gap_2()
-            .p_3()
-            .child(t::display_type("Match", 20.))
             .child(
                 div()
-                    .flex()
-                    .gap_1()
-                    .children([
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Opponent"),
+            )
+            .child(
+                div().flex().gap_1().children(
+                    [
                         (Mode::Computer, "checkers-computer", "Computer"),
                         (Mode::Local, "checkers-local", "Two players"),
-                    ].map(|(mode, id, label)| {
+                    ]
+                    .map(|(mode, id, label)| {
                         let active = mode == self.table.mode;
                         button(id, label, active, true, cx)
                             .flex_1()
                             .aria_toggled(active.into())
                             .on_click(cx.listener(move |view, _, _, cx| view.switch_mode(mode, cx)))
-                    })),
+                    }),
+                ),
             )
             .child(
                 div()
@@ -414,28 +409,36 @@ impl GameView {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("Difficulty"))
-                        .child(div().flex().gap_1().children(DIFFICULTIES.into_iter().map(|difficulty| {
-                            let (id, label, description) = difficulty_label(difficulty);
-                            let active = self.table.difficulty == difficulty;
-                            button(id, label, active, true, cx)
-                                .flex_1()
-                                .px_1()
-                                .aria_toggled(active.into())
-                                .aria_description(description)
-                                .on_click(cx.listener(move |view, _, _, cx| view.change_difficulty(difficulty, cx)))
-                        }))),
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Difficulty"),
+                        )
+                        .child(div().flex().gap_1().children(DIFFICULTIES.into_iter().map(
+                            |difficulty| {
+                                let (id, label, description) = difficulty_label(difficulty);
+                                let active = self.table.difficulty == difficulty;
+                                button(id, label, active, true, cx)
+                                    .flex_1()
+                                    .px_1()
+                                    .aria_toggled(active.into())
+                                    .aria_description(description)
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.change_difficulty(difficulty, cx)
+                                    }))
+                            },
+                        ))),
                 )
             })
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(rgb(colors.border))
-                    .pt_2()
+    }
+
+    fn rules(&self, cx: &Context<Self>) -> Div {
+        let colors = t::colors(cx);
+        div()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(t::display_type("How to play", 17.))
                     .child(
                         rule_note(colors)
                             .child("Move one square diagonally forward. Jump when you can, chaining with the same piece."),
@@ -452,69 +455,52 @@ impl GameView {
                                     .min_w_0()
                                     .child("Crowning at the far edge ends your turn. Kings move and jump both ways."),
                             ),
-                    ),
-            )
+                    )
     }
 }
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_computer(cx);
-        let colors = t::colors(cx);
-        let available = super::board_space(window) + 30.;
-        let height = f32::from(window.viewport_size().height);
-        let panel = if available < 690. { 244. } else { 268. };
-        let gap = if available < 690. { 16. } else { 22. };
-        let side_by_side = available - panel - gap;
-        let beside = side_by_side >= 322.;
-        let board_room = if beside { side_by_side } else { available };
-        let height_budget = height - if beside { 114. } else { 210. };
-        let side = board_room.min(height_budget.max(322.)).min(630.).floor();
+        let stage = Stage::measure(window, Layout::Rail, false);
+        let side = stage
+            .board_width
+            .min(stage.board_height)
+            .clamp(322., 760.)
+            .floor();
         let playing = self.table.game().outcome() == Outcome::Playing;
         let legal = if self.player_turn() {
             self.table.game().legal_steps()
         } else {
             Vec::new()
         };
-
-        let status = self.status(beside, &legal, cx);
-        let board = self.board(side, &legal, window, cx);
-        let keyboard_help = div()
-            .text_color(rgb(colors.muted))
-            .text_size(px(12.))
-            .line_height(px(17.))
-            .child(if playing {
-                "Arrow keys to move · Enter or Space to act · U to undo"
-            } else {
-                "Arrow keys to review · U to undo"
-            });
-        let layout = div().w_full().flex().gap(px(gap));
-        let board_column = div().w(px(side)).flex_none().flex().flex_col().gap_2();
-        if beside {
-            layout
-                .items_start()
-                .child(board_column.child(board).child(keyboard_help))
-                .child(
-                    div()
-                        .w(px(panel))
-                        .flex_none()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(status)
-                        .when(playing, |column| column.child(self.actions(cx)))
-                        .child(self.match_panel(cx)),
-                )
-        } else {
-            layout.flex_col().items_center().child(
-                board_column
-                    .child(status)
-                    .child(board)
-                    .when(playing, |column| column.child(self.actions(cx)))
-                    .child(keyboard_help)
-                    .child(self.match_panel(cx)),
+        let rail = stage::rail(cx)
+            .child(
+                stage::rail_section(cx)
+                    .child(self.status(&legal, cx))
+                    .when(playing, |section| section.child(self.actions(cx))),
             )
-        }
+            .child(stage::rail_section(cx).child(self.match_panel(cx)))
+            .child(stage::rail_section(cx).child(self.rules(cx)))
+            .child(stage::controls_help(
+                cx,
+                if playing {
+                    &[
+                        "Click a marked piece, then a marked square",
+                        "Arrow keys move · Enter or Space acts",
+                        "U undoes",
+                    ]
+                } else {
+                    &["Arrow keys review the board", "U undoes"]
+                },
+            ));
+        stage.render(
+            cx,
+            None,
+            self.board(side, &legal, window, cx),
+            self.result_card(cx),
+            rail,
+        )
     }
 }
 
@@ -691,19 +677,21 @@ fn button(
         .px_2()
         .rounded_md()
         .border_1()
-        .border_color(rgb(if active {
-            colors.gold_text
-        } else {
-            colors.border
-        }))
+        .border_color(rgb(if active { t::GOLD } else { colors.border }))
         .bg(rgb(if active {
-            colors.hover
+            t::GOLD
         } else if enabled {
             colors.surface
         } else {
             colors.paper
         }))
-        .text_color(rgb(if enabled { colors.ink } else { colors.muted }))
+        .text_color(rgb(if active {
+            t::INK
+        } else if enabled {
+            colors.ink
+        } else {
+            colors.muted
+        }))
         .text_size(px(12.))
         .line_height(px(15.))
         .font_weight(FontWeight::SEMIBOLD)
@@ -713,7 +701,9 @@ fn button(
                 .aria_label(label.clone())
                 .tab_index(0)
                 .cursor_pointer()
-                .hover(|style| style.bg(rgb(colors.hover)))
+                .hover(move |style| {
+                    style.bg(rgb(if active { t::GOLD_HOVER } else { colors.hover }))
+                })
                 .focus_visible(|style| style.border_color(rgb(colors.ink)))
         })
         .child(label)

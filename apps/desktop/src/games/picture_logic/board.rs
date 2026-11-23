@@ -12,7 +12,7 @@ impl GameView {
     pub(super) fn grid(
         &self,
         available: f32,
-        compact: bool,
+        height_budget: f32,
         paint: Colors,
         window: &Window,
         cx: &Context<Self>,
@@ -31,17 +31,14 @@ impl GameView {
             .unwrap_or(0)
             .max(1);
         let target: f32 = match width {
-            0..=5 => 66.,
-            6..=7 => 53.,
-            8..=10 => 42.,
-            11..=12 => 36.,
-            _ => 32.,
+            0..=5 => 92.,
+            6..=7 => 72.,
+            8..=10 => 56.,
+            11..=12 => 46.,
+            _ => 38.,
         };
         let left_slot = if available < 420. { 18. } else { 20. };
         let max_step = ((available - left_slots as f32 * left_slot - 1.) / width as f32).floor();
-        // Leave room for the game's heading, its controls, and the paper margins.
-        let height_budget =
-            f32::from(window.viewport_size().height) - if compact { 292. } else { 187. };
         let min_height_step = if width <= 7 { 36. } else { 22. };
         let height_step = ((height_budget - top_slots as f32 * 19. - 1.) / height as f32)
             .floor()

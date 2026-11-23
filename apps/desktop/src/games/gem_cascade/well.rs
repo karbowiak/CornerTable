@@ -202,7 +202,7 @@ impl Grid {
                 point,
                 GAP,
                 bounds.size.height.into(),
-                color(0x13131b, 0.72),
+                color(0x18130f, 0.72),
             );
         }
         for row in 1..ROWS {

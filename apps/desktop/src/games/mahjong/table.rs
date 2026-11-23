@@ -85,7 +85,7 @@ impl TableGeometry {
             (false, None) => 210.,
             (false, Some(_)) => 237.,
         };
-        let height = f32::from(window.viewport_size().height) - chrome;
+        let height = crate::app::content_height(window) - chrome;
         // Make room for recovery while keeping the remaining tiles visible.
         let height = match outcome {
             Some(Outcome::Won) => (height - 96.).min(248.),

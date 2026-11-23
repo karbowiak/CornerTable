@@ -25,7 +25,15 @@ pub fn solitaire(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         .child(t::display_type("Choose a game", 28.))
         .child(widgets::columns(
             app.api.library.solitaire_modes.iter().map(|mode| {
-                widgets::tile(&mode.id, &mode.title, 157., open_mode(&mode.id), None, cx)
+                widgets::tile(
+                    &mode.id,
+                    &mode.title,
+                    Some(&mode.description),
+                    180.,
+                    open_mode(&mode.id),
+                    None,
+                    cx,
+                )
             }),
             if narrow { 3 } else { 5 },
             12.,

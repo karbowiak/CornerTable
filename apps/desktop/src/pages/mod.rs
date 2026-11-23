@@ -92,7 +92,9 @@ pub fn game(
                             cx,
                         )
                         .min_h(px(34.))
-                        .when(compact, |button| button.px_3().text_size(px(13.)))
+                        .px_3()
+                        .text_size(px(13.))
+                        .whitespace_nowrap()
                         .when(compact_daily, |button| button.px_2()),
                     ),
             ),

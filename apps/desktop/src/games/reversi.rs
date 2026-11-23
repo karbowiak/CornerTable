@@ -5,14 +5,18 @@ mod state;
 use std::time::Duration;
 
 use corner_table_reversi::{Disc, Position, Square, Turn, choose_move};
-use gpui::{Context, FocusHandle, KeyDownEvent, Render, Task, Window, div, prelude::*, px};
+use gpui::{Context, FocusHandle, KeyDownEvent, Render, Task, Window, div, prelude::*, rgb};
 
 use crate::{
     audio::{self, Effect},
     storage::Session,
+    theme,
 };
 
-use super::{GameEntry, GameLaunch, board_space};
+use super::{
+    GameEntry, GameLaunch,
+    stage::{self, Layout, Stage},
+};
 use state::{DisplayOptions, Opponent, Round, Saved};
 
 #[derive(Clone, Copy)]
@@ -283,69 +287,41 @@ fn starting_cursor(round: &Round) -> Square {
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let available = board_space(window);
-        let height = f32::from(window.viewport_size().height);
-        let wide = available >= 735.;
-        let compact = !wide && height < 720.;
-        let (rail, gap) = if wide { (268., 24.) } else { (172., 14.) };
-        let width = if wide || compact {
-            available - rail - gap
-        } else {
-            available
-        };
-        let height_budget = height - if wide { 142. } else { 218. };
-        let cell = ((width.min(height_budget).max(300.) - 2. * board::FRAME) / 8.)
+        let stage = Stage::measure(window, Layout::Rail, false);
+        let cell = ((stage.board_width.min(stage.board_height).max(300.) - 2. * board::FRAME) / 8.)
             .floor()
-            .min(76.);
-        let table = 8. * cell + 2. * board::FRAME;
-        let board = self.board(cell, window, cx);
-        let score = self.scoreboard(cx);
-        let controls = self.controls(cx);
-        let layout = div()
+            .min(96.);
+        let rail = stage::rail(cx)
+            .child(
+                div()
+                    .border_b_1()
+                    .border_color(rgb(theme::colors(cx).border))
+                    .child(self.scoreboard(cx)),
+            )
+            .child(stage::rail_section(cx).child(self.controls(cx)))
+            .child(stage::controls_help(
+                cx,
+                &[
+                    "Click a marked square to place a disc",
+                    "Tab to the board · Arrows select · Enter plays",
+                ],
+            ));
+        div()
             .id("reversi")
             .w_full()
-            .flex()
-            .items_start()
-            .gap(px(if wide { gap } else { 12. }))
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" && view.confirm_restart {
                     view.confirm_restart = false;
                     cx.stop_propagation();
                     cx.notify();
                 }
-            }));
-        if wide {
-            layout.child(board).child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .w(px(rail))
-                    .flex_none()
-                    .gap_4()
-                    .child(score)
-                    .child(controls),
-            )
-        } else if compact {
-            layout
-                .flex_col()
-                .max_w(px(table + gap + rail))
-                .child(score)
-                .child(
-                    div()
-                        .flex()
-                        .w_full()
-                        .items_start()
-                        .gap(px(gap))
-                        .child(board)
-                        .child(div().flex_1().min_w_0().child(controls)),
-                )
-        } else {
-            layout
-                .flex_col()
-                .max_w(px(table.max(420.)))
-                .child(score)
-                .child(div().w_full().flex().justify_center().child(board))
-                .child(controls)
-        }
+            }))
+            .child(stage.render(
+                cx,
+                None,
+                self.board(cell, window, cx),
+                self.result_card(cx),
+                rail,
+            ))
     }
 }

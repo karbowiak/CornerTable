@@ -14,10 +14,12 @@ use gpui::{
 use crate::{
     audio::{self, Effect},
     storage::{Outcome, ResultMetric, Session},
-    theme as t,
 };
 
-use super::{GameEntry, GameLaunch, board_space};
+use super::{
+    GameEntry, GameLaunch,
+    stage::{Layout, Stage},
+};
 use field::{Exchange, Motion, Scene};
 use journal::Journal;
 
@@ -517,15 +519,10 @@ impl Render for GameView {
             }
         }
 
-        let available = board_space(window) + 36.;
-        let compact = available < 660.;
-        let gutter = if compact { 12. } else { 20. };
-        let hud_width = ((available - gutter * 3.) * 0.315).clamp(150., 294.);
-        let field_width = available - gutter * 3. - hud_width - 2.;
-        let field_height = f32::from(window.viewport_size().height) - 107. - gutter * 2.;
-        let step = ((field_width.min(field_height) - field::FRAME * 2.) / SIDE as f32)
+        let stage = Stage::measure(window, Layout::Rail, false);
+        let step = ((stage.board_width.min(stage.board_height) - field::FRAME * 2.) / SIDE as f32)
             .floor()
-            .clamp(30., 89.);
+            .clamp(30., 100.);
         let settled = self.game.board();
         let scene = match &self.motion {
             Some(motion) => motion.scene(now, settled),
@@ -541,40 +538,16 @@ impl Render for GameView {
             .as_ref()
             .map_or(self.game.progress(), Motion::progress);
 
-        t::panel(cx)
-            .w_full()
-            .flex()
-            .items_start()
-            .justify_center()
-            .gap(px(gutter))
-            .p(px(gutter))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .flex_none()
-                    .child(
-                        div()
-                            .relative()
-                            .child(self.board(step, scene, displayed, window, cx))
-                            .children(self.result(cx)),
-                    )
-                    .when(self.game.status() == Status::Playing, |column| {
-                        column.child(
-                            div()
-                                .flex()
-                                .justify_between()
-                                .px(px(1.))
-                                .text_size(px(if compact { 11. } else { 12. }))
-                                .line_height(px(17.))
-                                .text_color(rgb(t::colors(cx).muted))
-                                .child("Drag or click an adjacent pair")
-                                .child("Arrows + Space"),
-                        )
-                    }),
-            )
-            .child(self.hud(hud_width, compact, displayed, cx))
+        stage.render(
+            cx,
+            None,
+            div()
+                .relative()
+                .child(self.board(step, scene, displayed, window, cx))
+                .children(self.result(cx)),
+            None,
+            self.hud(stage.rail_width(), displayed, cx),
+        )
     }
 }
 

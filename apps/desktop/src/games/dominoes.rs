@@ -453,15 +453,18 @@ impl Render for GameView {
             cx.on_next_frame(window, |view, window, cx| view.focus.focus(window, cx));
         }
         // Leave a little margin for the shell's page gutters at both breakpoints.
-        let width = board_space(window).clamp(330., 1150.);
+        let width = (board_space(window) + 36.).max(330.);
         let narrow = width < 660.;
-        let short = window.viewport_size().height < px(640.);
+        let height = crate::app::content_height(window);
+        let short = height < 640.;
+        let tall = !narrow && height >= 880.;
         let compact = narrow || short;
+        // The chain grows into whatever height the toolbar, scores, ends, and rack leave.
+        let fill = height - if tall { 520. } else { 480. };
         let result = self.round().outcome();
         div()
             .id("dominoes")
             .w_full()
-            .max_w(px(1150.))
             .flex()
             .flex_col()
             .gap(px(if short { 8. } else if narrow { 9. } else { 13. }))
@@ -480,7 +483,9 @@ impl Render for GameView {
             .when(result.is_some() && self.review_tiles, |page| {
                 page.child(self.remaining_tiles(compact, cx))
             })
-            .child(self.table_surface(width, narrow, short, cx))
-            .when(result.is_none(), |page| page.child(self.rack(compact, window, cx)))
+            .child(self.table_surface(width, fill, narrow, short, cx))
+            .when(result.is_none(), |page| {
+                page.child(self.rack(compact, tall, window, cx))
+            })
     }
 }

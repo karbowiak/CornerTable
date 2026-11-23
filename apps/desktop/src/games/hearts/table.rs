@@ -41,7 +41,9 @@ impl Layout {
     fn new(window: &Window) -> Self {
         let width = crate::games::board_space(window) + 36.;
         let compact = width < 700.;
-        let short = window.viewport_size().height < px(690.);
+        let short = crate::app::content_height(window) < 690.;
+        // Tall windows get bigger cards and a roomier trick mat.
+        let tall = !compact && crate::app::content_height(window) >= 830.;
         let inset = if compact || short { 13. } else { 22. };
         let inner = width - 2. * inset - 4.;
         let card_gap = if compact { 5. } else { 8. };
@@ -54,6 +56,7 @@ impl Layout {
             (7, true) => 46.,
             (7, false) => 52.,
             (_, true) => 61.,
+            _ if tall => 86.,
             _ => 69.,
         };
         let card_width = ((inner - (hand_cols - 1) as f32 * card_gap) / hand_cols as f32)
@@ -66,11 +69,19 @@ impl Layout {
             hand_cols,
             card_width,
             card_gap,
-            mat_width: if compact { 278. } else { 348. },
+            mat_width: if compact {
+                278.
+            } else if tall {
+                440.
+            } else {
+                348.
+            },
             mat_height: if short {
                 124.
             } else if compact {
                 222.
+            } else if tall {
+                336.
             } else {
                 261.
             },
@@ -78,6 +89,8 @@ impl Layout {
                 45.
             } else if compact {
                 50.
+            } else if tall {
+                80.
             } else {
                 62.
             },

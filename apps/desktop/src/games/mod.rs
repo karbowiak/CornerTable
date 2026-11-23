@@ -22,6 +22,7 @@ mod picture_logic;
 mod reversi;
 mod round_result;
 mod solitaire;
+mod stage;
 mod sudoku;
 mod word_games;
 
@@ -118,6 +119,49 @@ fn themed_control(
     enabled: bool,
 ) -> Stateful<Div> {
     styled_control(theme::colors(cx), id, label, enabled)
+}
+
+fn choice_style(
+    palette: theme::Palette,
+    id: &'static str,
+    label: impl Into<SharedString>,
+    selected: bool,
+) -> Stateful<Div> {
+    if !selected {
+        return styled_control(palette, id, label, true);
+    }
+    let label = label.into();
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .aria_selected(true)
+        .tab_index(0)
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .min_h(px(36.))
+        .px_3()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(theme::GOLD))
+        .bg(rgb(theme::GOLD))
+        .text_color(rgb(theme::INK))
+        .text_size(px(13.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .hover(|style| style.bg(rgb(theme::GOLD_HOVER)))
+        .focus_visible(|style| style.border_color(rgb(palette.ink)))
+        .child(label)
+}
+
+/// A control for one of several options, marked in gold when it is the chosen one.
+fn themed_choice(
+    cx: &App,
+    id: &'static str,
+    label: impl Into<SharedString>,
+    selected: bool,
+) -> Stateful<Div> {
+    choice_style(theme::colors(cx), id, label, selected)
 }
 
 fn styled_control(

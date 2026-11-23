@@ -20,7 +20,11 @@ use crate::{
     theme as t,
 };
 
-use super::{GameLaunch, board_space, round_result, themed_control};
+use super::{
+    GameLaunch, round_result,
+    stage::{self, Layout, Stage},
+    themed_choice, themed_control,
+};
 
 mod material;
 mod puzzle_controls;
@@ -32,53 +36,11 @@ use puzzle_progress::{PuzzleBook, SavedPuzzleBook};
 
 const CELL_GAP: f32 = 3.;
 const BOARD_EDGE: f32 = 12.;
-const PANEL_EDGE: f32 = 17.;
 const WALNUT: u32 = 0x4e3125;
 const PREVIEW_FITS: u32 = 0xffdb86;
 const PREVIEW_BLOCKED: u32 = 0xffa39a;
 const CLEAR_DURATION: f32 = 0.5;
 const SEAT_DURATION: Duration = Duration::from_millis(160);
-
-struct PlayLayout {
-    cell: f32,
-    board: f32,
-    controls: f32,
-    gap: f32,
-    stacked: bool,
-}
-
-impl PlayLayout {
-    fn fit(width: f32, viewport_height: f32) -> Self {
-        let gap = if width < 560. { 14. } else { 22. };
-        let gutters = 2. * BOARD_EDGE + (SIDE - 1) as f32 * CELL_GAP;
-        let rail = (width * 0.42).clamp(200., 268.);
-        let beside = width - rail - gap;
-        let stacked = beside < 26. * SIDE as f32 + gutters;
-        let board_room = if stacked { width } else { beside };
-        // Leave room for the page title and spacing as the window grows vertically.
-        let height = (viewport_height * 0.74).min(viewport_height - 112.);
-        let cell = ((board_room.min(height) - gutters) / SIDE as f32)
-            .floor()
-            .max(20.);
-        let board = cell * SIDE as f32 + gutters;
-        Self {
-            cell,
-            board,
-            controls: if stacked { board } else { rail },
-            gap,
-            stacked,
-        }
-    }
-
-    fn panel_width(&self) -> f32 {
-        let content = if self.stacked {
-            self.board
-        } else {
-            self.board + self.gap + self.controls
-        };
-        content + 2. * PANEL_EDGE
-    }
-}
 
 #[derive(Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1211,7 +1173,30 @@ impl GameView {
             })
     }
 
-    fn controls(
+    fn modes(&self, cx: &Context<Self>) -> Div {
+        div().flex().gap_1().children(
+            [
+                ("block-puzzle-classic", Mode::Classic),
+                ("block-puzzle-ten-trays", Mode::TenTrays),
+                ("block-puzzle-boards", Mode::PuzzleBoards),
+            ]
+            .into_iter()
+            .map(|(id, mode)| {
+                let active = self.mode == mode;
+                themed_choice(cx, id, mode.label(), active)
+                    .debug_selector(|| id.into())
+                    .aria_toggled(active.into())
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        cx.stop_active_drag(window);
+                        view.switch(mode);
+                        view.focus.focus(window, cx);
+                        cx.notify();
+                    }))
+            }),
+        )
+    }
+
+    fn rail(
         &self,
         width: f32,
         cell: f32,
@@ -1221,7 +1206,9 @@ impl GameView {
     ) -> Div {
         let palette = t::colors(cx);
         let round = self.round();
-        let compact = width < 230.;
+        // Rail sections are padded by 16 on each side.
+        let width = width - 34.;
+        let compact = false;
         let is_puzzle = self.mode == Mode::PuzzleBoards;
         let solved = round.game.puzzle_solved();
         let remaining = round.game.placements_left();
@@ -1238,81 +1225,40 @@ impl GameView {
             ),
             None => "Complete rows or columns to clear space.".into(),
         };
-        div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(width))
-            .gap(px(if compact { 9. } else { 12. }))
-            .child(
-                div().flex().gap_1().children(
-                    [
-                        ("block-puzzle-classic", Mode::Classic),
-                        ("block-puzzle-ten-trays", Mode::TenTrays),
-                        ("block-puzzle-boards", Mode::PuzzleBoards),
-                    ]
-                    .into_iter()
-                    .map(|(id, mode)| {
-                        let active = self.mode == mode;
-                        themed_control(cx, id, mode.label(), true)
-                            .debug_selector(|| id.into())
-                            .flex_auto()
-                            .min_w_0()
-                            .px(px(3.))
-                            .text_size(px(12.))
-                            .whitespace_nowrap()
-                            .justify_center()
-                            .aria_toggled(active.into())
-                            .when(active, |button| {
-                                button
-                                    .bg(rgb(palette.hover))
-                                    .border_color(rgb(palette.gold_text))
-                            })
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                cx.stop_active_drag(window);
-                                view.switch(mode);
-                                view.focus.focus(window, cx);
-                                cx.notify();
-                            }))
-                    }),
-                ),
+        let heading = if is_puzzle {
+            stage::rail_section(cx).child(self.puzzle_brief(cx))
+        } else {
+            let best = if self.mode == Mode::Classic {
+                self.classic.best
+            } else {
+                self.ten_trays.best
+            };
+            let score = round.game.score();
+            stage::rail_section(cx).child(
+                div()
+                    .id("block-puzzle-score")
+                    .role(Role::Label)
+                    .aria_label(format!("{score} points, personal best {best}"))
+                    .flex()
+                    .justify_between()
+                    .items_baseline()
+                    .flex_wrap()
+                    .gap_x_2()
+                    .child(t::display_type(format!("{score} points"), 25.))
+                    .child(
+                        div()
+                            .text_color(rgb(palette.muted))
+                            .text_size(px(13.))
+                            .child(format!("Best {best}")),
+                    ),
             )
-            .when(is_puzzle, |rail| rail.child(self.puzzle_brief(cx)))
-            .when(!is_puzzle, |rail| {
-                let best = if self.mode == Mode::Classic {
-                    self.classic.best
-                } else {
-                    self.ten_trays.best
-                };
-                let score = round.game.score();
-                rail.child(
-                    div()
-                        .id("block-puzzle-score")
-                        .role(Role::Label)
-                        .aria_label(format!("{score} points, personal best {best}"))
-                        .flex()
-                        .justify_between()
-                        .items_baseline()
-                        .flex_wrap()
-                        .gap_x_2()
-                        .child(t::display_type(
-                            format!("{score} points"),
-                            if compact { 21. } else { 25. },
-                        ))
-                        .child(
-                            div()
-                                .text_color(rgb(palette.muted))
-                                .text_size(px(13.))
-                                .child(format!("Best {best}")),
-                        ),
-                )
-            })
+        };
+        stage::rail(cx)
+            .child(heading)
             .when(!solved, |rail| {
                 rail.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
+                    stage::rail_section(cx)
+                        .gap_2()
                         .child(
                             div()
                                 .flex()
@@ -1335,18 +1281,19 @@ impl GameView {
                 )
             })
             .when(!show_result, |rail| {
-                rail.children(self.status(status, palette, compact))
-                    .child(self.round_actions(None, compact, cx))
-            })
-            .when(!solved, |rail| {
                 rail.child(
-                    div()
-                        .text_color(rgb(palette.muted))
-                        .text_size(px(12.))
-                        .line_height(px(17.))
-                        .child("1–3 pick · Arrows move · Enter place"),
+                    stage::rail_section(cx)
+                        .children(self.status(status, palette, compact))
+                        .child(self.round_actions(None, compact, cx)),
                 )
             })
+            .child(stage::controls_help(
+                cx,
+                &[
+                    "Drag a piece onto the board, or click it then the board",
+                    "1–3 pick a piece · Arrows move · Enter places",
+                ],
+            ))
     }
 
     fn status(&self, status: String, palette: t::Palette, compact: bool) -> Option<Stateful<Div>> {
@@ -1474,28 +1421,28 @@ impl Render for GameView {
         }
         let outcome = self.round_outcome();
         let result = outcome.filter(|_| self.clear.is_none() && self.seat.is_none());
-        let layout = PlayLayout::fit(board_space(window), window.viewport_size().height.into());
-        t::panel(cx)
+        let stage = Stage::measure(window, Layout::Rail, true);
+        let gutters = 2. * BOARD_EDGE + (SIDE - 1) as f32 * CELL_GAP;
+        let cell = ((stage.board_width.min(stage.board_height) - gutters) / SIDE as f32)
+            .floor()
+            .clamp(20., 92.);
+        div()
             .id("block-puzzle-game")
             .on_key_down(cx.listener(Self::key_down))
             .w_full()
-            .max_w(px(layout.panel_width()))
-            .p(px(PANEL_EDGE - 1.))
-            .flex()
-            .when(layout.stacked, |panel| panel.flex_col())
-            .gap(px(layout.gap))
-            .items_start()
-            .when(!layout.stacked && layout.board >= 520., |panel| {
-                panel.items_center()
-            })
             .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .child(self.board(layout.cell, window, cx))
-                    .children(result.map(|outcome| self.result(outcome, cx))),
+                stage.render(
+                    cx,
+                    Some(self.modes(cx).into_any_element()),
+                    div()
+                        .relative()
+                        .flex_none()
+                        .child(self.board(cell, window, cx))
+                        .children(result.map(|outcome| self.result(outcome, cx))),
+                    None,
+                    self.rail(stage.rail_width(), cell, outcome, result.is_some(), cx),
+                ),
             )
-            .child(self.controls(layout.controls, layout.cell, outcome, result.is_some(), cx))
     }
 }
 

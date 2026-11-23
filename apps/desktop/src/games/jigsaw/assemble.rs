@@ -18,7 +18,7 @@ use super::{
     small_text,
 };
 
-const BOARD: u32 = 0x203b34;
+const BOARD: u32 = 0x2e251c;
 const CELL_GAP: f32 = 5.;
 const TRAY_PADDING: f32 = 6.;
 
@@ -703,8 +703,8 @@ fn paint_outlines(
     window: &mut Window,
 ) {
     for (mark, width, stroke, fill) in [
-        (Outline::Empty, 1.15, rgba(0x8ca99cbf), None),
-        (Outline::Placed, 1.1, rgba(0x112f2aa0), None),
+        (Outline::Empty, 1.15, rgba(0xb09c80bf), None),
+        (Outline::Placed, 1.1, rgba(0x1f1710a0), None),
         (Outline::Focus, 2., rgb(0xfff7df), Some(rgba(0xfff7df20))),
         (Outline::Hint, 2.5, rgb(t::GOLD), Some(rgba(0xefb94d40))),
         (Outline::Miss, 2., rgb(0xf9a885), Some(rgba(0xf9a88528))),

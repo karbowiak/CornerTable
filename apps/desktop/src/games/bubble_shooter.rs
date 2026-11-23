@@ -12,7 +12,7 @@ use corner_table_bubble_shooter::{
 use gpui::{
     AnyElement, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, Render, Role, SharedString, Stateful, Toggled, Window, canvas, div, prelude::*,
-    px, relative, rgb, rgba,
+    px, rgb, rgba,
 };
 
 use crate::{
@@ -23,7 +23,10 @@ use crate::{
 
 use self::progress::{Mode, Progress};
 use self::table::{Flight, Impact, Playfield, TABLE_HEIGHT, TABLE_WIDTH};
-use super::{GameLaunch, board_space, round_result};
+use super::{
+    GameLaunch, round_result,
+    stage::{self, Layout, Stage},
+};
 
 pub struct GameView {
     progress: Progress,
@@ -457,8 +460,7 @@ impl GameView {
         )
     }
 
-    fn rail(&self, width: f32, cx: &Context<Self>) -> Div {
-        let p = t::colors(cx);
+    fn rail(&self, cx: &Context<Self>) -> Div {
         let state = &self.progress;
         let round = &state.round;
         let stage = round.stage_info();
@@ -468,68 +470,60 @@ impl GameView {
             .map(|puzzle| puzzle.name)
             .or_else(|| stage.map(|stage| stage.name))
             .unwrap_or("Classic");
-        let compact = width < 220.;
-        div()
-            .flex_none()
-            .w(px(width))
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(if compact { 12. } else { 16. }))
-            .pt_1()
-            .when(state.mode() != Mode::Challenge, |rail| {
-                rail.child(self.mode_buttons(cx))
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(t::display_type(title, if compact { 23. } else { 28. }))
-                    .child(muted(p).child(match state.mode() {
-                        Mode::Stages if compact => format!(
-                            "{} shots for 3 stars",
-                            stage.expect("stage mode has stage info").par,
-                        ),
-                        Mode::Stages => format!(
-                            "Stage {} of {STAGE_COUNT} · {} shots for 3 stars",
-                            state.stage() + 1,
-                            stage.expect("stage mode has stage info").par,
-                        ),
-                        Mode::Challenge => format!(
-                            "Challenge · {} shots for 3 stars",
-                            stage.expect("challenge mode has stage info").par,
-                        ),
-                        Mode::Classic => "Clear the table".into(),
-                        Mode::Puzzles => {
-                            let shots = puzzle.expect("puzzle mode has puzzle info").shots();
-                            format!(
-                                "Clear in {shots} {}",
-                                if shots == 1 { "shot" } else { "shots" }
-                            )
-                        }
-                    })),
-            )
-            .when(state.mode() == Mode::Stages, |rail| {
-                rail.child(self.stage_picker(cx))
-            })
-            .when(state.mode() == Mode::Puzzles, |rail| {
-                rail.child(self.puzzle_picker(cx))
-            })
-            .child(self.scoreboard(cx))
-            .when(status == Status::Playing, |rail| {
-                rail.child(self.ammunition(cx))
-            })
-            .when(status == Status::Playing, |rail| {
-                rail.child(self.round_actions(cx)).child(self.feedback(cx))
-            })
-            .when(status == Status::Playing && !compact, |rail| {
-                rail.child(
-                    keyboard_help(p, self.has_next_ammo())
-                        .border_t_1()
-                        .border_color(rgb(p.border))
-                        .pt_3(),
+        let subtitle = match state.mode() {
+            Mode::Stages => format!(
+                "Stage {} of {STAGE_COUNT} · {} shots for 3 stars",
+                state.stage() + 1,
+                stage.expect("stage mode has stage info").par,
+            ),
+            Mode::Challenge => format!(
+                "Challenge · {} shots for 3 stars",
+                stage.expect("challenge mode has stage info").par,
+            ),
+            Mode::Classic => "Clear the table".into(),
+            Mode::Puzzles => {
+                let shots = puzzle.expect("puzzle mode has puzzle info").shots();
+                format!(
+                    "Clear in {shots} {}",
+                    if shots == 1 { "shot" } else { "shots" }
                 )
+            }
+        };
+        stage::rail(cx)
+            .child(
+                stage::rail_section(cx)
+                    .child(stage::rail_heading(cx, title, Some(subtitle.into())))
+                    .when(state.mode() == Mode::Stages, |section| {
+                        section.child(self.stage_picker(cx))
+                    })
+                    .when(state.mode() == Mode::Puzzles, |section| {
+                        section.child(self.puzzle_picker(cx))
+                    }),
+            )
+            .child(stage::rail_section(cx).child(self.scoreboard(cx)))
+            .when(status == Status::Playing, |rail| {
+                rail.child(
+                    stage::rail_section(cx)
+                        .child(self.ammunition(cx))
+                        .child(self.round_actions(cx))
+                        .child(self.feedback(cx)),
+                )
+                .child(stage::controls_help(
+                    cx,
+                    if self.has_next_ammo() {
+                        &[
+                            "Click the table to shoot",
+                            "← or → aims · Hold Shift for fine aim",
+                            "Space shoots · X swaps · R restarts",
+                        ]
+                    } else {
+                        &[
+                            "Click the table to shoot",
+                            "← or → aims · Hold Shift for fine aim",
+                            "Space shoots · R restarts",
+                        ]
+                    },
+                ))
             })
     }
 
@@ -558,9 +552,7 @@ impl GameView {
                 } else {
                     Toggled::False
                 })
-                .px_1()
-                .min_w_0()
-                .flex_1()
+                .px_3()
             }),
         )
     }
@@ -687,9 +679,6 @@ impl GameView {
             .flex()
             .flex_col()
             .gap_3()
-            .border_y_1()
-            .border_color(rgb(p.border))
-            .py_3()
             .child(
                 div()
                     .flex()
@@ -876,7 +865,7 @@ impl GameView {
         let p = t::colors(cx);
         let (bg, border, ink, hover) = match style {
             ButtonStyle::Gold => (t::GOLD, t::GOLD, t::INK, t::GOLD_HOVER),
-            ButtonStyle::Selected => (p.hover, p.gold_text, p.ink, p.hover),
+            ButtonStyle::Selected => (t::GOLD, t::GOLD, t::INK, t::GOLD_HOVER),
             ButtonStyle::Plain => (p.surface, p.border, p.ink, p.hover),
             ButtonStyle::Disabled => (p.paper, p.border, p.muted, p.paper),
         };
@@ -926,43 +915,21 @@ impl Render for GameView {
         if self.flight.is_some() || self.impact.is_some() {
             cx.on_next_frame(window, |view, _, cx| view.animate(cx));
         }
-        let available = board_space(window);
-        let compact = available < 580.;
-        let rail_width = if compact {
-            186.
-        } else {
-            (available * 0.30).clamp(224., 296.)
-        };
-        let gap = if compact { 12. } else { 22. };
+        let has_toolbar = self.progress.mode() != Mode::Challenge;
+        let stage = Stage::measure(window, Layout::Rail, has_toolbar);
         let aspect = (TABLE_WIDTH / TABLE_HEIGHT) as f32;
-        let width_limited = (available - rail_width - gap) / aspect;
-        let height = (f32::from(window.viewport_size().height) - 116.)
-            .min(width_limited)
-            .clamp(306., 840.);
+        let height = stage
+            .board_height
+            .min(stage.board_width / aspect)
+            .clamp(306., 900.);
         let width = height * aspect;
-        t::panel(cx)
-            .w(px(width + rail_width + gap + 34.))
-            .max_w(relative(1.))
-            .p_4()
-            .flex()
-            .items_start()
-            .gap(px(gap))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(width))
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(self.board(width, height, cx))
-                    .when(
-                        compact && self.progress.round.status() == Status::Playing,
-                        |column| {
-                            column.child(keyboard_help(t::colors(cx), self.has_next_ammo()).px_1())
-                        },
-                    ),
-            )
-            .child(self.rail(rail_width, cx))
+        stage.render(
+            cx,
+            has_toolbar.then(|| self.mode_buttons(cx).into_any_element()),
+            self.board(width, height, cx),
+            None,
+            self.rail(cx),
+        )
     }
 }
 
@@ -979,17 +946,6 @@ fn muted(p: t::Palette) -> Div {
         .text_size(px(13.))
         .line_height(px(19.))
         .text_color(rgb(p.muted))
-}
-
-fn keyboard_help(p: t::Palette, has_next_ammo: bool) -> Div {
-    muted(p)
-        .child("Click the table to shoot.")
-        .child(div().child("← or → aims · Hold Shift for fine aim"))
-        .child(div().child(if has_next_ammo {
-            "Space shoots · X swaps · R restarts"
-        } else {
-            "Space shoots · R restarts"
-        }))
 }
 
 fn metric(label: &'static str, value: impl Into<SharedString>, p: t::Palette) -> Div {

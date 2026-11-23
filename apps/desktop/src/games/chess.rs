@@ -13,11 +13,14 @@ use std::{
 use corner_table_chess::{
     Color, ComputerTurn, Decision, DrawClaim, Game, Move, Piece, Square, choose_turn,
 };
-use gpui::{Context, FocusHandle, KeyDownEvent, Render, Task, Window, div, prelude::*, px};
+use gpui::{Context, FocusHandle, KeyDownEvent, Render, Task, Window, div, prelude::*};
 
 use crate::audio::{self, Effect};
 
-use super::{GameLaunch, board_space};
+use super::{
+    GameLaunch,
+    stage::{self, Layout, Stage},
+};
 use state::{Mode, Table};
 
 const PROMOTIONS: [Piece; 4] = [Piece::Queen, Piece::Rook, Piece::Bishop, Piece::Knight];
@@ -456,25 +459,27 @@ impl GameView {
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let available = board_space(window);
-        let height = f32::from(window.viewport_size().height);
-        let beside = available >= 534.;
-        let rail = if available >= 850. { 250. } else { 196. };
-        let gap = if available >= 850. { 22. } else { 16. };
-        let width = available - if beside { rail + gap } else { 0. };
-        let height_budget = height - if beside { 114. } else { 190. };
-        let tile = ((width.min(height_budget) - 2. * board::FRAME) / 8.)
+        let stage = Stage::measure(window, Layout::Rail, false);
+        let tile = ((stage.board_width.min(stage.board_height) - 2. * board::FRAME) / 8.)
             .floor()
-            .clamp(34., 80.);
-        let status = self.status(cx);
-        let board = self.board(tile, window, cx);
-        let controls = self.controls(cx);
-        let journal = self.journal(cx);
-        let board_width = 8. * tile + 2. * board::FRAME;
-        let layout = div()
+            .clamp(34., 96.);
+        let rail = stage::rail(cx)
+            .child(stage::rail_section(cx).child(self.status(cx)))
+            .child(stage::rail_section(cx).child(self.controls(cx)))
+            .children(
+                self.journal(cx)
+                    .map(|journal| stage::rail_section(cx).child(journal)),
+            )
+            .child(stage::controls_help(
+                cx,
+                &[
+                    "Click a piece, then a marked square",
+                    "Tab to the board · Arrows move the cursor",
+                    "Enter selects or plays · Esc cancels",
+                ],
+            ));
+        div()
             .id("chess")
-            .flex()
-            .items_start()
             .w_full()
             .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && view.cancel(window, cx) {
@@ -482,29 +487,14 @@ impl Render for GameView {
                 } else if view.promotion.is_some() {
                     view.promotion_key(event, window, cx);
                 }
-            }));
-        if beside {
-            layout.gap(px(gap)).child(board).child(
-                div()
-                    .w(px(rail))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(status)
-                    .child(controls)
-                    .children(journal),
-            )
-        } else {
-            layout
-                .flex_col()
-                .gap_3()
-                .max_w(px(board_width))
-                .child(status)
-                .child(board)
-                .child(controls)
-                .children(journal)
-        }
+            }))
+            .child(stage.render(
+                cx,
+                None,
+                self.board(tile, window, cx),
+                self.result_card(cx),
+                rail,
+            ))
     }
 }
 
@@ -529,7 +519,7 @@ fn piece_name(piece: Piece) -> &'static str {
 #[cfg(test)]
 mod tests {
     use corner_table_api::GameId;
-    use gpui::{KeyUpEvent, Keystroke, PlatformInput, TestAppContext, size};
+    use gpui::{KeyUpEvent, Keystroke, PlatformInput, TestAppContext, px, size};
 
     use super::*;
     use crate::games::GameEntry;

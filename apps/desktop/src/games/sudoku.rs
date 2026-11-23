@@ -13,7 +13,10 @@ use gpui::{
     relative, rgb, rgba,
 };
 
-use super::{GameEntry, GameLaunch, board_space, round_result};
+use super::{
+    GameEntry, GameLaunch, round_result,
+    stage::{self, Layout, Stage},
+};
 use crate::{
     audio::{self, Effect},
     daily, motion,
@@ -26,8 +29,6 @@ use persistence::PracticeModes;
 const HINT_SURFACE: u32 = 0xfcf0d3;
 const GROUP_GAP: f32 = 2.;
 const BOARD_EDGE: f32 = 2.;
-const SECTION_GAP: f32 = 18.;
-const PANEL_WIDTH: f32 = 284.;
 const ENTRY_PULSE: Duration = Duration::from_millis(230);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -355,6 +356,23 @@ impl GameView {
         cx.notify();
     }
 
+    fn toolbar(&self, cx: &Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x_4()
+            .gap_y_2()
+            .child(self.modes(cx))
+            .when_some(
+                match self.puzzle {
+                    Puzzle::Practice(format, selected) => Some((format, selected)),
+                    _ => None,
+                },
+                |toolbar, (format, selected)| toolbar.child(self.difficulty(format, selected, cx)),
+            )
+    }
+
     fn modes(&self, cx: &Context<Self>) -> Div {
         let format = self.round().game.format();
         let today = utc_day();
@@ -648,7 +666,6 @@ impl GameView {
                         None
                     },
                 )
-                .flex_1()
             }))
     }
 
@@ -779,51 +796,52 @@ impl GameView {
             )
     }
 
-    fn controls(&self, width: f32, compact: bool, cx: &Context<Self>) -> Div {
+    fn rail(&self, compact: bool, cx: &Context<Self>) -> Div {
         let palette = t::colors(cx);
         let round = self.round();
         let game = &round.game;
         let solved = game.is_solved();
         let daily = self.puzzle.is_daily();
-        let mut panel = t::panel(cx)
-            .w(px(width))
-            .flex_shrink_0()
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .when(compact, |panel| panel.p_3().gap_2());
-
-        if let Puzzle::Practice(format, selected) = self.puzzle {
-            panel = panel.child(self.difficulty(format, selected, cx));
-        }
-
-        if solved {
-            return div()
-                .w(px(width))
-                .flex_shrink_0()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(self.completion(None, cx))
-                .when(matches!(self.puzzle, Puzzle::Practice(..)), |layout| {
-                    layout.child(panel)
-                });
-        }
-
-        panel
-            .child(progress(game, palette))
-            .when(daily, |panel| panel.child(daily_goal(round, palette)))
-            .when_some(round.best.filter(|_| !daily), |panel, best| {
-                panel.child(best_result(best, palette))
+        let (title, instruction) = match self.puzzle {
+            Puzzle::Practice(Format::Standard, difficulty) => (
+                format!("Classic · {}", difficulty.label()),
+                "Fill every row, column, and box with 1–9.",
+            ),
+            Puzzle::Practice(Format::Mini, difficulty) => (
+                format!("Mini · {}", difficulty.label()),
+                "Fill every row, column, and 2×3 box with 1–6.",
+            ),
+            Puzzle::Daily(day) if day != utc_day() => (
+                "Previous daily".to_owned(),
+                "Select Daily puzzle for today’s grid.",
+            ),
+            Puzzle::Daily(_) | Puzzle::Challenge(_) => {
+                ("Daily puzzle".to_owned(), "Classic 9×9 · Medium difficulty")
+            }
+            Puzzle::Killer(_) => unreachable!(),
+        };
+        stage::rail(cx)
+            .child(
+                stage::rail_section(cx)
+                    .child(stage::rail_heading(cx, title, Some(instruction.into())))
+                    .child(progress(game, palette))
+                    .when(daily, |section| section.child(daily_goal(round, palette)))
+                    .when_some(round.best.filter(|_| !daily), |section, best| {
+                        section.child(best_result(best, palette))
+                    }),
+            )
+            .when(!solved, |rail| {
+                rail.child(
+                    stage::rail_section(cx)
+                        .child(self.keypad(compact, cx))
+                        .child(self.edit_actions(cx))
+                        .when_some(round.visible_hint(), |section, hint| {
+                            section.child(self.hint_panel(hint, false, cx))
+                        }),
+                )
+                .child(stage::rail_section(cx).child(self.reset_button(daily, false, cx)))
             })
-            .when(!compact, |panel| panel.child(self.keypad(compact, cx)))
-            .child(self.edit_actions(cx))
-            .when_some(round.visible_hint(), |panel, hint| {
-                panel.child(self.hint_panel(hint, false, cx))
-            })
-            .when(compact, |panel| panel.child(self.keypad(compact, cx)))
-            .child(self.reset_button(daily, false, cx))
+            .child(stage::controls_help(cx, shortcuts(game.format())))
     }
 
     fn completion(&self, next: Option<KillerPuzzle>, cx: &Context<Self>) -> AnyElement {
@@ -932,88 +950,55 @@ impl GameView {
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let palette = t::colors(cx);
         if self.focus_on_mount {
             self.focus_on_mount = false;
             cx.defer_in(window, |view, window, cx| view.focus.focus(window, cx));
         }
 
-        let root = div()
-            .id("sudoku-game")
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::key_down))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .when(!matches!(self.puzzle, Puzzle::Challenge(_)), |root| {
-                root.child(self.modes(cx))
-            });
-        if let Puzzle::Killer(puzzle) = self.puzzle {
-            return root
-                .role(gpui::Role::Group)
-                .aria_label("Sudoku practice")
-                .gap_2()
-                .child(self.killer_body(puzzle, window, cx));
-        }
-
         let format = self.round().game.format();
         let size = format.size();
-        let content = board_space(window);
-        let beside = content >= 500.;
-        let panel_width = if beside {
-            (content * 0.38).clamp(196., PANEL_WIDTH)
-        } else {
-            0.
-        };
-        let available = if beside {
-            content - panel_width - SECTION_GAP
-        } else {
-            content
-        };
-        let compact = window.viewport_size().height < px(700.) || (beside && panel_width < 250.);
+        let has_toolbar = !matches!(self.puzzle, Puzzle::Challenge(_));
+        let stage = Stage::measure(window, Layout::Rail, has_toolbar);
+        let compact = crate::app::content_height(window) < 760.;
         let gutters = GROUP_GAP * (size / format.box_columns() - 1) as f32 + BOARD_EDGE * 2.;
-        let max_cell = if format == Format::Mini { 69. } else { 54. };
-        let cell = ((available - gutters) / size as f32)
+        let max_cell = if format == Format::Mini { 96. } else { 76. };
+        let cell = ((stage.board_width.min(stage.board_height) - gutters) / size as f32)
             .clamp(22., max_cell)
             .floor();
-        let board_width = cell * size as f32 + gutters;
-        let panel_width = if beside { panel_width } else { board_width };
-        let instruction = match self.puzzle {
-            Puzzle::Practice(Format::Standard, _) => "Fill every row, column, and box with 1–9.",
-            Puzzle::Practice(Format::Mini, _) => "Fill every row, column, and 2×3 box with 1–6.",
-            Puzzle::Daily(day) if day != utc_day() => {
-                "Previous daily · Select Daily puzzle for today’s grid."
-            }
-            Puzzle::Daily(_) | Puzzle::Challenge(_) => "Classic 9×9 · Medium difficulty",
-            Puzzle::Killer(_) => unreachable!(),
+        let killer = match self.puzzle {
+            Puzzle::Killer(puzzle) => Some(puzzle),
+            _ => None,
+        };
+        let next_killer = killer.and_then(|puzzle| {
+            let position = KillerPuzzle::ALL
+                .iter()
+                .position(|&entry| entry == puzzle)?;
+            KillerPuzzle::ALL.get(position + 1).copied()
+        });
+        let result = self
+            .round()
+            .game
+            .is_solved()
+            .then(|| self.completion(next_killer, cx));
+        let rail = match killer {
+            Some(puzzle) => self.killer_rail(puzzle, compact, cx),
+            None => self.rail(compact, cx),
         };
 
-        root.child(
-            div()
-                .text_color(rgb(palette.muted))
-                .text_size(px(14.))
-                .child(instruction),
-        )
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .gap(px(SECTION_GAP))
-                .when(!beside, |row| row.flex_col())
-                .child(
-                    div()
-                        .w(px(board_width))
-                        .flex_shrink_0()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(self.board(cell, cx))
-                        .when(!self.round().game.is_solved(), |area| {
-                            area.child(shortcuts(size, palette))
-                        }),
-                )
-                .child(self.controls(panel_width, compact, cx)),
-        )
+        div()
+            .id("sudoku-game")
+            .role(gpui::Role::Group)
+            .aria_label("Sudoku")
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key_down))
+            .w_full()
+            .child(stage.render(
+                cx,
+                has_toolbar.then(|| self.toolbar(cx).into_any_element()),
+                self.board(cell, cx),
+                result,
+                rail,
+            ))
     }
 }
 
@@ -1206,22 +1191,20 @@ fn unit_name(unit: Unit) -> String {
     }
 }
 
-fn shortcuts(size: usize, palette: t::Palette) -> Div {
-    div()
-        .flex()
-        .flex_wrap()
-        .gap_x(px(12.))
-        .text_size(px(12.))
-        .line_height(px(19.))
-        .text_color(rgb(palette.muted))
-        .children([
-            "Arrows move".to_owned(),
-            format!("1–{size} enter digits"),
-            "Space finds a blank".to_owned(),
-            "N toggles notes".to_owned(),
-            "H shows a hint".to_owned(),
-            "Delete erases".to_owned(),
-        ])
+fn shortcuts(format: Format) -> &'static [&'static str] {
+    if format == Format::Mini {
+        &[
+            "Arrows move · 1–6 enter digits",
+            "Space finds a blank · Delete erases",
+            "N toggles notes · H shows a hint",
+        ]
+    } else {
+        &[
+            "Arrows move · 1–9 enter digits",
+            "Space finds a blank · Delete erases",
+            "N toggles notes · H shows a hint",
+        ]
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1258,11 +1241,11 @@ fn control(
     let title = title.into();
     let (fill, border, ink) = match style {
         ButtonStyle::Normal => (palette.surface, palette.border, palette.ink),
-        ButtonStyle::Active => (palette.hover, palette.success, palette.ink),
+        ButtonStyle::Active => (t::GOLD, t::GOLD, t::INK),
         ButtonStyle::Primary => (t::GOLD, t::GOLD, t::INK),
         ButtonStyle::Disabled => (palette.paper, palette.border, palette.muted),
     };
-    let hover = if style == ButtonStyle::Primary {
+    let hover = if matches!(style, ButtonStyle::Primary | ButtonStyle::Active) {
         t::GOLD_HOVER
     } else {
         palette.hover
@@ -1271,7 +1254,7 @@ fn control(
         .id(id.clone())
         .debug_selector(move || id.to_string())
         .min_h(px(36.))
-        .px_2()
+        .px_3()
         .flex()
         .items_center()
         .justify_center()

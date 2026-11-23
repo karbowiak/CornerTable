@@ -25,10 +25,9 @@ use assemble::TrayLayout;
 use gallery::Gallery;
 use progress::SavedGallery;
 
-const MAT: u32 = 0x25463e;
+const MAT: u32 = 0x3a2e23;
 const FRAME_PADDING: f32 = 10.;
 const WORKSPACE_GAP: f32 = 18.;
-const MAX_TABLE_WIDTH: f32 = 1092.;
 const RESULT_WIDTH: f32 = 276.;
 
 struct Painting {
@@ -844,17 +843,18 @@ impl Render for GameView {
             self.prepare_artwork(cx);
         }
 
-        let available = board_space(window).min(MAX_TABLE_WIDTH - 34.);
+        let available = board_space(window);
         let wide = available >= 710.;
         let side_by_side = wide || (complete && available >= 600.);
+        // Match the shared stage rail.
         let side_width = if wide {
-            (available * 0.28).clamp(235., 288.)
+            (available * 0.3).clamp(240., 360.).floor()
         } else {
             176.
         };
         let workspace_side_width = if complete { RESULT_WIDTH } else { side_width };
-        let height = f32::from(window.viewport_size().height);
-        let max_image_height = (height - 425.).clamp(240., 516.);
+        let height = crate::app::content_height(window);
+        let max_image_height = (height - 360.).clamp(240., 760.);
         let max_board_width = if side_by_side {
             available - workspace_side_width - WORKSPACE_GAP
         } else {
@@ -908,7 +908,6 @@ impl Render for GameView {
 
         t::panel(cx)
             .w_full()
-            .max_w(px(MAX_TABLE_WIDTH))
             .p_4()
             .flex()
             .flex_col()
@@ -948,7 +947,7 @@ fn framed_board(board: Div) -> Div {
     div()
         .p(px(FRAME_PADDING))
         .border_1()
-        .border_color(rgb(0x39584e))
+        .border_color(rgb(0x5a4733))
         .rounded_lg()
         .bg(rgb(MAT))
         .child(board.rounded_sm().overflow_hidden())
@@ -1004,12 +1003,15 @@ fn segment(
         .text_size(px(12.))
         .font_weight(FontWeight::SEMIBOLD)
         .when(current, |button| {
-            button.bg(rgb(palette.ink)).text_color(rgb(palette.surface))
+            button
+                .bg(rgb(t::GOLD))
+                .text_color(rgb(t::INK))
+                .hover(|style| style.bg(rgb(t::GOLD_HOVER)))
         })
         .when(!current, |button| {
             button.hover(move |style| style.bg(rgb(palette.hover)))
         })
-        .focus_visible(|style| style.bg(rgb(t::GOLD)).text_color(rgb(t::INK)))
+        .focus_visible(|style| style.bg(rgb(t::GOLD_HOVER)).text_color(rgb(t::INK)))
         .child(label)
 }
 

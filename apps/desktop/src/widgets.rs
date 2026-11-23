@@ -4,7 +4,7 @@ use gpui::{
     Stateful, Toggled, Window, div, img, prelude::*, px, relative, rgb, rgba,
 };
 
-use crate::app::{Action, Desktop, Page, ShellLayout, SidebarLayout};
+use crate::app::{Action, CARD_MARGIN, Desktop, Page, ShellLayout, SidebarLayout};
 use crate::{audio, games::GameEntry, theme as t};
 
 pub fn clickable(id: impl Into<ElementId>, action: Action, cx: &Context<Desktop>) -> Stateful<Div> {
@@ -51,13 +51,27 @@ pub fn button(
         .child(label)
 }
 
+/// A compact button for filters and toggles, sized like the game screens' controls.
+pub fn chip(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    action: Action,
+    selected: bool,
+    cx: &Context<Desktop>,
+) -> Stateful<Div> {
+    button(id, label, action, selected, cx)
+        .min_h(px(34.))
+        .px_3()
+        .text_size(px(13.))
+        .whitespace_nowrap()
+}
+
 pub(crate) fn sidebar(
     app: &Desktop,
     layout: &ShellLayout,
     short: bool,
     cx: &Context<Desktop>,
 ) -> Stateful<Div> {
-    let palette = t::colors(cx);
     let compact = layout.sidebar == SidebarLayout::Compact;
     let narrow = layout.sidebar == SidebarLayout::Medium;
     let current = match &app.page {
@@ -85,65 +99,125 @@ pub(crate) fn sidebar(
         .aria_label("Sidebar")
         .w(px(layout.sidebar_width()))
         .flex_shrink_0()
-        .bg(rgb(palette.rail))
         .text_color(rgb(t::PAPER))
         .flex()
         .flex_col()
-        .justify_between()
+        .gap(px(if short { 12. } else { 16. }))
         .px(px(if compact { 9. } else { 12. }))
-        .pt(px(if short { 16. } else { 28. }))
-        .pb(px(if short { 12. } else { 20. }))
+        .pt(px(if short { 4. } else { 8. }))
+        .pb(px(CARD_MARGIN))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(if short { 12. } else { 16. }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .when(compact, |brand| brand.justify_center())
-                        .child(symbol("mark", t::GOLD, 25.))
-                        .when(!compact, |brand| {
-                            brand.child(
-                                t::display_type("Corner Table", if narrow { 16. } else { 20. })
-                                    .whitespace_nowrap(),
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .when(compact, |history| history.flex_col().gap_1())
-                        .children([
-                            history_button(NavigationDirection::Back, app, compact, cx),
-                            history_button(NavigationDirection::Forward, app, compact, cx),
-                        ]),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(if compact { 4. } else { 8. }))
-                        .children(pages.map(|destination| {
-                            page_button(destination, &current, layout.sidebar, short, cx)
-                        })),
-                )
-                .children(last_played(app, compact, cx)),
+                .gap(px(if compact || narrow { 4. } else { 6. }))
+                .children(pages.map(|destination| {
+                    page_button(destination, &current, layout.sidebar, short, cx)
+                })),
         )
+        .children(last_played(app, compact, cx))
+}
+
+/// Height of the strip that holds the macOS traffic lights above the top bar.
+pub const TRAFFIC_LIGHT_STRIP: f32 = 28.;
+pub const TOP_BAR_HEIGHT: f32 = 44.;
+/// Header controls follow the sidebar and page in keyboard order.
+const HEADER_TAB_ORDER: isize = 1;
+
+/// The window's header: brand and history on the left, sound and appearance on the right.
+/// On macOS it doubles as the title bar, so its empty space drags the window.
+pub(crate) fn top_bar(app: &Desktop, window: &Window, cx: &Context<Desktop>) -> Div {
+    let draggable = cfg!(target_os = "macos") && !window.is_fullscreen();
+    let interactive = |group: Div| group.when(draggable, |group| group.block_mouse_except_scroll());
+    let brand = clickable("top-bar-brand", Action::Navigate(Page::Library), cx)
+        .tab_index(HEADER_TAB_ORDER)
+        .aria_label("Corner Table, open the library")
+        .h(px(34.))
+        .pl(px(6.))
+        .pr_3()
+        .flex()
+        .items_center()
+        .gap_2()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(0x4a3d30))
+        .bg(rgb(0x2b231b))
+        .hover(|style| style.bg(rgb(0x3a2f24)))
         .child(
             div()
+                .size(px(24.))
+                .rounded_full()
                 .flex()
-                .flex_col()
-                .gap_2()
-                .when(audio::is_supported(), |settings| {
-                    settings.child(sound_control(app, compact, cx))
-                })
-                .child(appearance_control(app, compact, cx)),
+                .items_center()
+                .justify_center()
+                .bg(rgb(0x3a2f24))
+                .child(symbol("mark", t::GOLD, 17.)),
         )
+        .child(t::display_type("Corner Table", 15.).whitespace_nowrap());
+    div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .text_color(rgb(t::PAPER))
+        .when(draggable, |header| {
+            header
+                .child(div().h(px(TRAFFIC_LIGHT_STRIP)))
+                .on_mouse_down(gpui::MouseButton::Left, drag_window)
+        })
+        .child(
+            div()
+                .h(px(TOP_BAR_HEIGHT))
+                .px_3()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    interactive(div().flex().items_center().gap_2())
+                        .child(brand)
+                        .child(history_button(NavigationDirection::Back, app, cx))
+                        .child(history_button(NavigationDirection::Forward, app, cx)),
+                )
+                .child(
+                    interactive(div().flex().items_center().gap_2())
+                        .when(audio::is_supported(), |controls| {
+                            controls.child(sound_control(app, cx))
+                        })
+                        .child(appearance_control(app, cx)),
+                ),
+        )
+}
+
+fn drag_window(event: &gpui::MouseDownEvent, window: &mut Window, _: &mut gpui::App) {
+    // AppKit needs the original mouse-down event to begin a native window drag.
+    if event.click_count == 2 {
+        window.titlebar_double_click();
+    } else {
+        window.start_window_move();
+    }
+}
+
+/// A rounded control for the header.
+fn header_pill(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .tab_index(HEADER_TAB_ORDER)
+        .cursor_pointer()
+        .h(px(32.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap_1p5()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(0x4a3d30))
+        .bg(rgb(0x2b231b))
+        .text_size(px(13.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .hover(|style| style.bg(rgb(0x3a2f24)))
+        .focus_visible(|style| style.border_color(rgb(t::GOLD)))
 }
 
 fn page_button(
@@ -158,7 +232,9 @@ fn page_button(
     let button = clickable(id, Action::Navigate(page), cx)
         .aria_label(label)
         .aria_selected(active)
-        .rounded_md()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgba(if active { (t::GOLD << 8) | 0x66 } else { 0 }))
         .bg(rgb(if active {
             palette.rail_active
         } else {
@@ -167,28 +243,29 @@ fn page_button(
         .hover(|style| style.bg(rgb(palette.rail_active)))
         .focus_visible(|style| style.border_color(rgb(t::PAPER)));
     if layout == SidebarLayout::Compact {
-        return rail_icon(button, icon, if active { t::GOLD } else { t::PAPER }, label)
-            .border_2()
-            .border_color(gpui::transparent_black());
+        return rail_icon(button, icon, if active { t::GOLD } else { t::PAPER }, label);
     }
     button
         .w_full()
-        .h(px(if short { 38. } else { 46. }))
+        .h(px(if short { 34. } else { 38. }))
         .flex()
         .items_center()
-        .gap_3()
-        .px_2()
-        .border_l_4()
-        .border_color(rgb(if active { t::GOLD } else { palette.rail }))
-        .child(symbol(icon, t::PAPER, 21.))
+        .gap_2p5()
+        .px_2p5()
+        .child(symbol(icon, if active { t::GOLD } else { 0xc4b6a3 }, 18.))
         .child(
             div()
                 .text_size(px(if layout == SidebarLayout::Medium {
                     13.
                 } else {
-                    15.
+                    14.
                 }))
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_weight(if active {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::MEDIUM
+                })
+                .text_color(rgb(if active { t::PAPER } else { 0xe4dacb }))
                 .child(label),
         )
 }
@@ -209,10 +286,10 @@ fn last_played(app: &Desktop, compact: bool, cx: &Context<Desktop>) -> Option<St
     let active = matches!(&app.page, Page::Game(current) if current == launch);
     let card = div()
         .id("nav-recent")
-        .rounded_md()
+        .rounded_lg()
         .border_1()
-        .border_color(rgb(if active { 0x567265 } else { 0x36564a }))
-        .bg(rgb(0x1b3b32));
+        .border_color(rgb(if active { 0x6c5c49 } else { 0x41362a }))
+        .bg(rgb(0x2b231b));
     let card = if compact {
         rail_icon(
             card,
@@ -222,22 +299,42 @@ fn last_played(app: &Desktop, compact: bool, cx: &Context<Desktop>) -> Option<St
         )
         .border_2()
     } else {
+        let art = match &launch.entry {
+            GameEntry::Mode(id) if launch.game.0 == "solitaire" => id.as_str(),
+            _ => launch.game.0.as_str(),
+        };
         card.flex()
-            .flex_col()
-            .gap_1()
-            .px_2()
-            .py_2()
+            .items_center()
+            .gap_2p5()
+            .p(px(6.))
             .child(
                 div()
-                    .text_size(px(12.))
-                    .text_color(rgb(0xd5dfd6))
-                    .child("Last played"),
+                    .size(px(38.))
+                    .flex_none()
+                    .rounded_md()
+                    .overflow_hidden()
+                    .child(artwork(art)),
             )
             .child(
                 div()
-                    .font_weight(FontWeight::BOLD)
-                    .truncate()
-                    .child(title.to_owned()),
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .line_height(px(15.))
+                            .text_color(rgb(0xc4b6a3))
+                            .child("Last played"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(19.))
+                            .font_weight(FontWeight::BOLD)
+                            .truncate()
+                            .child(title.to_owned()),
+                    ),
             )
     };
     Some(if active {
@@ -258,105 +355,75 @@ fn last_played(app: &Desktop, compact: bool, cx: &Context<Desktop>) -> Option<St
     })
 }
 
-fn sound_control(app: &Desktop, compact: bool, cx: &Context<Desktop>) -> Stateful<Div> {
-    let palette = t::colors(cx);
-    let button = clickable("audio-toggle", Action::SetSound(!app.sound_enabled), cx)
-        .aria_label("Game sounds")
+fn sound_control(app: &Desktop, cx: &Context<Desktop>) -> Stateful<Div> {
+    let (icon, color) = if app.sound_enabled {
+        ("sound-on", t::GOLD)
+    } else {
+        ("sound-off", 0xab9c88)
+    };
+    header_pill("audio-toggle", "Game sounds")
         .aria_toggled(app.sound_enabled.into())
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(0x587669))
-        .hover(|style| style.bg(rgb(palette.rail_active)))
-        .focus_visible(|style| style.border_color(rgb(t::PAPER)));
-    if compact {
-        let (icon, color, label) = if app.sound_enabled {
-            ("sound-on", t::GOLD, "Game sounds on")
+        .px_3()
+        .child(symbol(icon, color, 16.))
+        .child(if app.sound_enabled {
+            "Sounds on"
         } else {
-            ("sound-off", t::PAPER, "Game sounds off")
-        };
-        return rail_icon(button, icon, color, label).h(px(36.)).border_2();
-    }
-    button
-        .flex()
-        .items_center()
-        .justify_between()
-        .h(px(32.))
-        .px_2()
-        .text_size(px(12.))
-        .child("Game sounds")
-        .child(
-            div()
-                .text_color(rgb(if app.sound_enabled { t::GOLD } else { 0xb9c9bd }))
-                .child(if app.sound_enabled { "On" } else { "Off" }),
-        )
+            "Sounds off"
+        })
+        .on_click(cx.listener({
+            let enabled = app.sound_enabled;
+            move |desktop, _, window, cx| {
+                desktop.dispatch(Action::SetSound(!enabled), window, cx);
+            }
+        }))
 }
 
-fn appearance_control(app: &Desktop, compact: bool, cx: &Context<Desktop>) -> Stateful<Div> {
-    let palette = t::colors(cx);
+fn appearance_control(app: &Desktop, cx: &Context<Desktop>) -> Stateful<Div> {
     div()
         .id("appearance")
         .role(Role::Group)
         .aria_label("Appearance")
+        .h(px(32.))
+        .p(px(3.))
         .flex()
-        .flex_col()
-        .gap_1()
-        .when(!compact, |control| {
-            control.child(
-                div()
-                    .px_1()
-                    .text_size(px(12.))
-                    .text_color(rgb(0xd5dfd6))
-                    .child("Appearance"),
+        .items_center()
+        .gap(px(2.))
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(0x4a3d30))
+        .bg(rgb(0x2b231b))
+        .children(t::Appearance::ALL.map(|appearance| {
+            let active = appearance == app.appearance;
+            clickable(
+                SharedString::from(format!("appearance-{}", appearance.label())),
+                Action::SetAppearance(appearance),
+                cx,
             )
-        })
-        .child(
-            div()
-                .flex()
-                .gap_1()
-                .when(compact, |choices| choices.flex_col())
-                .children(t::Appearance::ALL.map(|appearance| {
-                    let active = appearance == app.appearance;
-                    clickable(
-                        SharedString::from(format!("appearance-{}", appearance.label())),
-                        Action::SetAppearance(appearance),
-                        cx,
-                    )
-                    .aria_label(format!("{} appearance", appearance.label()))
-                    .aria_toggled(if active {
-                        Toggled::True
-                    } else {
-                        Toggled::False
-                    })
-                    .h(px(32.))
-                    .when(!compact, |button| button.flex_1())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .border_1()
-                    .when(compact, |button| button.border_2().h(px(29.)))
-                    .border_color(rgb(if active { t::GOLD } else { 0x587669 }))
-                    .bg(rgb(if active { t::GOLD } else { palette.rail }))
-                    .text_color(rgb(if active { t::INK } else { t::PAPER }))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .hover(|style| {
-                        style.bg(rgb(if active {
-                            t::GOLD_HOVER
-                        } else {
-                            palette.rail_active
-                        }))
-                    })
-                    .focus_visible(|style| style.border_color(rgb(t::PAPER)))
-                    .child(appearance.label())
-                })),
-        )
+            .aria_label(format!("{} appearance", appearance.label()))
+            .tab_index(HEADER_TAB_ORDER)
+            .aria_toggled(if active {
+                Toggled::True
+            } else {
+                Toggled::False
+            })
+            .h_full()
+            .px_3()
+            .flex()
+            .items_center()
+            .rounded_full()
+            .bg(rgb(if active { t::GOLD } else { 0x2b231b }))
+            .text_color(rgb(if active { t::INK } else { t::PAPER }))
+            .text_size(px(12.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .hover(|style| style.bg(rgb(if active { t::GOLD_HOVER } else { 0x3a2f24 })))
+            .focus_visible(|style| style.border_1().border_color(rgb(t::GOLD)))
+            .child(appearance.label())
+        }))
 }
 
 fn history_button(
     direction: NavigationDirection,
     app: &Desktop,
-    compact: bool,
     cx: &Context<Desktop>,
 ) -> Stateful<Div> {
     let (id, label, icon) = match direction {
@@ -364,40 +431,31 @@ fn history_button(
         NavigationDirection::Forward => ("nav-forward", "Forward", "arrow-right"),
     };
     let enabled = app.can_step_history(direction);
-    let palette = t::colors(cx);
-    let color = if enabled { t::PAPER } else { 0x9fb4a9 };
     let button = div()
         .id(id)
         .role(Role::Button)
         .aria_label(label)
-        .when(!enabled, |button| button.aria_description("Unavailable"))
-        .rounded_md()
+        .size(px(32.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
         .border_1()
-        .border_color(rgb(if enabled { 0x587669 } else { 0x36564a }));
-    let button = if compact {
-        rail_icon(button, icon, color, label).h(px(31.)).border_2()
-    } else {
-        button
-            .flex_1()
-            .h(px(36.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(13.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(color))
-            .child(label)
-    };
-    button.when(enabled, |button| {
-        button
-            .tab_index(0)
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(palette.rail_active)))
-            .focus_visible(|style| style.border_color(rgb(t::PAPER)))
-            .on_click(cx.listener(move |desktop, _, window, cx| {
-                desktop.dispatch(Action::History(direction), window, cx);
-            }))
-    })
+        .border_color(rgb(0x4a3d30))
+        .bg(rgb(0x2b231b))
+        .tooltip(move |_, cx| cx.new(|_| ControlTooltip(label.into())).into())
+        .child(symbol(icon, t::PAPER, 16.));
+    if !enabled {
+        return button.aria_description("Unavailable").opacity(0.4);
+    }
+    button
+        .tab_index(HEADER_TAB_ORDER)
+        .cursor_pointer()
+        .hover(|style| style.bg(rgb(0x3a2f24)))
+        .focus_visible(|style| style.border_color(rgb(t::GOLD)))
+        .on_click(cx.listener(move |desktop, _, window, cx| {
+            desktop.dispatch(Action::History(direction), window, cx);
+        }))
 }
 
 fn rail_icon(
@@ -501,9 +559,11 @@ pub fn columns<E: IntoElement>(items: impl IntoIterator<Item = E>, count: usize,
     grid
 }
 
+/// A game card: artwork, its title, and an optional one-line `detail` under the title.
 pub fn tile(
     id: &str,
     title: &str,
+    detail: Option<&str>,
     height: f32,
     action: Action,
     favorite: Option<(&GameId, bool)>,
@@ -514,7 +574,7 @@ pub fn tile(
         .aria_label(title.to_owned())
         .w_full()
         .min_w_0()
-        .h(px(height + 43.))
+        .h(px(height + if detail.is_some() { 84. } else { 43. }))
         .flex()
         .flex_col()
         .rounded_lg()
@@ -542,7 +602,15 @@ pub fn tile(
                 .pl_3()
                 .pr(px(if favorite.is_some() { 42. } else { 12. }))
                 .py_2(),
-        );
+        )
+        .children(detail.map(|detail| {
+            div()
+                .px_3()
+                .text_size(px(12.))
+                .line_height(px(17.))
+                .text_color(rgb(palette.muted))
+                .child(detail.to_owned())
+        }));
     div()
         .relative()
         .child(tile)

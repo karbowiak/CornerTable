@@ -108,7 +108,7 @@ impl GameView {
                         overlay.border_2().border_color(rgb(if selected {
                             t::GOLD
                         } else {
-                            0x81a794
+                            0xb09c80
                         }))
                     }),
             );

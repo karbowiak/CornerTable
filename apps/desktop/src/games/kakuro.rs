@@ -5,13 +5,15 @@ mod persistence;
 use std::time::{Duration, Instant};
 
 use corner_table_kakuro::{Cell, Direction, Edit, Game, Hint, Size};
-use gpui::{Context, FocusHandle, KeyDownEvent, Window, div, prelude::*, px, rgb};
+use gpui::{Context, FocusHandle, KeyDownEvent, Window, div, prelude::*};
 
-use super::{GameEntry, GameLaunch, board_space};
+use super::{
+    GameEntry, GameLaunch,
+    stage::{Layout, Stage},
+};
 use crate::{
     audio::{self, Effect},
     storage::{AttemptId, Outcome, ResultMetric, Session},
-    theme,
 };
 use persistence::SavedSession;
 
@@ -286,66 +288,27 @@ impl Render for GameView {
             cx.defer_in(window, |view, window, cx| view.focus.focus(window, cx));
         }
 
-        let palette = theme::colors(cx);
-        let content = board_space(window) + 24.;
-        let height = f32::from(window.viewport_size().height);
-        let wide = content >= 704.;
-        let slim = !wide && height < 650. && content >= 510.;
-        let beside = wide || slim;
-        let tight = height < 680.;
+        let has_toolbar = true;
+        let stage = Stage::measure(window, Layout::Rail, has_toolbar);
+        let compact = crate::app::content_height(window) < 760.;
         let side = self.round.game.puzzle().size().side() as f32;
-        let (panel, margin) = if wide {
-            (260., 24.)
-        } else if slim {
-            (200., 14.)
-        } else {
-            (0., 0.)
-        };
-        let max_width = (content - panel - margin).min(if tight {
-            (height - 199.).max(310.)
-        } else if beside {
-            height - 167.
-        } else {
-            height - 240.
-        });
-        let cell = ((max_width - board::FRAME * 2. + board::GRID) / side - board::GRID)
+        let fit = stage.board_width.min(stage.board_height);
+        let cell = ((fit - board::FRAME * 2. + board::GRID) / side - board::GRID)
             .floor()
-            .clamp(32., if side == 6. { 74. } else { 60. });
-        let board_width = cell * side + board::GRID * (side - 1.) + board::FRAME * 2.;
-        let panel = if beside { panel } else { board_width };
-        let field_width = board_width + margin + if beside { panel } else { 0. };
-        let solved = self.round.game.is_solved();
-        let board = self.board(cell, cx);
-        let controls = self.controls(panel, !beside, cx);
-        let layout = div()
-            .flex()
-            .items_start()
-            .gap(px(if beside { margin } else { 12. }))
-            .when(!beside, |layout| layout.flex_col());
-        let layout = if solved && !beside {
-            layout.child(controls).child(board)
-        } else {
-            layout.child(board).child(controls)
-        };
+            .clamp(32., if side == 6. { 104. } else { 76. });
+        let result = self.round.game.is_solved().then(|| self.completion(cx));
 
         div()
             .id("kakuro-game")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .w_full()
-            .flex()
-            .flex_col()
-            .items_start()
-            .gap_3()
-            .child(self.toolbar(if beside { field_width } else { content }, cx))
-            .child(layout)
-            .when(!solved, |page| page.child(
-                div()
-                    .w(px(field_width))
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(rgb(palette.muted))
-                    .child("Arrows move · Space finds the next blank · 1–9 enter · N toggles pencil · H opens a hint"),
+            .child(stage.render(
+                cx,
+                Some(self.toolbar(cx).into_any_element()),
+                self.board(cell, cx),
+                result,
+                self.rail(compact, cx),
             ))
     }
 }
@@ -353,7 +316,7 @@ impl Render for GameView {
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use corner_table_api::GameId;
-    use gpui::{Modifiers, TestAppContext, VisualTestContext, size};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, px, size};
 
     use super::*;
 

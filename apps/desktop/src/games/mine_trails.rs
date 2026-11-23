@@ -670,10 +670,11 @@ impl Render for GameView {
             }
         }
         let room = self.expedition.current_room();
-        let available = super::board_space(window);
+        let available = super::board_space(window) + 36.;
         let wide = available >= 610.;
+        // Match the shared stage's rail so the side column lines up across games.
         let map_width = if wide {
-            (available * 0.33).clamp(248., 334.)
+            super::stage::Stage::measure(window, super::stage::Layout::Rail, false).rail_width()
         } else {
             available
         };
@@ -682,11 +683,11 @@ impl Render for GameView {
         } else {
             available
         };
-        let height = f32::from(window.viewport_size().height);
+        let height = crate::app::content_height(window);
         let side = self.expedition.side() as f32;
         let board_size = (board_width - 32.).min((height - 294.).max(310.));
         let tile_size = ((board_size - (side - 1.) * board::TILE_GAP) / side)
-            .clamp(38., 78.)
+            .clamp(38., 92.)
             .floor();
         let finished = room == Room::DeepVault
             && self.expedition.is_complete()

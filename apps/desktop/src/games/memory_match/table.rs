@@ -8,187 +8,133 @@ use gpui::{
 
 use super::{FLIP_TIME, GameEntry, GameView, Notice, art};
 use crate::{
-    games::{board_space, round_result, styled_control, themed_control},
+    games::{
+        round_result,
+        stage::{self, Layout as StageLayout, Stage, Stat},
+        themed_choice, themed_control,
+    },
     motion,
     storage::Outcome,
     theme,
 };
 
-const TABLE: u32 = 0x173f45;
-const FIELD: u32 = 0x28535a;
-const RULE: u32 = 0x567c78;
-const CREAM: u32 = 0xfff4db;
-const PALE: u32 = 0xcadbd1;
+const CARD_BACK: u32 = 0x173f45;
 const GOLD: u32 = 0xffd99b;
 const CARD_ASPECT: f32 = 1.125;
-const MAX_WIDTH: f32 = 818.;
-const AXIS: f32 = 18.;
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let available = board_space(window).min(MAX_WIDTH);
-        let height = f32::from(window.viewport_size().height);
-        let compact = height < 635.;
-        let gap = if compact {
-            6.
-        } else if available < 570. {
-            8.
-        } else {
-            10.
-        };
+        let stage = Stage::measure(window, StageLayout::Rail, true);
         let (columns, rows) = self.layout.dimensions();
-        let width_limit = (available - 72. - gap * (columns - 1) as f32) / columns as f32;
-        let reserved_height = if compact { 277. } else { 315. };
+        let gap = if stage.board_height < 460. { 6. } else { 12. };
+        let width_limit = (stage.board_width - gap * (columns - 1) as f32) / columns as f32;
         let height_limit =
-            (height - reserved_height - gap * (rows - 1) as f32) / (rows as f32 * CARD_ASPECT);
-        let size = width_limit.min(height_limit.clamp(56., 112.)).floor();
-        let palette = theme::colors(cx);
+            (stage.board_height - gap * (rows - 1) as f32) / (rows as f32 * CARD_ASPECT);
+        let size = width_limit.min(height_limit).clamp(56., 160.).floor();
         let complete = self.board().is_complete();
 
         div()
             .id("memory-match")
             .w_full()
-            .max_w(px(MAX_WIDTH))
-            .flex()
-            .flex_col()
-            .gap(px(if compact { 7. } else { 12. }))
             .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && view.confirm_new_deal {
                     view.cancel_new_deal(window, cx);
                     cx.stop_propagation();
                 }
             }))
-            .child(self.toolbar(cx))
-            .when(complete, |page| page.child(self.completion(cx)))
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .rounded(px(14.))
-                    .overflow_hidden()
-                    .bg(rgb(TABLE))
-                    .text_color(rgb(CREAM))
-                    .shadow(vec![
-                        BoxShadow::new(px(0.), px(4.), rgba(0x0c232936).into()).blur_radius(px(14.)),
-                    ])
-                    .when(!complete, |table| table.child(self.counter(compact)))
-                    .child(
-                        div()
-                            .bg(rgb(FIELD))
-                            .border_y_1()
-                            .border_color(rgb(RULE))
-                            .py(px(if compact { 4. } else { 12. }))
-                            .flex()
-                            .justify_center()
-                            .child(self.grid(size, gap, window, cx)),
-                    )
-                    .when(!complete, |table| table.child(self.status_bar(compact, cx))),
-            )
-            .when(!complete, |page| page.child(
-                div()
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(rgb(palette.muted))
-                    .child(if self.hold_mismatches {
-                        "Tab to the board · Arrow keys move · Enter or Space turns a card · H hides a mismatch"
-                    } else {
-                        "Tab to the board · Arrow keys move · Enter or Space turns a card"
-                    }),
+            .child(stage.render(
+                cx,
+                Some(self.toolbar(cx).into_any_element()),
+                self.grid(size, gap, window, cx),
+                complete.then(|| self.completion(cx)),
+                self.rail(cx),
             ))
     }
 }
 
 impl GameView {
-    fn toolbar(&self, cx: &Context<Self>) -> Div {
-        let palette = theme::colors(cx);
-
+    fn toolbar(&self, cx: &Context<Self>) -> Stateful<Div> {
         div()
+            .id("memory-match-layouts")
+            .role(Role::Group)
+            .aria_label("Board size")
             .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("memory-match-layouts")
-                            .role(Role::Group)
-                            .aria_label("Board size")
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(px(5.))
-                            .child(
-                                div()
-                                    .mr_1()
-                                    .text_size(px(13.))
-                                    .text_color(rgb(palette.muted))
-                                    .child("Board size"),
-                            )
-                            .children(Layout::ALL.map(|layout| {
-                                let selected = self.layout == layout;
-                                let label = format!("{} cards", layout.card_count());
-                                let control_palette = if selected {
-                                    theme::Palette {
-                                        surface: TABLE,
-                                        border: TABLE,
-                                        ink: CREAM,
-                                        hover: FIELD,
-                                        ..palette
-                                    }
-                                } else {
-                                    palette
-                                };
-                                styled_control(control_palette, layout.id(), label, true)
-                                    .min_h(px(34.))
-                                    .aria_label(format!(
-                                        "{}, {} cards, {} pairs",
-                                        layout.name(),
-                                        layout.card_count(),
-                                        layout.pair_count(),
-                                    ))
-                                    .aria_toggled(selected.into())
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.select_layout(layout, cx);
-                                    }))
-                            })),
-                    )
-                    .when(!self.board().is_complete(), |line| {
-                        line.child(div().flex().gap_2().child(self.deal_button(cx)).children(
-                            self.confirm_new_deal.then(|| {
-                                themed_control(cx, "memory-match-cancel", "Cancel", true)
-                                    .min_h(px(34.))
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.cancel_new_deal(window, cx);
-                                    }))
-                            }),
-                        ))
-                    }),
-            )
-            .children(self.confirm_new_deal.then(|| {
-                let message = if matches!(self.launch.entry, GameEntry::Challenge(_)) {
-                    "Restart this deal and discard the current progress?"
-                } else {
-                    "Deal new cards and discard this board’s progress?"
-                };
-                div()
-                    .id("memory-match-confirm")
-                    .role(Role::Status)
-                    .aria_label(message)
-                    .a11y_synthetic_children(|builder| {
-                        builder.parent_node().set_live(accesskit::Live::Polite);
-                    })
-                    .text_size(px(13.))
-                    .line_height(px(19.))
-                    .text_color(rgb(palette.ink))
-                    .child(message)
+            .gap_1()
+            .children(Layout::ALL.map(|layout| {
+                let selected = self.layout == layout;
+                themed_choice(
+                    cx,
+                    layout.id(),
+                    format!("{} cards", layout.card_count()),
+                    selected,
+                )
+                .aria_label(format!(
+                    "{}, {} cards, {} pairs",
+                    layout.name(),
+                    layout.card_count(),
+                    layout.pair_count(),
+                ))
+                .aria_toggled(selected.into())
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.select_layout(layout, cx);
+                }))
             }))
+    }
+
+    fn rail(&self, cx: &Context<Self>) -> Div {
+        let palette = theme::colors(cx);
+        let complete = self.board().is_complete();
+        let confirm = self.confirm_new_deal.then(|| {
+            let message = if matches!(self.launch.entry, GameEntry::Challenge(_)) {
+                "Restart this deal and discard the current progress?"
+            } else {
+                "Deal new cards and discard this board’s progress?"
+            };
+            div()
+                .id("memory-match-confirm")
+                .role(Role::Status)
+                .aria_label(message)
+                .a11y_synthetic_children(|builder| {
+                    builder.parent_node().set_live(accesskit::Live::Polite);
+                })
+                .text_size(px(13.))
+                .line_height(px(19.))
+                .text_color(rgb(palette.ink))
+                .child(message)
+        });
+        stage::rail(cx)
+            .child(self.counter(cx))
+            .when(!complete, |rail| {
+                rail.child(self.status_section(cx)).child(
+                    stage::rail_section(cx).children(confirm).child(
+                        stage::actions().child(self.deal_button(cx)).children(
+                            self.confirm_new_deal.then(|| {
+                                themed_control(cx, "memory-match-cancel", "Cancel", true).on_click(
+                                    cx.listener(|view, _, window, cx| {
+                                        view.cancel_new_deal(window, cx);
+                                    }),
+                                )
+                            }),
+                        ),
+                    ),
+                )
+            })
+            .child(stage::controls_help(
+                cx,
+                if self.hold_mismatches {
+                    &[
+                        "Click a card to turn it over",
+                        "Tab to the board · Arrow keys move",
+                        "Enter or Space turns a card · H hides a mismatch",
+                    ]
+                } else {
+                    &[
+                        "Click a card to turn it over",
+                        "Tab to the board · Arrow keys move",
+                        "Enter or Space turns a card",
+                    ]
+                },
+            ))
     }
 
     fn deal_button(&self, cx: &Context<Self>) -> Stateful<Div> {
@@ -239,24 +185,17 @@ impl GameView {
         cx.notify();
     }
 
-    fn counter(&self, compact: bool) -> Div {
+    fn counter(&self, cx: &Context<Self>) -> Div {
         let pair_count = self.layout.pair_count();
         let pairs = self.board().pairs();
         let attempts = self.board().attempts();
         let best = self.round().best;
-
-        div()
-            .w_full()
-            .min_h(px(if compact { 41. } else { 55. }))
-            .px(px(17.))
-            .py(px(7.))
-            .flex()
-            .flex_wrap()
-            .justify_between()
-            .items_center()
-            .gap_x_3()
-            .gap_y_1()
-            .child(theme::display_type("Tidepool deck", 19.).text_color(rgb(CREAM)))
+        stage::rail_section(cx)
+            .child(stage::rail_heading(
+                cx,
+                "Tidepool deck",
+                Some(self.layout.name().into()),
+            ))
             .child(
                 div()
                     .id("memory-match-score")
@@ -269,14 +208,21 @@ impl GameView {
                             |best| format!("Personal best {best} attempts.")
                         ),
                     ))
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(counter_value("Pairs", format!("{pairs}/{pair_count}")))
-                    .child(counter_value("Attempts", attempts.to_string()))
-                    .child(counter_value(
-                        "Best",
-                        best.map_or_else(|| "—".into(), |best| best.to_string()),
+                    .child(stage::stat_grid(
+                        cx,
+                        [
+                            Stat::new(
+                                "memory-match-pairs",
+                                "Pairs",
+                                format!("{pairs}/{pair_count}"),
+                            ),
+                            Stat::new("memory-match-attempts", "Attempts", attempts.to_string()),
+                            Stat::new(
+                                "memory-match-best",
+                                "Best",
+                                best.map_or_else(|| "—".into(), |best| best.to_string()),
+                            ),
+                        ],
                     )),
             )
     }
@@ -306,16 +252,6 @@ impl GameView {
             .flex_col()
             .items_start()
             .gap(px(gap))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(gap))
-                    .child(div().w(px(AXIS)).h(px(13.)))
-                    .children(
-                        (0..columns)
-                            .map(|column| axis(size, 13., column_letter(column).to_string())),
-                    ),
-            )
             .children((0..rows).map(|row| {
                 div()
                     .id(("memory-match-row", row))
@@ -324,7 +260,6 @@ impl GameView {
                     .flex()
                     .items_center()
                     .gap(px(gap))
-                    .child(axis(AXIS, height, (row + 1).to_string()))
                     .children((0..columns).map(|column| {
                         let index = row * columns + column;
                         self.card(
@@ -415,20 +350,11 @@ impl GameView {
             })
     }
 
-    fn status_bar(&self, compact: bool, cx: &Context<Self>) -> Div {
+    fn status_section(&self, cx: &Context<Self>) -> Div {
+        let palette = theme::colors(cx);
         let pending = matches!(self.board().turn(), Turn::Mismatch { .. });
         let message = self.status();
-        div()
-            .w_full()
-            .min_h(px(if compact { 43. } else { 54. }))
-            .px(px(16.))
-            .py(px(if compact { 5. } else { 7. }))
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .justify_between()
-            .gap_x_3()
-            .gap_y_1()
+        stage::rail_section(cx)
             .child(
                 div()
                     .id("memory-match-status")
@@ -438,32 +364,35 @@ impl GameView {
                     .a11y_synthetic_children(|builder| {
                         builder.parent_node().set_live(accesskit::Live::Polite);
                     })
-                    .text_size(px(13.))
+                    .min_h(px(38.))
+                    .text_size(px(14.))
                     .line_height(px(19.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(CREAM))
+                    .text_color(rgb(palette.ink))
                     .child(message),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
+                stage::actions()
                     .children((pending && self.hold_mismatches).then(|| {
-                        let button = table_button("memory-match-hide", "Hide cards", true);
-                        button.on_click(cx.listener(|view, _, window, cx| {
-                            view.conceal(cx);
-                            view.focus[view.cursor].focus(window, cx);
-                        }))
+                        themed_choice(cx, "memory-match-hide", "Hide cards", true).on_click(
+                            cx.listener(|view, _, window, cx| {
+                                view.conceal(cx);
+                                view.focus[view.cursor].focus(window, cx);
+                            }),
+                        )
                     }))
                     .child(
-                        table_button("memory-match-hold", "Hold mismatches", self.hold_mismatches)
-                            .aria_toggled(self.hold_mismatches.into())
-                            .aria_description(
-                                "Keep mismatched cards face up until you choose Hide cards.",
-                            )
-                            .on_click(cx.listener(|view, _, _, cx| view.toggle_hold(cx))),
+                        themed_choice(
+                            cx,
+                            "memory-match-hold",
+                            "Hold mismatches",
+                            self.hold_mismatches,
+                        )
+                        .aria_toggled(self.hold_mismatches.into())
+                        .aria_description(
+                            "Keep mismatched cards face up until you choose Hide cards.",
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| view.toggle_hold(cx))),
                     ),
             )
     }
@@ -497,68 +426,6 @@ fn column_letter(column: usize) -> char {
     char::from(b'A' + column as u8)
 }
 
-fn axis(width: f32, height: f32, text: String) -> Div {
-    div()
-        .w(px(width))
-        .h(px(height))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .text_size(px(11.))
-        .line_height(px(13.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(PALE))
-        .child(text)
-}
-
-fn counter_value(label: &'static str, value: String) -> Div {
-    div()
-        .flex()
-        .items_baseline()
-        .gap(px(4.))
-        .child(
-            div()
-                .text_size(px(12.))
-                .line_height(px(16.))
-                .text_color(rgb(PALE))
-                .child(label),
-        )
-        .child(
-            div()
-                .text_size(px(15.))
-                .line_height(px(18.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(CREAM))
-                .child(value),
-        )
-}
-
-fn table_button(id: &'static str, label: &'static str, selected: bool) -> Stateful<Div> {
-    div()
-        .id(id)
-        .role(Role::Button)
-        .aria_label(label)
-        .tab_index(0)
-        .cursor_pointer()
-        .flex()
-        .items_center()
-        .justify_center()
-        .min_h(px(32.))
-        .px_2()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(rgb(if selected { GOLD } else { RULE }))
-        .bg(rgb(if selected { GOLD } else { TABLE }))
-        .text_color(rgb(if selected { TABLE } else { CREAM }))
-        .text_size(px(12.))
-        .line_height(px(17.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .hover(move |style| style.bg(rgb(if selected { 0xffe6b5 } else { FIELD })))
-        .focus_visible(|style| style.border_color(rgb(0xffffff)))
-        .child(label)
-}
-
 #[derive(Clone)]
 struct PrintedFace {
     image: Arc<RenderImage>,
@@ -587,7 +454,7 @@ fn print_card(
             BoxShadow::new(px(0.), px(2.), rgba(0x0b232d6b).into()).blur_radius(px(4.)),
         ]);
     let Some(face) = face else {
-        return card.bg(rgb(TABLE)).child(
+        return card.bg(rgb(CARD_BACK)).child(
             img(back)
                 .size_full()
                 .rounded(px(6.))

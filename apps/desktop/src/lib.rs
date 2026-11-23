@@ -13,7 +13,7 @@ mod widgets;
 use corner_table_api::FixtureApi;
 use gpui::{
     App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds,
-    WindowOptions, px, size,
+    WindowOptions, point, px, size,
 };
 
 pub fn run() -> anyhow::Result<()> {
@@ -155,8 +155,11 @@ fn open_main_window(fixtures: FixtureApi, cx: &mut App) {
         window_min_size: Some(size(px(760.), px(540.))),
         titlebar: Some(TitlebarOptions {
             title: Some("Corner Table".into()),
-            ..Default::default()
+            // On macOS the app draws its own header beneath the traffic lights.
+            appears_transparent: cfg!(target_os = "macos"),
+            traffic_light_position: cfg!(target_os = "macos").then(|| point(px(14.), px(10.))),
         }),
+        app_owns_titlebar_drag: cfg!(target_os = "macos"),
         app_id: Some("dk.karbowiak.CornerTable".into()),
         ..Default::default()
     };

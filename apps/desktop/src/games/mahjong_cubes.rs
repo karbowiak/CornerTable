@@ -16,7 +16,10 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{GameEntry, GameLaunch, round_result};
+use super::{
+    GameEntry, GameLaunch, round_result,
+    stage::{self, Layout as StageLayout, Stage},
+};
 use crate::{
     audio::{self, Effect},
     motion,
@@ -567,10 +570,10 @@ impl GameView {
             .relative()
             .rounded_lg()
             .border_1()
-            .border_color(rgb(0x4c5c47))
+            .border_color(rgb(0x55473a))
             .focus_visible(|style| style.border_color(rgb(theme::GOLD)))
             .overflow_hidden()
-            .bg(linear_gradient(145., linear_color_stop(rgb(0x293e33), 0.), linear_color_stop(rgb(0x101f19), 1.)))
+            .bg(linear_gradient(145., linear_color_stop(rgb(0x3a2f25), 0.), linear_color_stop(rgb(0x15110d), 1.)))
             .child(canvas(
                 move |bounds, window, cx| {
                     let view = entity.read(cx);
@@ -859,73 +862,48 @@ impl Render for GameView {
         let ready = self.board.available_pairs().len();
         let outcome = self.round_outcome(ready);
         let in_play = outcome.is_none();
-        let controls_height = match (narrow, self.table) {
-            (true, Table::Challenge(_)) => 218.,
-            (true, Table::Daily(_)) => 264.,
-            (true, Table::Layout(_)) => 256.,
-            (false, Table::Challenge(_)) => 240.,
-            _ => 286.,
-        };
-        let height = window.viewport_size().height - px(controls_height);
-        let height = match outcome {
-            Some(Outcome::Won) => (height - px(55.)).clamp(px(168.), px(290.)),
-            Some(Outcome::Lost) => (height - px(96.)).max(px(168.)),
-            _ => height.max(px(248.)),
-        };
+        let has_toolbar = !matches!(self.table, Table::Challenge(_));
+        let stage = Stage::measure(window, StageLayout::Bar, has_toolbar);
         let keyboard = self.board_focus.is_focused(window) && window.last_input_was_keyboard();
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .when(!matches!(self.table, Table::Challenge(_)), |view| {
-                view.child(self.layouts(narrow, in_play, cx))
-            })
-            .child(
-                theme::panel(cx)
-                    .w_full()
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .when(narrow, |panel| panel.p_2().gap_2())
-                    .when(in_play, |panel| panel.child(self.progress(narrow, ready, cx)))
-                    .child(self.playfield(height, cx))
-                    .when(in_play, |panel| {
-                        let status = self.selection_status(keyboard);
-                        panel.child(self.tools(narrow, cx)).child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .justify_between()
-                                .gap_x_3()
-                                .px_1()
-                                .line_height(px(18.))
-                                .text_size(px(12.))
-                                .text_color(rgb(palette.muted))
-                                .child(
-                                    div()
-                                        .id("cubes-status")
-                                        .role(Role::Status)
-                                        .aria_label(status.clone())
-                                        .child(status),
-                                )
-                                .child(div().child(if keyboard {
-                                    "Arrows browse · Enter selects · Q / E turn · Shift ↑ / ↓ tilts · R resets"
-                                } else {
-                                    "Drag to turn and tilt"
-                                })),
-                        )
-                    }),
-            )
-            .when_some(outcome, |root, outcome| {
-                root.child(
-                    div().w_full().flex().justify_center().child(self.result(outcome, cx)),
+        let status = if in_play {
+            let message = self.selection_status(keyboard);
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(self.progress(narrow, ready, cx))
+                .child(
+                    div()
+                        .id("cubes-status")
+                        .role(Role::Status)
+                        .aria_label(message.clone())
+                        .px_3()
+                        .text_size(px(12.))
+                        .line_height(px(17.))
+                        .text_color(rgb(palette.muted))
+                        .child(message),
                 )
-            })
-            .when(outcome == Some(Outcome::Lost), |root| {
-                root.child(div().flex().justify_center().child(self.camera_tools(narrow, cx)))
-            })
+        } else {
+            div().child(stage::rail_heading(
+                cx,
+                self.board.shape().name(),
+                Some("Round over".into()),
+            ))
+        };
+        let actions = if in_play {
+            Some(self.tools(narrow, cx))
+        } else if outcome == Some(Outcome::Lost) {
+            Some(self.camera_tools(narrow, cx))
+        } else {
+            None
+        };
+        stage.render(
+            cx,
+            has_toolbar.then(|| self.layouts(narrow, in_play, cx).into_any_element()),
+            self.playfield(px(stage.board_height), cx),
+            outcome.map(|outcome| self.result(outcome, cx)),
+            stage::bar(cx, status, div().children(actions)),
+        )
     }
 }
 

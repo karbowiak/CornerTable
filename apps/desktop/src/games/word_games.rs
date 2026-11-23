@@ -30,7 +30,6 @@ use crate::{
 };
 
 const PAGE_SIZE: usize = 12;
-const MAX_WORD_WIDTH: f32 = 1000.;
 // Combined padding and borders around the board and its tray.
 const BOARD_PANEL_INSETS: f32 = 62.;
 const CROSSWORD_TILE: f32 = 60.;
@@ -1319,18 +1318,17 @@ impl Render for GameView {
         } else {
             self.crossword_solved_at = None;
         }
-        let available = (board_space(window) + 36.).min(MAX_WORD_WIDTH);
+        let available = board_space(window) + 36.;
         div()
             .flex()
             .flex_col()
             .gap_3()
             .w_full()
-            .max_w(px(MAX_WORD_WIDTH))
             .child(self.selector(cx))
             .children(self.completion(cx))
             .child(match self.play() {
                 Play::Words(play) => {
-                    self.words(play, available, window.viewport_size().height.into(), cx)
+                    self.words(play, available, crate::app::content_height(window), cx)
                 }
                 Play::Crossword(play) => self.crossword(play, available, settle, cx),
                 Play::Search(play) => self.search(play, available, window, cx),
@@ -1416,13 +1414,15 @@ fn direction(down: bool) -> &'static str {
     if down { "Down" } else { "Across" }
 }
 
+/// The side panel matches the shared stage rail: about 30% of the page, beside the board when
+/// the board still fits.
 fn side_panel_width(available: f32, board_width: f32) -> Option<f32> {
-    let aside_width = (available - board_width - BOARD_PANEL_INSETS - 12.).min(320.);
-    (aside_width >= 224.).then_some(aside_width)
+    let aside_width = (available * 0.3).clamp(240., 360.).floor();
+    (available - aside_width - 16. >= board_width + BOARD_PANEL_INSETS).then_some(aside_width)
 }
 
 fn layout(play: impl IntoElement + Styled, aside: Div, available: f32, board_width: f32) -> Div {
-    let layout = div().flex().gap_3().items_start();
+    let layout = div().flex().gap_4().items_start();
     if let Some(aside_width) = side_panel_width(available, board_width) {
         layout
             .child(play.flex_1())
@@ -1577,7 +1577,7 @@ fn button(
     let palette = t::colors(cx);
     let (background, border, ink) = match variant {
         Button::Primary => (t::GOLD, t::GOLD, t::INK),
-        Button::Selected => (palette.hover, palette.gold_text, palette.ink),
+        Button::Selected => (t::GOLD, t::GOLD, t::INK),
         Button::Normal => (palette.surface, palette.border, palette.ink),
         Button::Disabled => (palette.paper, palette.border, palette.muted),
     };
@@ -1606,11 +1606,13 @@ fn button(
                 .tab_index(0)
                 .cursor_pointer()
                 .hover(move |style| {
-                    style.bg(rgb(if variant == Button::Primary {
-                        t::GOLD_HOVER
-                    } else {
-                        palette.hover
-                    }))
+                    style.bg(rgb(
+                        if matches!(variant, Button::Primary | Button::Selected) {
+                            t::GOLD_HOVER
+                        } else {
+                            palette.hover
+                        },
+                    ))
                 })
                 .focus(move |style| style.border_color(rgb(palette.gold_text)))
                 .on_click(cx.listener(move |view, _, window, cx| view.act(action, window, cx)))

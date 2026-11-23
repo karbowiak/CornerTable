@@ -4,20 +4,22 @@ use std::time::{Duration, Instant};
 
 use corner_table_peg_solitaire::{Hole, Jump, Position, Round, Status};
 use gpui::{
-    AnyElement, Context, Div, FocusHandle, KeyDownEvent, Render, Role, Window, div, prelude::*, px,
-    rgb,
+    AnyElement, Context, Div, FocusHandle, KeyDownEvent, Render, Role, Stateful, Window, div,
+    prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    app::ShellLayout,
     audio::{self, Effect},
     motion,
     storage::{AttemptId, Outcome, ResultMetric, Session},
-    theme,
 };
 
-use super::{GameLaunch, round_result, themed_control};
+use super::{
+    GameLaunch, round_result,
+    stage::{self, Layout, Stage},
+    themed_control,
+};
 
 const SAVE_VERSION: u8 = 1;
 const JUMP_DURATION: Duration = Duration::from_millis(185);
@@ -304,79 +306,69 @@ impl GameView {
             )
     }
 
-    fn rail(&self, cx: &Context<Self>) -> AnyElement {
+    fn result_card(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let (outcome, headline, detail) = result_copy(self.position())?;
+        Some(round_result(
+            cx,
+            "peg-solitaire-result",
+            outcome,
+            headline,
+            detail,
+            self.controls(cx),
+        ))
+    }
+
+    fn rail(&self, cx: &Context<Self>) -> Stateful<Div> {
         let position = self.position();
         let count = position.peg_count();
         let jumps = self.round.history().len();
-        if let Some((outcome, headline, detail)) = result_copy(position) {
-            return round_result(
+        let playing = result_copy(position).is_none();
+        stage::rail(cx)
+            .id("peg-solitaire-rail")
+            .debug_selector(|| "peg-solitaire-rail".into())
+            .child(stage::rail_section(cx).child(stage::rail_heading(
                 cx,
-                "peg-solitaire-result",
-                outcome,
-                headline,
-                detail,
-                self.controls(cx),
-            );
-        }
-
-        let colors = theme::colors(cx);
-        div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .pb_3()
-                    .border_b_1()
-                    .border_color(rgb(colors.border))
-                    .child(theme::display_type(format!("{count} pegs left"), 27.))
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(rgb(colors.muted))
-                            .child(if jumps == 1 {
-                                "1 jump".into()
-                            } else {
-                                format!("{jumps} jumps")
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .id("peg-solitaire-instruction")
-                    .role(Role::Status)
-                    .aria_label(self.instruction())
-                    .text_size(px(14.))
-                    .line_height(px(20.))
-                    .min_h(px(100.))
-                    .child(self.instruction()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(
-                        themed_control(cx, "peg-solitaire-hint", "Hint", true)
-                            .aria_label("Hint (H)")
-                            .debug_selector(|| "peg-solitaire-hint".into())
-                            .on_click(
-                                cx.listener(|view, _, window, cx| view.show_hint(window, cx)),
-                            ),
-                    )
-                    .child(self.controls(cx)),
-            )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(rgb(colors.muted))
-                    .child("Arrows move · Enter selects or jumps · H hints · U undoes"),
-            )
-            .into_any_element()
+                format!("{count} pegs left"),
+                Some(if jumps == 1 {
+                    "1 jump".into()
+                } else {
+                    format!("{jumps} jumps").into()
+                }),
+            )))
+            .when(playing, |rail| {
+                rail.child(
+                    stage::rail_section(cx)
+                        .child(
+                            div()
+                                .id("peg-solitaire-instruction")
+                                .role(Role::Status)
+                                .aria_label(self.instruction())
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .child(self.instruction()),
+                        )
+                        .child(
+                            stage::actions()
+                                .child(
+                                    themed_control(cx, "peg-solitaire-hint", "Hint", true)
+                                        .aria_label("Hint (H)")
+                                        .debug_selector(|| "peg-solitaire-hint".into())
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            view.show_hint(window, cx)
+                                        })),
+                                )
+                                .child(self.controls(cx)),
+                        ),
+                )
+            })
+            .child(stage::controls_help(
+                cx,
+                &[
+                    "Click a peg, then the hole to jump into",
+                    "Arrows move · Enter selects or jumps",
+                    "H hints · U undoes",
+                ],
+            ))
     }
 }
 
@@ -425,14 +417,10 @@ impl Render for GameView {
                 }
             });
         }
-        let width = ShellLayout::new(window.viewport_size().width).content_width();
-        let height = f32::from(window.viewport_size().height);
-        let rail = 288.;
-        let gap = if width < 710. { 18. } else { 28. };
-        let board_width = width - rail - gap;
-        let cell = ((board_width.min(height - 142.) - board::FRAME * 2.) / 7.)
+        let stage = Stage::measure(window, Layout::Rail, false);
+        let cell = ((stage.board_width.min(stage.board_height) - board::FRAME * 2.) / 7.)
             .floor()
-            .clamp(32., 69.);
+            .clamp(32., 92.);
         let flight = self.flight.and_then(|(jump, started)| {
             let elapsed = cx
                 .background_executor()
@@ -449,20 +437,15 @@ impl Render for GameView {
 
         div()
             .id("peg-solitaire")
-            .flex()
-            .items_start()
-            .gap(px(gap))
+            .w_full()
             .on_key_down(cx.listener(Self::key_down))
-            .child(self.board(cell, flight, window, cx))
-            .child(
-                div()
-                    .id("peg-solitaire-rail")
-                    .debug_selector(|| "peg-solitaire-rail".into())
-                    .w(px(rail))
-                    .flex_none()
-                    .pt(px(12.))
-                    .child(self.rail(cx)),
-            )
+            .child(stage.render(
+                cx,
+                None,
+                self.board(cell, flight, window, cx),
+                self.result_card(cx),
+                self.rail(cx),
+            ))
     }
 }
 

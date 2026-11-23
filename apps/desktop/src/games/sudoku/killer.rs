@@ -3,108 +3,23 @@ mod board;
 mod tests;
 
 use corner_table_sudoku::{Cage, CageIssue, Game, Hint, HintReason, KillerPuzzle, SIZE};
-use gpui::{Context, Div, FontWeight, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, FontWeight, div, prelude::*, px, rgb};
 
-use super::{
-    BOARD_EDGE, ButtonStyle, GROUP_GAP, GameView, Puzzle, best_result, board_space, control,
-    hint_count, t, unit_name,
-};
+use super::{ButtonStyle, GameView, Puzzle, best_result, control, hint_count, stage, t, unit_name};
 
 pub(super) use board::Cell;
 
-const GAP: f32 = 12.;
-const GRID_GUTTERS: f32 = 2. * (BOARD_EDGE + GROUP_GAP);
-const MIN_CELL: f32 = 40.;
-
 impl GameView {
-    pub(super) fn killer_body(
+    pub(super) fn killer_rail(
         &self,
         puzzle: KillerPuzzle,
-        window: &Window,
+        compact: bool,
         cx: &Context<Self>,
     ) -> Div {
-        let palette = t::colors(cx);
-        let space = board_space(window);
-        let height = f32::from(window.viewport_size().height);
-        let compact = height < 640.;
-        let panel_width = (space * 0.29).clamp(148., 254.);
-        let solved = self.round().game.is_solved();
         let position = KillerPuzzle::ALL
             .iter()
             .position(|&entry| entry == puzzle)
             .unwrap();
-        let next = KillerPuzzle::ALL.get(position + 1).copied();
-        let result_beside = panel_width >= 212.;
-        // Leave space for the page header, mode controls, and instructions.
-        let limit = ((height - 180.) / SIZE as f32).floor().clamp(MIN_CELL, 55.);
-        // The game page has room for this floor at 760×540. The shared width estimate
-        // leaves an extra side margin, which the cage labels and notes use here.
-        let cell = ((space - panel_width - GAP - GRID_GUTTERS) / SIZE as f32)
-            .floor()
-            .clamp(MIN_CELL, limit);
-        let board_width = SIZE as f32 * cell + GRID_GUTTERS;
-        let board = div()
-            .w(px(board_width))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(self.board(cell, cx))
-            .when(!solved, |board| {
-                board
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(17.))
-                            .text_color(rgb(palette.muted))
-                            .child("Use 1–9 once per row, column and box. In each dashed cage, different digits must add to its label."),
-                    )
-                    .child(if compact {
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(17.))
-                            .text_color(rgb(palette.muted))
-                            .child("Arrows move · 1–9 enter · N notes · H hint")
-                    } else {
-                        super::shortcuts(SIZE, palette)
-                    })
-            });
-        let controls = div()
-            .w(px(panel_width))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .when(solved && result_beside, |panel| {
-                panel.child(self.completion(next, cx))
-            })
-            .child(self.killer_panel(puzzle, position, panel_width, compact, cx));
-        div()
-            .flex()
-            .flex_col()
-            .items_start()
-            .gap(px(GAP))
-            .when(solved && !result_beside, |body| {
-                body.child(self.completion(next, cx))
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(GAP))
-                    .child(board)
-                    .child(controls),
-            )
-    }
-
-    fn killer_panel(
-        &self,
-        puzzle: KillerPuzzle,
-        position: usize,
-        width: f32,
-        compact: bool,
-        cx: &Context<Self>,
-    ) -> Div {
         let palette = t::colors(cx);
         let round = self.round();
         let game = &round.game;
@@ -168,28 +83,41 @@ impl GameView {
             )
             .child(next);
 
-        t::panel(cx)
-            .w(px(width))
-            .flex_shrink_0()
-            .p(px(if width < 180. { 6. } else { 12. }))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(picker)
-            .when(!solved, |panel| {
-                let panel = if let Some(hint) = round.visible_hint() {
-                    panel
-                        .child(self.hint_panel(hint, width < 180., cx))
+        stage::rail(cx)
+            .child(
+                stage::rail_section(cx)
+                    .child(stage::rail_heading(
+                        cx,
+                        "Killer Sudoku",
+                        Some(
+                            "Use 1–9 once per row, column and box. In each dashed cage, \
+                             different digits must add to its label."
+                                .into(),
+                        ),
+                    ))
+                    .child(picker),
+            )
+            .when(!solved, |rail| {
+                let section = if let Some(hint) = round.visible_hint() {
+                    stage::rail_section(cx)
+                        .child(self.hint_panel(hint, false, cx))
                         .child(hint_usage(round.hints_used, palette))
                 } else {
-                    panel
+                    stage::rail_section(cx)
                         .child(self.killer_status(palette))
                         .child(self.keypad(compact, cx))
                 };
-                panel
-                    .child(self.edit_actions(cx))
-                    .child(self.reset_button(true, false, cx))
+                rail.child(section.child(self.edit_actions(cx)))
+                    .child(stage::rail_section(cx).child(self.reset_button(true, false, cx)))
             })
+            .child(stage::controls_help(
+                cx,
+                &[
+                    "Arrows move · 1–9 enter digits",
+                    "Space finds a blank · Delete erases",
+                    "N toggles notes · H shows a hint",
+                ],
+            ))
     }
 
     fn killer_status(&self, palette: t::Palette) -> Div {

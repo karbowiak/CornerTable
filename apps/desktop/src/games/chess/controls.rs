@@ -3,7 +3,7 @@ use gpui::{AnyElement, Context, Div, FontWeight, Role, div, prelude::*, px, rgb}
 
 use crate::{games::round_result, storage::Outcome, theme};
 
-use super::super::themed_control;
+use super::super::{themed_choice, themed_control};
 use super::{
     Confirmation, GameView,
     board::{piece_background, piece_image},
@@ -12,8 +12,9 @@ use super::{
 };
 
 impl GameView {
-    pub(super) fn status(&self, cx: &Context<Self>) -> AnyElement {
-        if let Some(ending) = self.game().ending() {
+    pub(super) fn result_card(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        {
+            let ending = self.game().ending()?;
             let (outcome, title, detail) = result_copy(self.table.mode, ending);
             let palette = theme::colors(cx);
             let actions = div()
@@ -29,63 +30,69 @@ impl GameView {
                     themed_control(cx, "chess-undo", "Undo", true)
                         .on_click(cx.listener(|view, _, window, cx| view.undo(window, cx))),
                 );
-            return round_result(cx, "chess-result", outcome, title, detail, actions);
+            Some(round_result(
+                cx,
+                "chess-result",
+                outcome,
+                title,
+                detail,
+                actions,
+            ))
         }
+    }
+
+    pub(super) fn status(&self, cx: &Context<Self>) -> Div {
         let palette = theme::colors(cx);
         let status = self.status_copy();
-        theme::panel(cx)
-            .w_full()
-            .px_3()
-            .py_2()
-            .when(status.in_check, |panel| {
-                panel.border_color(rgb(palette.danger))
-            })
-            .child(
-                div()
-                    .id("chess-status")
-                    .role(Role::Status)
-                    .aria_label(format!("{}. {}", status.title, status.detail))
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .size(px(24.))
-                                    .rounded(px(5.))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .bg(piece_background())
-                                    .child(piece_image(status.side, Piece::King, 23.)),
-                            )
-                            .child(theme::display_type(status.title, 17.).min_w_0()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .line_height(px(18.))
-                            .text_color(rgb(if status.in_check {
-                                palette.danger
-                            } else {
-                                palette.muted
-                            }))
-                            .child(status.detail),
-                    ),
-            )
-            .into_any_element()
+        div().w_full().child(
+            div()
+                .id("chess-status")
+                .role(Role::Status)
+                .aria_label(format!("{}. {}", status.title, status.detail))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .size(px(24.))
+                                .rounded(px(5.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(piece_background())
+                                .child(piece_image(status.side, Piece::King, 23.)),
+                        )
+                        .child(theme::display_type(status.title, 21.).min_w_0()),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(rgb(if status.in_check {
+                            palette.danger
+                        } else {
+                            palette.muted
+                        }))
+                        .child(status.detail),
+                ),
+        )
     }
 
     fn status_copy(&self) -> Status {
         let mover = self.game().side_to_move();
         let side = side_name(mover);
         let checked = self.game().checked_king();
-        let title = format!("{side} to move");
+        let title = if self.game().ending().is_some() {
+            "Match over".to_owned()
+        } else {
+            format!("{side} to move")
+        };
         let detail = if let Some(promotion) = self.promotion {
             format!("Choose the piece for {}.", promotion.movement.to)
         } else if self.claim_mode {
@@ -115,7 +122,6 @@ impl GameView {
     }
 
     pub(super) fn controls(&self, cx: &Context<Self>) -> Div {
-        let palette = theme::colors(cx);
         let modal = self.promotion.is_some() || self.confirmation.is_some();
         let ended = self.game().ending().is_some();
         let can_restart = self.game().moves().len() > 0 && !modal;
@@ -210,15 +216,15 @@ impl GameView {
                         ]
                         .map(|(mode, id, label)| {
                             let chosen = self.table.mode == mode;
-                            themed_control(cx, id, label, !choice_blocked)
+                            let button = if chosen {
+                                themed_choice(cx, id, label, true)
+                            } else {
+                                themed_control(cx, id, label, !choice_blocked)
+                            };
+                            button
                                 .px_2()
                                 .text_size(px(12.))
                                 .aria_toggled(chosen.into())
-                                .when(chosen, |button| {
-                                    button
-                                        .bg(rgb(palette.hover))
-                                        .border_color(rgb(palette.gold_text))
-                                })
                                 .when(!choice_blocked, |button| {
                                     button.on_click(
                                         cx.listener(move |view, _, _, cx| {
@@ -230,15 +236,6 @@ impl GameView {
                     ),
             )
             .child(actions)
-            .when(!ended, |controls| {
-                controls.child(
-                    div()
-                        .text_size(px(12.))
-                        .line_height(px(17.))
-                        .text_color(rgb(palette.muted))
-                        .child("Tab to the board. Arrows move the cursor. Enter selects or plays."),
-                )
-            })
     }
 
     fn confirmation_controls(&self, confirmation: Confirmation, cx: &Context<Self>) -> Div {
@@ -328,26 +325,18 @@ impl GameView {
         let column = |text: &str| div().flex_1().min_w_0().truncate().child(text.to_owned());
         let gutter = || div().w(px(30.)).flex_none();
         Some(
-            theme::panel(cx).w_full().overflow_hidden().child(
+            div().w_full().child(
                 div()
                     .id("chess-journal")
                     .role(Role::Group)
                     .aria_label(title)
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px_3()
-                            .py_2()
-                            .border_b_1()
-                            .border_color(rgb(palette.border))
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(title),
-                            ),
+                        div().flex().items_center().justify_between().pb_2().child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::BOLD)
+                                .child(title),
+                        ),
                     )
                     .child(
                         div()
@@ -365,6 +354,7 @@ impl GameView {
                         div()
                             .flex()
                             .items_center()
+                            .rounded_sm()
                             .px_3()
                             .h(px(25.))
                             .gap_2()

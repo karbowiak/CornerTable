@@ -468,8 +468,7 @@ impl Render for GameView {
             self.render_gallery(series, width, colors, cx)
                 .into_any_element()
         } else {
-            self.render_plate(width, colors, window, cx)
-                .into_any_element()
+            self.render_plate(colors, window, cx).into_any_element()
         }
     }
 }

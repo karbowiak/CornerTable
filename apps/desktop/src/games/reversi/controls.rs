@@ -12,28 +12,34 @@ use crate::{
 use super::{GameView, board, state::Opponent};
 
 impl GameView {
-    pub(super) fn scoreboard(&self, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn result_card(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let position = self.position();
-        let side = match position.turn() {
-            Turn::Play(side) => side,
-            Turn::Finished(result) => {
-                let (outcome, title, detail) = result_copy(self.opponent, position, result);
-                return round_result(
-                    cx,
-                    "reversi-result",
-                    outcome,
-                    title,
-                    detail,
-                    self.actions(cx),
-                );
-            }
+        let Turn::Finished(result) = position.turn() else {
+            return None;
+        };
+        let (outcome, title, detail) = result_copy(self.opponent, position, result);
+        Some(round_result(
+            cx,
+            "reversi-result",
+            outcome,
+            title,
+            detail,
+            self.actions(cx),
+        ))
+    }
+
+    pub(super) fn scoreboard(&self, cx: &Context<Self>) -> Div {
+        let position = self.position();
+        let (headline, detail) = match position.turn() {
+            Turn::Play(side) => (self.headline(side), self.detail()),
+            Turn::Finished(_) => (
+                "Match over".into(),
+                "Undo to review, or start a new match.".into(),
+            ),
         };
         let palette = theme::colors(cx);
-        let headline = self.headline(side);
-        let detail = self.detail();
-        theme::panel(cx)
+        div()
             .w_full()
-            .overflow_hidden()
             .child(
                 div()
                     .flex()
@@ -58,9 +64,9 @@ impl GameView {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .px_3()
-                    .py_2()
-                    .child(theme::display_type(headline, 20.))
+                    .px_4()
+                    .py_4()
+                    .child(theme::display_type(headline, 21.))
                     .child(
                         div()
                             .text_size(px(13.))
@@ -69,7 +75,6 @@ impl GameView {
                             .child(detail),
                     ),
             )
-            .into_any_element()
     }
 
     fn score(&self, side: Disc, palette: Palette) -> Div {
@@ -270,15 +275,6 @@ impl GameView {
                         })),
                     ),
             )
-            .when(!terminal, |column| {
-                column.child(
-                    div()
-                        .text_size(px(12.))
-                        .line_height(px(17.))
-                        .text_color(rgb(palette.muted))
-                        .child("Tab to the board. Use the arrow keys to select and Enter to play."),
-                )
-            })
     }
 }
 
@@ -325,10 +321,18 @@ fn control(
         .px_2()
         .rounded_md()
         .border_1()
-        .border_color(rgb(if selected { 0x9b6748 } else { palette.border }))
-        .bg(rgb(if selected { 0x69462f } else { palette.surface }))
+        .border_color(rgb(if selected {
+            theme::GOLD
+        } else {
+            palette.border
+        }))
+        .bg(rgb(if selected {
+            theme::GOLD
+        } else {
+            palette.surface
+        }))
         .text_color(rgb(if selected {
-            0xfff2dc
+            theme::INK
         } else if enabled {
             palette.ink
         } else {
@@ -342,10 +346,14 @@ fn control(
                 .aria_label(label)
                 .tab_index(0)
                 .cursor_pointer()
-                .hover(move |style| style.bg(rgb(if selected { 0x805438 } else { palette.hover })))
-                .focus_visible(move |style| {
-                    style.border_color(rgb(if selected { 0xffdfac } else { palette.ink }))
+                .hover(move |style| {
+                    style.bg(rgb(if selected {
+                        theme::GOLD_HOVER
+                    } else {
+                        palette.hover
+                    }))
                 })
+                .focus_visible(move |style| style.border_color(rgb(palette.ink)))
         })
         .child(label)
 }

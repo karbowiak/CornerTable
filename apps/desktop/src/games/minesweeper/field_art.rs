@@ -37,10 +37,6 @@ fn finish(top: u32, base: u32) -> Background {
 pub(super) struct FieldArt {
     pub(super) frame: Face,
     pub(super) well: Face,
-    pub(super) label: u32,
-    pub(super) value: u32,
-    pub(super) warning: u32,
-    pub(super) rule: u32,
     cover: [Face; 2],
     flagged: Face,
     clear: Face,
@@ -62,10 +58,6 @@ pub(super) struct FieldArt {
 const LIGHT: FieldArt = FieldArt {
     frame: Face::new(0xe7d8be, 0xcaaf87, 0x9c805a),
     well: Face::new(0x263c34, 0x3a4c40, 0x917556),
-    label: 0x51402e,
-    value: 0x282d24,
-    warning: 0x862e21,
-    rule: 0xad9675,
     cover: [
         Face::new(0x557f73, 0x2f5a50, 0x284b42),
         Face::new(0x4d786d, 0x2b554b, 0x284b42),
@@ -92,10 +84,6 @@ const LIGHT: FieldArt = FieldArt {
 const DARK: FieldArt = FieldArt {
     frame: Face::new(0x3a3a2c, 0x27291e, 0x776345),
     well: Face::new(0x0b1512, 0x111f19, 0x594b35),
-    label: 0xc7b89c,
-    value: 0xf3e5cd,
-    warning: 0xffb28c,
-    rule: 0x64573e,
     cover: [
         Face::new(0x466f64, 0x2b5147, 0x1d3d34),
         Face::new(0x40695f, 0x254a41, 0x1b3a32),

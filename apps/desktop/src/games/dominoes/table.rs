@@ -190,6 +190,7 @@ impl GameView {
     pub(super) fn table_surface(
         &self,
         width: f32,
+        fill: f32,
         narrow: bool,
         short: bool,
         cx: &Context<Self>,
@@ -256,7 +257,7 @@ impl GameView {
                             .blur_radius(px(6.))
                             .inset(),
                     ])
-                    .child(self.chain(width - 12., narrow, short, cx))
+                    .child(self.chain(width - 12., fill, narrow, short, cx))
                     .child(
                         div()
                             .flex()
@@ -354,7 +355,13 @@ impl GameView {
             })
     }
 
-    pub(super) fn rack(&self, compact: bool, window: &Window, cx: &Context<Self>) -> Div {
+    pub(super) fn rack(
+        &self,
+        compact: bool,
+        tall: bool,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
         let palette = theme::colors(cx);
         let keyboard_focus = self.focus.is_focused(window);
         let headline = self.headline();
@@ -419,7 +426,13 @@ impl GameView {
                     .children((0..5).map(|_| pieces::back(23., 41.))),
             );
         }
-        let unit = if compact { 28. } else { 34. };
+        let unit = if compact {
+            28.
+        } else if tall {
+            42.
+        } else {
+            34.
+        };
         let player = if self.mode == Mode::Computer {
             Player::One
         } else {

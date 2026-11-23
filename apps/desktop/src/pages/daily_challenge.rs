@@ -141,7 +141,7 @@ fn archive(
     let next = daily::next_month(selected, today);
 
     t::panel(cx)
-        .max_w(px(940.))
+        .w_full()
         .flex()
         .gap(px(if compact { 14. } else { 22. }))
         .p(px(if compact { 12. } else { 16. }))
@@ -153,8 +153,8 @@ fn archive(
                 .aria_description(
                     "Use the arrow keys to select a day, then Tab to open its puzzle.",
                 )
-                .w(relative(0.62))
-                .max_w(px(520.))
+                .w(relative(0.55))
+                .max_w(px(640.))
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
@@ -302,7 +302,7 @@ fn day_button(
     div()
         .id(SharedString::from(format!("daily-date-{date}")))
         .aria_label(label)
-        .h(px(if compact { 28. } else { 34. }))
+        .h(px(if compact { 28. } else { 44. }))
         .flex()
         .items_center()
         .justify_center()
@@ -422,6 +422,17 @@ fn selected_puzzle(
                 .flex_col()
                 .items_start()
                 .gap_1()
+                .when(!compact, |details| {
+                    details.child(
+                        div()
+                            .w_full()
+                            .h(px(150.))
+                            .mb_2()
+                            .rounded_lg()
+                            .overflow_hidden()
+                            .child(widgets::artwork(widgets::challenge_art(puzzle.game))),
+                    )
+                })
                 .child(
                     div()
                         .text_color(rgb(palette.muted))

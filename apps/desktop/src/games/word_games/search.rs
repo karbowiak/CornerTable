@@ -36,7 +36,7 @@ impl BoardColors {
             Self {
                 paper: board::PAPER,
                 fibre: Fibre::Paper,
-                letter: 0x18332d,
+                letter: 0x2a2119,
                 frame: 0x6c543a,
                 cursor: 0x305d69,
                 hint: 0x8d5610,
@@ -45,7 +45,7 @@ impl BoardColors {
             }
         } else {
             Self {
-                paper: 0x293b30,
+                paper: 0x2c251d,
                 fibre: Fibre::DarkPaper,
                 letter: 0xfff2d7,
                 frame: 0x584937,
@@ -110,19 +110,20 @@ impl GameView {
     ) -> Div {
         let theme = play.board.theme();
         let colors = BoardColors::for_theme(t::colors(cx));
-        let word_bank_width = (content - 490.).clamp(164., 320.);
-        let stacked = content < 530.;
+        // The word bank matches the shared stage rail.
+        let word_bank_width = (content * 0.3).clamp(240., 360.).floor();
+        let stacked = content < 600.;
         let board_width = if stacked {
             content
         } else {
-            content - word_bank_width - 12.
+            content - word_bank_width - 16.
         };
         let compact = word_bank_width < 290. && !stacked;
         let inset = if compact { 42. } else { 56. };
-        let height_limit = (f32::from(window.viewport_size().height) - 245.).max(325.);
+        let height_limit = (crate::app::content_height(window) - 245.).max(325.);
         let step = ((board_width - inset).min(height_limit) / theme.side as f32)
             .floor()
-            .clamp(24., 46.);
+            .clamp(24., 64.);
         let board = t::panel(cx)
             .p(px(if compact { 12. } else { 16. }))
             .flex()
@@ -158,7 +159,7 @@ impl GameView {
                 ))
             });
         let list = self.search_word_bank(play, colors, compact, cx);
-        let layout = div().flex().gap_3().items_start();
+        let layout = div().flex().gap_4().items_start();
         if stacked {
             layout.flex_col().child(board.w_full()).child(list.w_full())
         } else {

@@ -15,7 +15,10 @@ use gpui::{
 
 use crate::{
     audio::{self, Effect},
-    games::{GameEntry, GameLaunch, fresh_seed, round_result},
+    games::{
+        GameEntry, GameLaunch, fresh_seed, round_result,
+        stage::{self, Layout, Stage},
+    },
     storage::{Outcome, ResultMetric, Session},
     theme::{self as t, Palette},
 };
@@ -30,8 +33,6 @@ use run::Move;
 const WAVE_TIME: Duration = Duration::from_millis(260);
 const FALL_TIME: Duration = Duration::from_millis(85);
 const IMPACT_TIME: Duration = Duration::from_millis(125);
-const MAX_PANEL_WIDTH: f32 = 780.;
-const MIN_CONSOLE_WIDTH: f32 = 238.;
 
 pub struct GameView {
     session: Session,
@@ -510,7 +511,7 @@ impl GameView {
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgba(0x14141cb8));
+            .bg(rgba(0x17120eb8));
         let run = self.run();
         if run.game.is_over() {
             if self.motion.is_some() {
@@ -617,21 +618,12 @@ impl GameView {
     ) -> Stateful<Div> {
         let palette = t::colors(cx);
         let enabled = self.enabled(action);
-        let accent = primary && enabled;
         let selected = matches!(action, Action::Select(mode) if mode == self.mode);
-        let background = if accent {
-            t::GOLD
-        } else if selected {
-            palette.hover
+        let accent = (primary && enabled) || selected;
+        let (background, stroke) = if accent {
+            (t::GOLD, t::GOLD)
         } else {
-            palette.surface
-        };
-        let stroke = if accent {
-            t::GOLD
-        } else if selected {
-            palette.gold_text
-        } else {
-            palette.border
+            (palette.surface, palette.border)
         };
         let shortcut = shortcut(action);
         let button = div()
@@ -695,7 +687,7 @@ impl GameView {
             }))
     }
 
-    fn console(&self, wave: Option<WaveFrame<'_>>, compact: bool, cx: &Context<Self>) -> Div {
+    fn console(&self, wave: Option<WaveFrame<'_>>, cx: &Context<Self>) -> Div {
         let p = t::colors(cx);
         let run = self.run();
         let clear = if let Some(frame) = wave {
@@ -744,24 +736,47 @@ impl GameView {
                 self.button("gem-retry", "Retry", Action::Retry, false, cx),
             ));
 
+        stage::rail(cx)
+            .child(
+                stage::rail_section(cx)
+                    .child(self.scoreboard(wave, p, cx))
+                    .child(self.pace(p))
+                    .child(clear_status(clear, wave.is_some(), p)),
+            )
+            .when(
+                !run.game.is_over() || self.motion.is_some() || self.cascade.is_some(),
+                |rail| rail.child(stage::rail_section(cx).child(group)),
+            )
+            .child(
+                stage::rail_section(cx)
+                    .border_b_0()
+                    .text_size(px(12.))
+                    .line_height(px(17.))
+                    .text_color(rgb(p.muted))
+                    .child(format!(
+                        "Match {GROUP_SIZE} edge to edge. Each link in a chain multiplies the points it earns."
+                    )),
+            )
+    }
+
+    fn modes(&self, cx: &Context<Self>) -> Div {
         div()
             .flex()
-            .flex_1()
-            .min_w_0()
-            .flex_col()
-            .gap(px(if compact { 10. } else { 12. }))
-            .child(row(
-                self.button("gem-timed", Mode::Timed.label(), Action::Select(Mode::Timed), false, cx),
-                self.button("gem-practice", Mode::Practice.label(), Action::Select(Mode::Practice), false, cx),
+            .gap_1()
+            .child(self.button(
+                "gem-timed",
+                Mode::Timed.label(),
+                Action::Select(Mode::Timed),
+                false,
+                cx,
             ))
-            .child(self.scoreboard(wave, p, cx))
-            .child(self.pace(p))
-            .child(clear_status(clear, wave.is_some(), p))
-            .when(!run.game.is_over() || self.motion.is_some() || self.cascade.is_some(), |console| console.child(group))
-            .child(
-                div().text_size(px(12.)).line_height(px(17.)).text_color(rgb(p.muted))
-                    .child(format!("Match {GROUP_SIZE} edge to edge. Each link in a chain multiplies the points it earns.")),
-            )
+            .child(self.button(
+                "gem-practice",
+                Mode::Practice.label(),
+                Action::Select(Mode::Practice),
+                false,
+                cx,
+            ))
     }
 
     fn scoreboard(&self, wave: Option<WaveFrame<'_>>, p: Palette, cx: &Context<Self>) -> Div {
@@ -906,33 +921,27 @@ impl Render for GameView {
             window.request_animation_frame();
         }
 
-        let viewport = window.viewport_size();
-        let compact = viewport.width < px(930.);
-        let inset = if compact { 12. } else { 20. };
-        let panel_gap = if compact { 16. } else { 24. };
-        let padding = 2. * (inset + WELL_INSET + 3.);
-        // The parent play page supplies the title, scroll padding and navigation rail.
-        let board_height = f32::from(viewport.height) - 90. - padding;
-        let panel_width = (super::board_space(window) + 36.).min(MAX_PANEL_WIDTH);
-        let board_width = panel_width - padding - panel_gap - MIN_CONSOLE_WIDTH;
-        let fit = |space, count: usize| (space - GAP * (count - 1) as f32) / count as f32;
-        let size = fit(board_height, ROWS)
-            .min(fit(board_width, COLUMNS))
+        let stage = Stage::measure(window, Layout::Rail, true);
+        let padding = 2. * (WELL_INSET + 3.);
+        let fit =
+            |space: f32, count: usize| (space - padding - GAP * (count - 1) as f32) / count as f32;
+        let size = fit(stage.board_height, ROWS)
+            .min(fit(stage.board_width, COLUMNS))
             .floor()
-            .clamp(26., 54.);
+            .clamp(26., 72.);
 
-        t::panel(cx)
+        div()
             .id("gem-cascade")
             .track_focus(&self.scope)
             .on_key_down(cx.listener(Self::key_down))
             .w_full()
-            .max_w(px(MAX_PANEL_WIDTH))
-            .flex()
-            .items_start()
-            .gap(px(panel_gap))
-            .p(px(inset))
-            .child(self.well(size, wave, now, cx))
-            .child(self.console(wave, compact, cx))
+            .child(stage.render(
+                cx,
+                Some(self.modes(cx).into_any_element()),
+                self.well(size, wave, now, cx),
+                None,
+                self.console(wave, cx),
+            ))
     }
 }
 

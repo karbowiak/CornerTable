@@ -4,14 +4,11 @@ mod session;
 #[cfg(all(test, debug_assertions))]
 mod tests;
 
-use std::{
-    sync::{Arc, LazyLock},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use corner_table_minesweeper::{Board, Clue, Difficulty, Hint, HintReason, Status, Tile};
 use gpui::{
-    AnyElement, ClipboardItem, Context, Div, FocusHandle, FontFeatures, FontWeight, KeyDownEvent,
+    AnyElement, BoxShadow, ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent,
     MouseButton, Render, Role, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
     rgba,
 };
@@ -19,7 +16,11 @@ use gpui::{
 use crate::{
     audio::{self, Effect},
     daily,
-    games::{GameEntry, GameLaunch, fresh_seed, round_result, themed_control},
+    games::{
+        GameEntry, GameLaunch, fresh_seed, round_result,
+        stage::{self, Layout, Stage, Stat},
+        themed_control,
+    },
     motion,
     storage::{Outcome, ResultMetric, Session},
     theme as t,
@@ -659,84 +660,48 @@ impl GameView {
         let palette = t::colors(cx);
         let difficulty = self.round.board.difficulty();
         let mode = self.round.mode;
-        let ended = matches!(self.round.board.status(), Status::Won | Status::Lost);
-        let can_configure = self.challenge_seed.is_none() && self.original_field.is_none();
-        let actions = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_1()
-            .child(if self.can_play() {
-                toggle(
-                    palette,
-                    "minesweeper-flag-mode",
-                    "Flag mode",
-                    self.round.flag_mode,
-                )
-                .aria_description("Click covered squares to place or remove a flag.")
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.round.flag_mode = !view.round.flag_mode;
-                    view.save();
-                    cx.notify();
-                }))
-            } else {
-                themed_control(cx, "minesweeper-flag-mode", "Flag mode", false)
-            })
-            .when(self.round.board.status() == Status::Playing, |actions| {
-                actions.child(
-                    themed_control(cx, "minesweeper-hint", "Hint", true)
-                        .aria_keyshortcuts("H")
-                        .on_click(cx.listener(|view, _, window, cx| view.show_hint(window, cx))),
-                )
-            })
-            .child(self.reset_control(cx));
-
         div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap_x_4()
             .gap_y_2()
-            .when(can_configure, |toolbar| {
-                toolbar
-                    .child(
-                        div()
-                            .id("minesweeper-sizes")
-                            .role(Role::Group)
-                            .aria_label("Field size")
-                            .flex()
-                            .flex_wrap()
-                            .gap_1()
-                            .children(Difficulty::ALL.map(|option| {
-                                toggle(palette, option.id(), option.label(), difficulty == option)
-                                    .aria_description("Changing the size starts a new field.")
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        if view.round.board.difficulty() != option {
-                                            view.reset(option, view.round.mode, cx);
-                                        }
-                                    }))
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("minesweeper-modes")
-                            .role(Role::Group)
-                            .aria_label("Field mode")
-                            .flex()
-                            .flex_wrap()
-                            .gap_1()
-                            .children(Mode::ALL.map(|option| {
-                                toggle(palette, option.id(), option.label(), mode == option)
-                                    .aria_description("Changing the mode starts a new field.")
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        if view.round.mode != option {
-                                            view.reset(view.round.board.difficulty(), option, cx);
-                                        }
-                                    }))
-                            })),
-                    )
-            })
-            .children((!ended).then_some(actions))
+            .child(
+                div()
+                    .id("minesweeper-sizes")
+                    .role(Role::Group)
+                    .aria_label("Field size")
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .children(Difficulty::ALL.map(|option| {
+                        toggle(palette, option.id(), option.label(), difficulty == option)
+                            .aria_description("Changing the size starts a new field.")
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                if view.round.board.difficulty() != option {
+                                    view.reset(option, view.round.mode, cx);
+                                }
+                            }))
+                    })),
+            )
+            .child(
+                div()
+                    .id("minesweeper-modes")
+                    .role(Role::Group)
+                    .aria_label("Field mode")
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .children(Mode::ALL.map(|option| {
+                        toggle(palette, option.id(), option.label(), mode == option)
+                            .aria_description("Changing the mode starts a new field.")
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                if view.round.mode != option {
+                                    view.reset(view.round.board.difficulty(), option, cx);
+                                }
+                            }))
+                    })),
+            )
     }
 
     fn reset_control(&self, cx: &Context<Self>) -> Stateful<Div> {
@@ -804,11 +769,15 @@ impl GameView {
             })
     }
 
-    fn status(&self, elapsed: Duration, limit: Option<Duration>, cx: &Context<Self>) -> AnyElement {
-        let palette = t::colors(cx);
+    fn status_copy(
+        &self,
+        elapsed: Duration,
+        limit: Option<Duration>,
+        palette: t::Palette,
+    ) -> (SharedString, SharedString, u32) {
         let difficulty = self.round.board.difficulty();
         let (width, height) = difficulty.dimensions();
-        let field = format!("{} · {width} × {height}", difficulty.label());
+        let field: SharedString = format!("{} · {width} × {height}", difficulty.label()).into();
         let elapsed_label = format_result(elapsed);
         let flag_hint = "Flag mode is on. Click a covered square to mark it.";
         let (title, detail, ink) = match (self.round.board.status(), limit) {
@@ -839,7 +808,8 @@ impl GameView {
                 format!(
                     "Clear the field in {}. The clock starts on your first reveal.",
                     format_time(limit.as_secs())
-                ),
+                )
+                .into(),
                 palette.ink,
             ),
             (Status::Ready, None) if self.round.mode == Mode::LogicOnly => (
@@ -876,12 +846,12 @@ impl GameView {
                     "Replay cleared"
                 }
                 .into(),
-                format!("You cleared the field in {elapsed_label}."),
+                format!("You cleared the field in {elapsed_label}.").into(),
                 palette.success,
             ),
             (Status::Won, Some(limit)) if elapsed < limit => (
                 "Time trial cleared".into(),
-                format!("You cleared the field in {elapsed_label}."),
+                format!("You cleared the field in {elapsed_label}.").into(),
                 palette.success,
             ),
             (Status::Won, Some(limit)) => (
@@ -889,12 +859,13 @@ impl GameView {
                 format!(
                     "You finished in {elapsed_label}. The time trial target was {}.",
                     format_time(limit.as_secs())
-                ),
+                )
+                .into(),
                 palette.success,
             ),
             (Status::Won, None) => (
                 "Field cleared".into(),
-                format!("You cleared every safe square in {elapsed_label}."),
+                format!("You cleared every safe square in {elapsed_label}.").into(),
                 palette.success,
             ),
             (Status::Lost, _) => (
@@ -908,113 +879,71 @@ impl GameView {
                 palette.danger,
             ),
         };
-        let (title, detail, ink) = self.hint.feedback(palette).unwrap_or((title, detail, ink));
-        let outcome = match self.round.board.status() {
-            Status::Won => Some(Outcome::Won),
-            Status::Lost => Some(Outcome::Lost),
-            _ => None,
-        };
-        if let Some(outcome) = outcome {
-            let actions = div()
-                .flex()
-                .flex_wrap()
-                .gap_2()
-                .child(self.reset_control(cx))
-                .child(
-                    themed_control(cx, "minesweeper-replay", "Replay field", true)
-                        .aria_description("Play the same mines and opening again as practice.")
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            if let Some(round) = view.round.replay() {
-                                view.replace_round(round, cx);
-                                view.focus.focus(window, cx);
-                            }
-                        })),
-                )
-                .when(self.sharing_allowed(), |row| {
-                    row.child(self.deal_controls(cx))
-                });
-            return round_result(cx, "minesweeper-result", outcome, title, detail, actions);
-        }
-
-        let status = div()
-            .id("minesweeper-status")
-            .role(Role::Status)
-            .aria_label(format!("{title}. {detail}"))
-            .flex()
-            .flex_col()
-            .gap_px()
-            .child(
-                div()
-                    .text_size(px(17.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(ink))
-                    .child(title),
-            )
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .line_height(px(18.))
-                    .text_color(rgb(palette.muted))
-                    .child(detail),
-            );
-        div()
-            .w_full()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(status)
-            .when(self.sharing_allowed(), |row| {
-                row.child(self.deal_controls(cx))
-            })
-            .into_any_element()
+        self.hint
+            .feedback(palette)
+            .map(|(title, detail, ink)| (title.into(), detail.into(), ink))
+            .unwrap_or((title, detail, ink))
     }
 
-    fn field(
+    /// The finished round's card, shown over the field.
+    fn result_card(
         &self,
-        window: &Window,
         elapsed: Duration,
         limit: Option<Duration>,
-        art: &'static FieldArt,
-        now: Instant,
         cx: &Context<Self>,
-    ) -> impl IntoElement {
+    ) -> Option<AnyElement> {
+        let outcome = match self.round.board.status() {
+            Status::Won => Outcome::Won,
+            Status::Lost => Outcome::Lost,
+            _ => return None,
+        };
+        let (title, detail, _) = self.status_copy(elapsed, limit, t::colors(cx));
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .child(self.reset_control(cx))
+            .child(
+                themed_control(cx, "minesweeper-replay", "Replay field", true)
+                    .aria_description("Play the same mines and opening again as practice.")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        if let Some(round) = view.round.replay() {
+                            view.replace_round(round, cx);
+                            view.focus.focus(window, cx);
+                        }
+                    })),
+            );
+        Some(round_result(
+            cx,
+            "minesweeper-result",
+            outcome,
+            title,
+            detail,
+            actions,
+        ))
+    }
+
+    fn bar(&self, elapsed: Duration, limit: Option<Duration>, cx: &Context<Self>) -> Div {
+        let palette = t::colors(cx);
         let board = &self.round.board;
-        let difficulty = board.difficulty();
-        let (width, height) = difficulty.dimensions();
-        let comfortable_tile = match difficulty {
-            Difficulty::Meadow => 46.,
-            Difficulty::Highlands => 39.,
-            Difficulty::Summit => 34.,
-        };
-        let viewport_height = f32::from(window.viewport_size().height);
-        let available_width = super::board_space(window);
         let terminal = matches!(board.status(), Status::Lost | Status::Won);
-        // The control groups take a second row when the rail leaves less room.
-        let controls_width = if terminal { 820. } else { 720. };
-        let header_room = if self.challenge_seed.is_none() && available_width < controls_width {
-            284.
+        let (title, detail, ink) = if terminal {
+            // The result card on the table already says how the round went.
+            let (width, height) = board.difficulty().dimensions();
+            (
+                format!("{} · {width} × {height}", board.difficulty().label()).into(),
+                "Round over".into(),
+                palette.ink,
+            )
         } else {
-            240.
+            self.status_copy(elapsed, limit, palette)
         };
-        let seams = (width - 1) as f32 * CELL_GAP;
-        let tile_by_width = (available_width - 2. * FIELD_INSET - seams) / width as f32;
-        let tile = ((viewport_height - header_room) / height as f32 - CELL_GAP)
-            .clamp(22., comfortable_tile)
-            .min(tile_by_width)
-            .max(1.)
-            .floor();
-        let field_width = width as f32 * tile + seams + 2. * FIELD_INSET;
-        let show_best = self.challenge_seed.is_none() && self.original_field.is_none();
-        let counter_count = if show_best { 4. } else { 3. };
-        let counter_width = (field_width - 2. * (FRAME_PADDING + 1.)) / counter_count;
         let (mine_label, mines) = if board.status() == Status::Lost {
-            ("Mines", difficulty.mines() as isize)
+            ("Mines", board.difficulty().mines() as isize)
         } else {
             (
                 "Mines left",
-                difficulty.mines() as isize - board.flags() as isize,
+                board.difficulty().mines() as isize - board.flags() as isize,
             )
         };
         let remaining = limit.filter(|&limit| elapsed < limit && !terminal);
@@ -1031,51 +960,108 @@ impl GameView {
         } else {
             ("Elapsed", format_time(elapsed.as_secs()), false)
         };
+        let show_best = self.challenge_seed.is_none() && self.original_field.is_none();
+        let best = self.bests.time(&self.round);
+        let stats = [
+            Some(Stat::new("minesweeper-mines", mine_label, mines.to_string()).alert(mines < 0)),
+            Some(Stat::new(
+                "minesweeper-safe",
+                "Safe left",
+                board.safe_remaining().to_string(),
+            )),
+            Some(Stat::new("minesweeper-clock", clock_label, clock_value).alert(low_time)),
+            show_best.then(|| {
+                Stat::new(
+                    "minesweeper-best",
+                    "Best",
+                    best.map_or_else(|| "—".into(), format_result),
+                )
+                .aria(best.map_or_else(
+                    || "No personal best for this size and mode".into(),
+                    |time| format!("Personal best: {}", format_result(time)),
+                ))
+            }),
+        ];
 
-        let counters = div()
-            .flex()
-            .items_center()
-            .child(meter(
-                mine_label,
-                mines.to_string(),
-                mines < 0,
-                counter_width,
-                art,
-            ))
-            .child(
-                meter(
-                    "Safe left",
-                    board.safe_remaining().to_string(),
-                    false,
-                    counter_width,
-                    art,
-                )
-                .border_l_1()
-                .border_color(rgb(art.rule)),
-            )
-            .child(
-                meter(clock_label, clock_value, low_time, counter_width, art)
-                    .border_l_1()
-                    .border_color(rgb(art.rule)),
-            )
-            .when(show_best, |meters| {
-                let best = self.bests.time(&self.round);
-                meters.child(
-                    meter(
-                        "Best",
-                        best.map_or_else(|| "—".into(), format_result),
-                        false,
-                        counter_width,
-                        art,
+        let actions = stage::actions()
+            .when(self.can_play(), |actions| {
+                actions.child(
+                    toggle(
+                        palette,
+                        "minesweeper-flag-mode",
+                        "Flag mode",
+                        self.round.flag_mode,
                     )
-                    .aria_label(best.map_or_else(
-                        || "No personal best for this size and mode".into(),
-                        |time| format!("Personal best: {}", format_result(time)),
-                    ))
-                    .border_l_1()
-                    .border_color(rgb(art.rule)),
+                    .aria_description("Click covered squares to place or remove a flag.")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.round.flag_mode = !view.round.flag_mode;
+                        view.save();
+                        cx.notify();
+                    })),
                 )
+            })
+            .when(board.status() == Status::Playing, |actions| {
+                actions.child(
+                    themed_control(cx, "minesweeper-hint", "Hint", true)
+                        .aria_keyshortcuts("H")
+                        .on_click(cx.listener(|view, _, window, cx| view.show_hint(window, cx))),
+                )
+            })
+            .when(!terminal, |actions| actions.child(self.reset_control(cx)))
+            .when(self.sharing_allowed(), |actions| {
+                actions.child(self.deal_controls(cx))
             });
+
+        let status = div()
+            .id("minesweeper-status")
+            .role(Role::Status)
+            .aria_label(format!("{title}. {detail}"))
+            .max_w(px(300.))
+            .child(
+                stage::rail_heading(cx, title, Some(detail))
+                    .when(ink != palette.ink, |heading| heading.text_color(rgb(ink))),
+            );
+        stage::bar(
+            cx,
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x_6()
+                .gap_y_2()
+                .child(status)
+                .child(stage::stat_row(cx, stats.into_iter().flatten())),
+            actions,
+        )
+    }
+
+    fn field(
+        &self,
+        stage: Stage,
+        art: &'static FieldArt,
+        now: Instant,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let board = &self.round.board;
+        let difficulty = board.difficulty();
+        let (width, height) = difficulty.dimensions();
+        let comfortable_tile = match difficulty {
+            Difficulty::Meadow => 68.,
+            Difficulty::Highlands => 50.,
+            Difficulty::Summit => 40.,
+        };
+        let terminal = matches!(board.status(), Status::Lost | Status::Won);
+        let seams = |count: usize| (count - 1) as f32 * CELL_GAP;
+        let tile_by_width = (stage.board_width - 2. * FIELD_INSET - seams(width)) / width as f32;
+        let tile_by_height =
+            (stage.board_height - 2. * FIELD_INSET - seams(height)) / height as f32;
+        let tile = tile_by_width
+            .min(tile_by_height)
+            .min(comfortable_tile)
+            // Keep squares easy to hit; a short window scrolls instead.
+            .max(20.)
+            .floor();
+        let field_width = width as f32 * tile + seams(width) + 2. * FIELD_INSET;
         let grid = div()
             .id("minesweeper-field")
             .debug_selector(|| "minesweeper-field".into())
@@ -1108,21 +1094,20 @@ impl GameView {
 
         div()
             .relative()
-            .w_full()
-            .max_w(px(field_width))
+            .w(px(field_width))
+            .flex_none()
             .rounded(px(11.))
             .border_1()
             .border_color(rgb(art.frame.edge))
             .bg(art.frame.finish())
             .p(px(FRAME_PADDING))
-            .flex()
-            .flex_col()
-            .gap_1()
+            .shadow(vec![
+                BoxShadow::new(px(0.), px(10.), rgba(0x0000_0050).into()).blur_radius(px(24.)),
+            ])
             .children(
                 [(true, true), (true, false), (false, true), (false, false)]
                     .map(|(top, left)| fastener(top, left, art)),
             )
-            .child(counters)
             .child(
                 div()
                     .rounded(px(7.))
@@ -1151,28 +1136,15 @@ impl Render for GameView {
         } else {
             self.field_motion = None;
         }
-        div()
-            .w_full()
-            .max_w(px(940.))
-            .flex()
-            .flex_col()
-            .items_start()
-            .gap_3()
-            .child(self.toolbar(cx))
-            .child(self.status(elapsed, limit, cx))
-            .child(self.field(window, elapsed, limit, art, now, cx))
-            .when(matches!(self.round.board.status(), Status::Ready | Status::Playing), |game| {
-                game.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .text_size(px(13.))
-                        .line_height(px(19.))
-                        .text_color(rgb(palette.muted))
-                        .child("Right-click to flag · Highlighted clues open unmarked neighbors")
-                        .child("Tab to the field · Arrow keys move · Enter or Space opens · F flags · H hints"),
-                )
-            })
+        let can_configure = self.challenge_seed.is_none() && self.original_field.is_none();
+        let stage = Stage::measure(window, Layout::Bar, can_configure);
+        stage.render(
+            cx,
+            can_configure.then(|| self.toolbar(cx).into_any_element()),
+            self.field(stage, art, now, cx),
+            self.result_card(elapsed, limit, cx),
+            self.bar(elapsed, limit, cx),
+        )
     }
 }
 
@@ -1209,51 +1181,6 @@ fn toggle(
         .text_size(px(13.))
         .font_weight(FontWeight::SEMIBOLD)
         .child(label)
-}
-
-fn meter(
-    label: &'static str,
-    value: String,
-    warning: bool,
-    width: f32,
-    art: &FieldArt,
-) -> Stateful<Div> {
-    static TABULAR: LazyLock<FontFeatures> =
-        LazyLock::new(|| FontFeatures(Arc::new(vec![("tnum".into(), 1)])));
-    let compact = width < 88.;
-    let padding = if compact { 6. } else { 10. };
-    // A tabular digit in the bundled typeface takes under 0.6 em.
-    let text_width = width - 2. * padding - 1.;
-    let value_size = (text_width / (0.6 * value.chars().count() as f32))
-        .floor()
-        .clamp(11., if compact { 16. } else { 19. });
-    div()
-        .id(label)
-        .role(Role::Label)
-        .aria_label(format!("{label}: {value}"))
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .px(px(padding))
-        .whitespace_nowrap()
-        .child(
-            div()
-                .text_size(px(11.))
-                .line_height(px(14.))
-                .text_color(rgb(art.label))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(label),
-        )
-        .child(
-            div()
-                .text_size(px(value_size))
-                .line_height(px(23.))
-                .text_color(rgb(if warning { art.warning } else { art.value }))
-                .font_features(TABULAR.clone())
-                .font_weight(FontWeight::BOLD)
-                .child(value),
-        )
 }
 
 fn tile_label(tile: Tile) -> SharedString {

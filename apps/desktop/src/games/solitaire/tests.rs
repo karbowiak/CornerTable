@@ -19,7 +19,8 @@ fn open(
         game: GameId(format!("solitaire-deal-motion-{mode:?}")),
         entry: GameEntry::Mode(variant.title().to_ascii_lowercase()),
     };
-    let window = cx.open_window(size(px(760.), px(540.)), |_, cx| {
+    // The minimum window, plus the shell's content-card margin the table no longer gets.
+    let window = cx.open_window(size(px(768.), px(540.)), |_, cx| {
         let mut view = GameView::new(&launch, cx);
         view.switch_mode(mode);
         view.restart(Some(seed));

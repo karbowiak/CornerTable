@@ -143,13 +143,13 @@ impl TableSize {
             Variant::Pyramid => (7, 5.4),
             Variant::TriPeaks => (10, 4.1),
         };
-        let viewport_height = f32::from(window.viewport_size().height);
+        let viewport_height = crate::app::content_height(window);
         let min_height = (viewport_height - if show_title { 137. } else { 129. }).max(326.);
         let available_height = min_height - if game.layout.is_empty() { 128. } else { 152. };
         let width = ((available_width - 2. * padding - gap * (columns - 1) as f32)
             / columns as f32)
             .min((available_height / depth).max(44.))
-            .min(124.)
+            .min(150.)
             .floor();
         let mut card = CardSize {
             width,

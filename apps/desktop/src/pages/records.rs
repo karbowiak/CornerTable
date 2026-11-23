@@ -100,6 +100,13 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
             })
             .collect()
     };
+    let period_rounds: Vec<_> = history
+        .iter()
+        .filter(|result| {
+            state.game.as_ref().is_none_or(|game| &result.game == game)
+                && in_period(result, state.period, today)
+        })
+        .collect();
     let count = rounds.len();
     let summary = if state.view == RecordView::FirstWins {
         format!("{count} first {}", if count == 1 { "win" } else { "wins" })
@@ -127,20 +134,12 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         .role(Role::Heading)
                         .aria_level(1)
                         .aria_label("Records"),
-                )
-                .when(count > 0, |line| {
-                    line.child(
-                        div()
-                            .id("records-count")
-                            .role(Role::Label)
-                            .aria_label(summary.clone())
-                            .text_size(px(13.))
-                            .text_color(rgb(palette.muted))
-                            .child(summary),
-                    )
-                }),
+                ),
         )
         .child(filters(app, narrow, cx))
+        .when(!period_rounds.is_empty(), |page| {
+            page.child(summary_tiles(&period_rounds, summary, narrow, cx))
+        })
         .child(
             div().flex().flex_wrap().gap_2().children(
                 [
@@ -150,7 +149,7 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 ]
                 .map(|(id, view)| {
                     let selected = state.view == view;
-                    widgets::button(
+                    widgets::chip(
                         id,
                         view.title(),
                         Action::Record(RecordAction::ShowView(view)),
@@ -158,7 +157,6 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         cx,
                     )
                     .debug_selector(move || id.to_owned())
-                    .min_h(px(34.))
                     .aria_toggled(selected.into())
                 }),
             ),
@@ -223,7 +221,7 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 ),
         )
         .when(listed.len() > state.visible, |page| {
-            page.child(div().child(widgets::button(
+            page.child(div().child(widgets::chip(
                 "records-more",
                 "Show more",
                 Action::Record(RecordAction::ShowMore),
@@ -246,6 +244,61 @@ fn in_period(result: &GameResult, period: Period, today: NaiveDate) -> bool {
     DateTime::from_timestamp_millis(result.completed_at_ms)
         .map(|date| date.with_timezone(&Local).date_naive())
         .is_some_and(|date| (start..=today).contains(&date))
+}
+
+/// Headline numbers for the selected game and period.
+fn summary_tiles(
+    rounds: &[&GameResult],
+    summary: String,
+    narrow: bool,
+    cx: &Context<Desktop>,
+) -> Stateful<Div> {
+    let palette = t::colors(cx);
+    let played = rounds.len();
+    let wins = rounds
+        .iter()
+        .filter(|result| result.outcome == Outcome::Won)
+        .count();
+    let decided = rounds
+        .iter()
+        .filter(|result| matches!(result.outcome, Outcome::Won | Outcome::Lost))
+        .count();
+    let games = rounds
+        .iter()
+        .map(|result| &result.game)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let rate = (wins * 100 + decided / 2)
+        .checked_div(decided)
+        .map_or_else(|| "—".to_owned(), |rate| format!("{rate}%"));
+    let tiles = [
+        ("Rounds", played.to_string()),
+        ("Wins", wins.to_string()),
+        ("Win rate", rate),
+        ("Games played", games.to_string()),
+    ];
+    div()
+        .id("records-count")
+        .role(Role::Label)
+        .aria_label(summary)
+        .grid()
+        .grid_cols(if narrow { 2 } else { 4 })
+        .gap_3()
+        .children(tiles.map(|(label, value)| {
+            t::panel(cx)
+                .px_4()
+                .py_3()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(palette.muted))
+                        .child(label),
+                )
+                .child(t::display_type(value, 26.))
+        }))
 }
 
 fn round_summary(rounds: &[&GameResult]) -> String {
@@ -481,7 +534,7 @@ fn filters(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 .flex_wrap()
                 .gap_2()
                 .child(
-                    widgets::button(
+                    widgets::chip(
                         "records-game-picker",
                         picker_label,
                         Action::Record(RecordAction::OpenPicker),
@@ -498,7 +551,7 @@ fn filters(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         .flex()
                         .gap_2()
                         .children(periods.map(|(id, title, period)| {
-                            widgets::button(
+                            widgets::chip(
                                 id,
                                 title,
                                 Action::Record(RecordAction::FilterPeriod(period)),

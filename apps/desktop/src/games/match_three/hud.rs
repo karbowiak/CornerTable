@@ -4,7 +4,11 @@ use gpui::{
     rgba,
 };
 
-use crate::{games::round_result, storage::Outcome, theme as t};
+use crate::{
+    games::{round_result, stage},
+    storage::Outcome,
+    theme as t,
+};
 
 use super::{Action, Feedback, GameView, field};
 
@@ -71,66 +75,18 @@ impl GameView {
         }
     }
 
-    pub(super) fn hud(
-        &self,
-        width: f32,
-        compact: bool,
-        displayed: Progress,
-        cx: &Context<Self>,
-    ) -> Div {
+    pub(super) fn hud(&self, width: f32, displayed: Progress, cx: &Context<Self>) -> Div {
         let colors = t::colors(cx);
         let stage = STAGES[self.journal.active];
-        let active_motion = self.motion.is_some();
-        let status = if active_motion {
+        let status = if self.motion.is_some() {
             Status::Playing
         } else {
             self.game.status()
         };
         let (headline, message) = self.status_text();
-        let mut hud = div()
-            .w(px(width))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap(px(if compact { 10. } else { 15. }))
-            .child(t::display_type(
-                if self.challenge {
-                    "Daily puzzle"
-                } else {
-                    stage.name
-                },
-                if compact { 17. } else { 25. },
-            ))
-            .when(!self.challenge, |hud| {
-                hud.child(self.stage_picker(width, cx))
-            })
-            .child(
-                div()
-                    .flex()
-                    .border_t_1()
-                    .border_color(rgb(colors.border))
-                    .pt(px(if compact { 8. } else { 12. }))
-                    .gap(px(10.))
-                    .child(metric(
-                        "Score",
-                        display_score(displayed.score),
-                        false,
-                        colors,
-                    ))
-                    .child(metric(
-                        "Moves",
-                        self.game.moves_left().to_string(),
-                        self.game.moves_left() <= 5,
-                        colors,
-                    )),
-            )
-            .children(
-                stage
-                    .goals
-                    .iter()
-                    .map(|&goal| goal_meter(goal, displayed, colors)),
-            );
-
+        // The rail's sections are padded by 16 on each side.
+        let inner = width - 34.;
+        let (best_score, best_chain) = self.journal.record();
         let feedback = div()
             .id("match-three-feedback")
             .role(Role::Status)
@@ -143,18 +99,22 @@ impl GameView {
             })
             .flex()
             .flex_col()
-            .min_h(px(if compact { 39. } else { 43. }))
-            .line_height(px(16.))
+            .min_h(px(43.))
+            .line_height(px(18.))
             .child(
                 div()
-                    .text_size(px(if compact { 13. } else { 16. }))
+                    .text_size(px(16.))
                     .font_weight(FontWeight::BOLD)
                     .text_color(rgb(if headline.is_empty() {
                         colors.muted
                     } else {
                         colors.gold_text
                     }))
-                    .child(headline),
+                    .child(if headline.is_empty() {
+                        "Make a match".to_owned()
+                    } else {
+                        headline
+                    }),
             )
             .child(
                 div()
@@ -162,22 +122,72 @@ impl GameView {
                     .text_color(rgb(colors.muted))
                     .child(message),
             );
-        if status == Status::Playing {
-            hud = hud.child(feedback).child(self.round_actions(status, cx));
-        }
-        let (best_score, best_chain) = self.journal.record();
-        hud.when(best_score > 0, |hud| {
-            hud.child(
-                div()
-                    .line_height(px(16.))
-                    .text_size(px(11.))
-                    .text_color(rgb(colors.muted))
-                    .child(format!(
-                        "Best {} · ×{best_chain} chain",
-                        display_score(best_score)
-                    )),
+        stage::rail(cx)
+            .child(
+                stage::rail_section(cx)
+                    .child(t::display_type(
+                        if self.challenge {
+                            "Daily puzzle"
+                        } else {
+                            stage.name
+                        },
+                        21.,
+                    ))
+                    .when(!self.challenge, |section| {
+                        section.child(self.stage_picker(inner, cx))
+                    }),
             )
-        })
+            .child(
+                stage::rail_section(cx)
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(10.))
+                            .child(metric(
+                                "Score",
+                                display_score(displayed.score),
+                                false,
+                                colors,
+                            ))
+                            .child(metric(
+                                "Moves",
+                                self.game.moves_left().to_string(),
+                                self.game.moves_left() <= 5,
+                                colors,
+                            )),
+                    )
+                    .children(
+                        stage
+                            .goals
+                            .iter()
+                            .map(|&goal| goal_meter(goal, displayed, colors)),
+                    )
+                    .when(best_score > 0, |section| {
+                        section.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(rgb(colors.muted))
+                                .child(format!(
+                                    "Best {} · ×{best_chain} chain",
+                                    display_score(best_score)
+                                )),
+                        )
+                    }),
+            )
+            .when(status == Status::Playing, |rail| {
+                rail.child(
+                    stage::rail_section(cx)
+                        .child(feedback)
+                        .child(self.round_actions(status, cx)),
+                )
+            })
+            .child(stage::controls_help(
+                cx,
+                &[
+                    "Drag or click an adjacent pair to swap",
+                    "Arrows move · Space selects and swaps",
+                ],
+            ))
     }
 
     pub(super) fn result(&self, cx: &Context<Self>) -> Option<AnyElement> {

@@ -43,7 +43,8 @@ struct Layout {
 }
 
 impl Layout {
-    fn new(width: f32, count: usize, narrow: bool, short: bool) -> Self {
+    /// `fill` is the height the table has to spare; the chain area grows into it.
+    fn new(width: f32, count: usize, narrow: bool, short: bool, fill: f32) -> Self {
         let (unit, row_gap, padding, minimum_height) = if short {
             ((width / 20.).floor().clamp(21., 33.), 8., 20., 84_f32)
         } else {
@@ -61,7 +62,7 @@ impl Layout {
         let rows = count.div_ceil(columns);
         let row_stride = unit + row_gap;
         let chain_height = (rows - 1) as f32 * row_stride + unit;
-        let height = minimum_height.max(chain_height + padding);
+        let height = minimum_height.max(fill).max(chain_height + padding);
         Self {
             columns,
             unit,
@@ -100,13 +101,14 @@ impl GameView {
     pub(super) fn chain(
         &self,
         width: f32,
+        fill: f32,
         narrow: bool,
         short: bool,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let round = self.round();
         let tiles = round.chain();
-        let layout = Layout::new(width, tiles.len(), narrow, short);
+        let layout = Layout::new(width, tiles.len(), narrow, short, fill);
         let first = layout.slot(0);
         let last = layout.slot(tiles.len() - 1);
         let arrival = self.placement.filter(|_| motion::enabled(cx));
@@ -277,7 +279,7 @@ mod tests {
     fn all_tiles_and_end_tags_fit_while_rows_keep_their_direction() {
         for width in [318., 480., 650., 768., 1000., 1138.] {
             for (count, short) in (1..=28).flat_map(|count| [(count, false), (count, true)]) {
-                let layout = Layout::new(width, count, width < 660., short);
+                let layout = Layout::new(width, count, width < 660., short, 0.);
                 let first = layout.slot(0);
                 let last = layout.slot(count - 1);
                 assert!(layout.end_x(first, true) >= 0.);
@@ -302,7 +304,7 @@ mod tests {
 
     #[test]
     fn a_full_chain_leaves_room_for_the_rack_at_the_minimum_window_size() {
-        let layout = Layout::new(494., 28, true, true);
+        let layout = Layout::new(494., 28, true, true, 0.);
         assert!(layout.height <= 144.);
     }
 }

@@ -76,27 +76,6 @@ fn puzzle_results_follow_placement_and_preserve_undo(cx: &mut gpui::TestAppConte
 }
 
 #[test]
-fn play_layout_fits_the_board_and_tray_in_supported_windows() {
-    let roomy = PlayLayout::fit(1056., 900.);
-    assert!((600. ..=670.).contains(&roomy.board));
-    assert!(!roomy.stacked);
-    assert!(roomy.panel_width() <= 1092.);
-
-    let short = PlayLayout::fit(1056., 540.);
-    assert!(short.board + 112. <= 540.);
-
-    let compact = PlayLayout::fit(506., 540.);
-    assert!(!compact.stacked);
-    assert!(compact.cell >= 28.);
-    assert!(compact.controls < 230.);
-    assert!(compact.panel_width() <= 542.);
-
-    let stacked = PlayLayout::fit(420., 540.);
-    assert!(stacked.stacked);
-    assert_eq!(stacked.controls, stacked.board);
-}
-
-#[test]
 fn original_replay_restores_score_tray_and_undo() {
     let json = r#"{"seed":0,"turns":[[0,0,0]],"can_undo":true}"#;
     let mut saved: SavedSession = serde_json::from_str(json).unwrap();

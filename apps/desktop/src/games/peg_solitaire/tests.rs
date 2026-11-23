@@ -86,7 +86,7 @@ fn peg_solitaire_compact_input_resume_and_results(cx: &mut TestAppContext) {
     let board = ui.debug_bounds("peg-solitaire-board").unwrap();
     let rail = ui.debug_bounds("peg-solitaire-rail").unwrap();
     assert!(board.right() < rail.left());
-    assert!(rail.right() < px(760.) && board.bottom() < px(540.));
+    assert!(rail.right() <= px(760.) && board.bottom() < px(540.));
     assert!(ui.debug_bounds("peg-solitaire-hole-A1").is_none());
 
     let source = ui.debug_bounds("peg-solitaire-hole-D2").unwrap();

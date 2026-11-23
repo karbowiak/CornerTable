@@ -119,7 +119,7 @@ pub fn library(app: &Desktop, content_width: f32, cx: &Context<Desktop>) -> Div 
                 )
             };
             let favorite = (id == game.id.0).then(|| (&game.id, app.favorites.contains(&game.id)));
-            widgets::tile(id, title, 124., action, favorite, cx)
+            widgets::tile(id, title, None, 124., action, favorite, cx)
         })
         .collect::<Vec<_>>();
     let catalog = if games.is_empty() {

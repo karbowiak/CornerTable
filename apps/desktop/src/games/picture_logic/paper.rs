@@ -4,7 +4,15 @@ use gpui::{
     SharedString, Stateful, Window, div, prelude::*, px, relative, rgb,
 };
 
-use crate::{games::round_result, motion, storage::Outcome, theme};
+use crate::{
+    games::{
+        round_result,
+        stage::{self, Layout, Stage},
+    },
+    motion,
+    storage::Outcome,
+    theme,
+};
 
 use super::{
     Action, GameView, Notice, REVEAL_DURATION, Tool,
@@ -13,8 +21,6 @@ use super::{
 };
 
 pub(super) const PRINT_STOCK: u32 = 0xf7edda;
-const TOOLS_WIDTH: f32 = 248.;
-const COLUMN_GAP: f32 = 18.;
 
 #[derive(Clone, Copy)]
 pub(super) struct Colors {
@@ -39,100 +45,89 @@ impl Colors {
     pub(super) fn new(cx: &gpui::App) -> Self {
         if theme::colors(cx) == theme::LIGHT {
             Self {
-                table: 0xe5e9dc,
-                stock: 0xfffbef,
-                clue: 0xf0f0e2,
-                track: 0xe1ecd9,
-                active: 0xcfe2cb,
-                rule: 0xd3d8c9,
-                major: 0x8b9b8a,
-                ink: 0x223e35,
-                quiet: 0x536b5a,
-                fill: 0x2c584e,
+                table: 0xece4d4,
+                stock: 0xfffaf0,
+                clue: 0xf4ecdc,
+                track: 0xefe2c6,
+                active: 0xe8d4a8,
+                rule: 0xd8ccb8,
+                major: 0x9a8667,
+                ink: 0x2a2119,
+                quiet: 0x6b5c4c,
+                fill: 0x34416a,
                 mark: 0x6c6256,
                 select: 0xac4e34,
                 hint: 0x885411,
                 alert: 0xa63d37,
-                button_ink: 0xfffbef,
+                button_ink: 0xfffaf0,
             }
         } else {
             Self {
-                table: 0x172923,
-                stock: 0x293c35,
-                clue: 0x31463d,
-                track: 0x3a5348,
-                active: 0x4c6859,
-                rule: 0x4c6056,
-                major: 0x728b7d,
+                table: 0x221c16,
+                stock: 0x2e261e,
+                clue: 0x372e25,
+                track: 0x433729,
+                active: 0x5a4830,
+                rule: 0x4d4134,
+                major: 0x8a765c,
                 ink: 0xf4efe3,
-                quiet: 0xb8c9b7,
-                fill: 0xc2d396,
-                mark: 0xd4dccc,
+                quiet: 0xc0b29f,
+                fill: 0xe2c88f,
+                mark: 0xd8ccb9,
                 select: 0xffbd94,
                 hint: 0xffd789,
                 alert: 0xff9f97,
-                button_ink: 0x1a2a23,
+                button_ink: 0x2a2119,
             }
         }
     }
 }
 
 impl GameView {
-    pub(super) fn render_plate(
-        &self,
-        width: f32,
-        paint: Colors,
-        window: &Window,
-        cx: &Context<Self>,
-    ) -> Div {
+    pub(super) fn render_plate(&self, paint: Colors, window: &Window, cx: &Context<Self>) -> Div {
         let play = self.book.play();
         let puzzle = play.board.puzzle();
-        let wide = width >= 856.;
-        let show_guide = self.guide.unwrap_or(wide && self.book.active == 0);
-        let inner = width - if wide { TOOLS_WIDTH + COLUMN_GAP } else { 0. };
+        // The rail suits most plates. Solved prints and wide grids that would get cramped
+        // beside it use the full width with a status bar instead.
+        let beside = Stage::measure(window, Layout::Rail, false);
+        let roomy = beside.board_width >= puzzle.width() as f32 * 26. + 120.;
+        let layout = if play.solved || !roomy {
+            Layout::Bar
+        } else {
+            Layout::Rail
+        };
+        let stage = Stage::measure(window, layout, false);
         let shape = format!(
             "{} × {} · {}",
             puzzle.width(),
             puzzle.height(),
             puzzle.series.label()
         );
-        let head = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_baseline()
-                    .gap_2()
-                    .child(theme::display_type(plate_name(self.book.active), 23.))
-                    .child(small(shape, cx)),
-            )
-            .child(div().flex().flex_wrap().gap_2().when(!play.solved, |line| {
-                line.when(!wide, |line| line.child(guide_toggle(show_guide, cx)))
-                    .child(control(
-                        "picture-gallery",
-                        "Puzzle gallery",
-                        Button::Normal,
-                        Action::Gallery,
-                        cx,
-                    ))
-            }));
-
-        let page = div().w_full().flex().flex_col().gap_3().child(head);
+        let heading = stage::rail_heading(cx, plate_name(self.book.active), Some(shape.into()));
+        let gallery = control(
+            "picture-gallery",
+            "Puzzle gallery",
+            Button::Normal,
+            Action::Gallery,
+            cx,
+        );
         if play.solved {
-            return page.child(self.finished(width, paint, cx));
+            return stage.render(
+                cx,
+                None,
+                self.finished(stage.board_width, paint, cx),
+                None,
+                stage::bar(cx, heading, gallery),
+            );
         }
-        let padding = if inner >= 600. { 24. } else { 12. };
-        let margin = if inner >= 600. { 13. } else { 9. };
+
+        // The paper adds a margin and a hairline around the grid.
+        let margin = 13.;
         let active = self.hover.unwrap_or(play.cursor);
         let cell = play.board.cells()[active];
         let (grid, scrolls) = self.grid(
-            inner - (padding + margin) * 2. - 2.,
-            !wide,
+            stage.board_width - margin * 2. - 2.,
+            stage.board_height - margin * 2. - 2.,
             paint,
             window,
             cx,
@@ -144,109 +139,85 @@ impl GameView {
             .aria_description("Arrows move. F selects Fill, X selects Mark, and E selects Erase. Space applies the tool. H gives a hint.")
             .track_focus(&self.board_focus)
             .on_key_down(cx.listener(Self::key_down))
-            .min_w_0()
-            .w_full()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_2()
-            .bg(rgb(paint.table))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(rgb(paint.rule))
-            .pt(px(padding))
-            .pb_2()
-            .px(px(padding))
-            .child(
-                div()
-                    .p(px(margin))
-                    .bg(rgb(paint.stock))
-                    .shadow(vec![
-                        BoxShadow::new(px(0.), px(3.), rgb(0x0d2219).opacity(0.24).into())
-                            .blur_radius(px(9.)),
-                    ])
-                    .child(grid),
-            )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .line_height(px(20.))
-                    .text_color(rgb(paint.quiet))
-                    .child(format!(
-                        "Row {}  ·  Column {}  ·  {}{}",
-                        active / puzzle.width() + 1,
-                        active % puzzle.width() + 1,
-                        cell.label(),
-                        if scrolls { "  ·  Scroll for more rows" } else { "" },
-                    )),
-            );
-        let tools = self.tool_strip(paint, cx);
-        let actions = self.action_strip(cx);
-        let progress = self.progress(paint, !wide, cx);
-        let status = self.status(paint);
-        if wide {
-            page.child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(COLUMN_GAP))
-                    .child(plate)
-                    .child(
-                        div()
-                            .w(px(TOOLS_WIDTH))
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(tools)
-                            .child(progress)
-                            .child(actions)
-                            .children(status)
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .items_start()
-                                    .gap_2()
-                                    .child(small("Drag to paint. Right-click to mark.", cx))
-                                    .child(guide_toggle(show_guide, cx))
-                                    .when(show_guide, |help| help.child(guide(paint, cx))),
-                            ),
-                    ),
-            )
-        } else {
-            page.when(show_guide, |page| {
-                page.child(
+            .p(px(margin))
+            .bg(rgb(paint.stock))
+            .rounded(px(3.))
+            .shadow(vec![
+                BoxShadow::new(px(0.), px(8.), rgb(0x000000).opacity(0.3).into())
+                    .blur_radius(px(20.)),
+            ])
+            .child(grid);
+        let position = small(
+            format!(
+                "Row {}  ·  Column {}  ·  {}{}",
+                active / puzzle.width() + 1,
+                active % puzzle.width() + 1,
+                cell.label(),
+                if scrolls {
+                    "  ·  Scroll for more rows"
+                } else {
+                    ""
+                },
+            ),
+            cx,
+        );
+        if layout == Layout::Bar {
+            let status = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x_6()
+                .gap_y_1()
+                .child(heading)
+                .child(
                     div()
-                        .p_3()
-                        .rounded(px(6.))
-                        .border_1()
-                        .border_color(rgb(paint.rule))
-                        .bg(rgb(paint.table))
-                        .child(guide(paint, cx)),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .child(tools.min_w(px(195.)).flex_1())
-                    .child(actions.flex_shrink_0()),
-            )
-            .child(progress)
-            .child(
-                div()
-                    .h(px(20.))
-                    .children(status)
-                    .when(self.notice.is_none(), |line| {
-                        line.child(small("Drag to paint. Right-click to mark.", cx))
-                    }),
-            )
-            .child(plate)
+                        .w(px(260.))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(self.progress(paint, true, cx))
+                        .child(position)
+                        .children(self.status(paint)),
+                );
+            let tools = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(self.tool_strip(paint, cx).w(px(250.)))
+                .child(self.action_strip(cx).child(gallery));
+            return stage.render(cx, None, plate, None, stage::bar(cx, status, tools));
         }
+        let show_guide = self.guide.unwrap_or(self.book.active == 0);
+        let rail = stage::rail(cx)
+            .child(
+                stage::rail_section(cx)
+                    .child(heading)
+                    .child(self.progress(paint, false, cx))
+                    .child(position)
+                    .children(self.status(paint)),
+            )
+            .child(
+                stage::rail_section(cx)
+                    .child(self.tool_strip(paint, cx))
+                    .child(self.action_strip(cx).child(gallery)),
+            )
+            .child(
+                stage::rail_section(cx)
+                    .items_start()
+                    .child(guide_toggle(show_guide, cx))
+                    .when(show_guide, |section| section.child(guide(paint, cx))),
+            )
+            .child(stage::controls_help(
+                cx,
+                &[
+                    "Drag to paint · Right-click to mark",
+                    "Arrows move · Space applies the tool",
+                    "F fill · X mark · E erase",
+                    "C check · H hint · Z undo",
+                ],
+            ));
+        stage.render(cx, None, plate, None, rail)
     }
 
     fn tool_strip(&self, paint: Colors, cx: &Context<Self>) -> Div {
@@ -302,14 +273,10 @@ impl GameView {
         };
         let total_lines = rows.len() + columns.len();
         let matched_lines = total_lines - rows_left - columns_left;
-        let palette = theme::colors(cx);
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .when(!compact, |meter| {
-                meter.border_b_1().border_color(rgb(palette.border)).pb_3()
-            })
             .child(
                 div()
                     .flex()
@@ -740,7 +707,6 @@ fn guide(paint: Colors, cx: &Context<GameView>) -> Div {
         .flex_col()
         .items_start()
         .gap_2()
-        .max_w(px(430.))
         .child(small("Fill squares to match the clues across and down. Each number counts one group. Leave at least one empty square between groups. A 0 means an empty line.", cx))
         .child(
             div()
@@ -758,7 +724,6 @@ fn guide(paint: Colors, cx: &Context<GameView>) -> Div {
                             .into_iter().map(|tool| swatch(tool, paint))),
                 ),
         )
-        .child(small("Arrows move and Space paints. F selects Fill, X selects Mark, and E selects Erase. Use C to check, H for a hint, and Z to undo.", cx))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -792,7 +757,7 @@ fn press(
     let (background, border, ink) = match variant {
         Button::Normal => (palette.surface, palette.border, palette.ink),
         Button::Primary => (paint.fill, paint.fill, paint.button_ink),
-        Button::Selected => (paint.track, paint.fill, paint.ink),
+        Button::Selected => (theme::GOLD, theme::GOLD, theme::INK),
         Button::Disabled => (palette.paper, palette.border, palette.muted),
     };
     let label = label.into();
@@ -821,7 +786,9 @@ fn press(
                 .tab_index(0)
                 .cursor_pointer()
                 .hover(move |style| {
-                    if variant == Button::Primary {
+                    if variant == Button::Selected {
+                        style.bg(rgb(theme::GOLD_HOVER))
+                    } else if variant == Button::Primary {
                         style.opacity(0.88)
                     } else {
                         style.bg(rgb(palette.hover))
