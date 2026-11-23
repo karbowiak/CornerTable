@@ -171,13 +171,16 @@ impl GameView {
                 .line_height(px(size * 0.27))
                 .text_color(rgb(t::MUTED))
                 .children((0..3).map(|row| {
-                    div().flex().children((1..=3).map(|column| {
-                        let digit = row * 3 + column;
-                        div()
-                            .w(px(size * 0.27))
-                            .text_center()
-                            .children(((notes & (1 << digit)) != 0).then(|| digit.to_string()))
-                    }))
+                    div()
+                        .flex()
+                        .h(px(size * 0.27))
+                        .children((1..=3).map(|column| {
+                            let digit = row * 3 + column;
+                            div()
+                                .w(px(size * 0.27))
+                                .text_center()
+                                .children(((notes & (1 << digit)) != 0).then(|| digit.to_string()))
+                        }))
                 }));
             cell.border_color(rgb(GRID_LINE)).child(content)
         } else {
