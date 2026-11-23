@@ -131,8 +131,14 @@ impl Deal {
     }
 
     pub(super) fn restart(&mut self, new_seed: Option<u64>) {
-        let seed = new_seed.unwrap_or(self.saved.seed);
-        self.game = Game::with_mode(self.game.mode(), seed);
+        let mode = self.game.mode();
+        let seed = match (new_seed, mode) {
+            // Walk the catalog from the opening seed so New deal shows a
+            // different shuffle on each visit until the catalog wraps.
+            (Some(_), DealMode::KlondikeDrawOneVerified) => self.saved.seed.wrapping_add(1),
+            (seed, _) => seed.unwrap_or(self.saved.seed),
+        };
+        self.game = Game::with_mode(mode, seed);
         self.saved.seed = seed;
         self.saved.turns.clear();
         self.saved.attempt = AttemptId::default();
@@ -192,6 +198,7 @@ fn mode_id(mode: DealMode) -> &'static str {
     match mode {
         DealMode::KlondikeDrawOne => "draw-one",
         DealMode::KlondikeDrawThree => "draw-three",
+        DealMode::KlondikeDrawOneVerified => "draw-one-verified",
         DealMode::SpiderOneSuit => "one-suit",
         DealMode::SpiderTwoSuits => "two-suits",
         DealMode::SpiderFourSuits => "four-suits",
@@ -236,7 +243,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_nine_styles_restore_the_board_and_its_undo_prefix() {
+    fn all_styles_restore_the_board_and_its_undo_prefix() {
         let seed = u64::MAX;
         for variant in [
             Variant::Klondike,

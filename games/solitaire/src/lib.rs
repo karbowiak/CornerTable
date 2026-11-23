@@ -37,7 +37,7 @@ impl Variant {
     pub fn deal_modes(self) -> &'static [DealMode] {
         use DealMode::*;
         match self {
-            Self::Klondike => &[KlondikeDrawOne, KlondikeDrawThree],
+            Self::Klondike => &[KlondikeDrawOne, KlondikeDrawThree, KlondikeDrawOneVerified],
             Self::Spider => &[SpiderOneSuit, SpiderTwoSuits, SpiderFourSuits],
             Self::FreeCell => &[FreeCell],
             Self::Pyramid => &[Pyramid],
@@ -50,6 +50,8 @@ impl Variant {
 pub enum DealMode {
     KlondikeDrawOne,
     KlondikeDrawThree,
+    /// Draw 1 rules with a seed selecting a shuffle from a fixed catalog of wins.
+    KlondikeDrawOneVerified,
     SpiderOneSuit,
     SpiderTwoSuits,
     SpiderFourSuits,
@@ -62,7 +64,9 @@ pub enum DealMode {
 impl DealMode {
     fn variant(self) -> Variant {
         match self {
-            Self::KlondikeDrawOne | Self::KlondikeDrawThree => Variant::Klondike,
+            Self::KlondikeDrawOne | Self::KlondikeDrawThree | Self::KlondikeDrawOneVerified => {
+                Variant::Klondike
+            }
             Self::SpiderOneSuit | Self::SpiderTwoSuits | Self::SpiderFourSuits => Variant::Spider,
             Self::FreeCell => Variant::FreeCell,
             Self::Pyramid => Variant::Pyramid,
@@ -148,7 +152,12 @@ impl Game {
             runs: 0,
             moves: 0,
         };
-        let deck = shuffled_deck(seed, mode);
+        let deck_seed = if mode == DealMode::KlondikeDrawOneVerified {
+            klondike::verified::shuffle_seed(seed)
+        } else {
+            seed
+        };
+        let deck = shuffled_deck(deck_seed, mode);
         match game.variant {
             Variant::Klondike => klondike::deal(&mut game, deck),
             Variant::Spider => spider::deal(&mut game, deck),
@@ -164,6 +173,11 @@ impl Game {
 
     pub fn mode(&self) -> DealMode {
         self.mode
+    }
+
+    /// Replay witness that wins the opening [`DealMode::KlondikeDrawOneVerified`] deal at `seed`.
+    pub fn verified_klondike_solution(seed: u64) -> impl Iterator<Item = Move> {
+        klondike::verified::solution(seed)
     }
 
     /// Reconstruct a seeded deal and reject a replay containing any illegal move.

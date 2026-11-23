@@ -25,6 +25,8 @@ const FLAX: u32 = 0xf5dfaa;
 const STOCK_ART: &str = "games/solitaire/card-back.webp";
 const FELT_ART: &str = "games/solitaire/baize.webp";
 const CARD_RATIO: f32 = 1.4;
+const VERIFIED_DEAL_NOTE: &str =
+    "A winning route was verified from the start. Moves can lead to dead ends.";
 
 #[derive(Clone, Copy)]
 struct CardSize {
@@ -860,7 +862,20 @@ impl Render for GameView {
                                                 LIGHT
                                             },
                                         ))
-                                        .child(self.note(stalled)),
+                                        .child(self.note(stalled))
+                                        .when(
+                                            game.mode() == DealMode::KlondikeDrawOneVerified,
+                                            |note| {
+                                                note.child(
+                                                    div()
+                                                        .id("solitaire-verified-deal-note")
+                                                        .role(Role::Label)
+                                                        .aria_label(VERIFIED_DEAL_NOTE)
+                                                        .text_color(rgb(LIGHT))
+                                                        .child(VERIFIED_DEAL_NOTE),
+                                                )
+                                            },
+                                        ),
                                 )
                             }),
                     ),
@@ -1263,6 +1278,7 @@ fn mode_label(mode: DealMode) -> &'static str {
     match mode {
         DealMode::KlondikeDrawOne => "Draw 1",
         DealMode::KlondikeDrawThree => "Draw 3",
+        DealMode::KlondikeDrawOneVerified => "Verified Draw 1",
         DealMode::SpiderOneSuit => "1 suit",
         DealMode::SpiderTwoSuits => "2 suits",
         DealMode::SpiderFourSuits => "4 suits",

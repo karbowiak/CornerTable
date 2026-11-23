@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) mod verified;
+
 pub(super) fn deal(game: &mut Game, mut deck: Vec<Card>) {
     for column in 0..7 {
         game.tableau.push(
