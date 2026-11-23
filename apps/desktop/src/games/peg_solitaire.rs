@@ -1,5 +1,7 @@
 mod board;
 
+use std::time::{Duration, Instant};
+
 use corner_table_peg_solitaire::{Hole, Jump, Position, Round, Status};
 use gpui::{
     AnyElement, Context, Div, FocusHandle, KeyDownEvent, Render, Role, Window, div, prelude::*, px,
@@ -10,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     app::ShellLayout,
     audio::{self, Effect},
+    motion,
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme,
 };
@@ -17,6 +20,7 @@ use crate::{
 use super::{GameLaunch, round_result, themed_control};
 
 const SAVE_VERSION: u8 = 1;
+const JUMP_DURATION: Duration = Duration::from_millis(185);
 
 #[derive(Deserialize, Serialize)]
 struct Saved {
@@ -44,6 +48,7 @@ pub struct GameView {
     hint: Option<Jump>,
     notice: Option<Notice>,
     confirm_replay: bool,
+    flight: Option<(Jump, Instant)>,
 }
 
 impl GameView {
@@ -66,6 +71,7 @@ impl GameView {
             hint: None,
             notice: None,
             confirm_replay: false,
+            flight: None,
         };
         view.record_result();
         view
@@ -121,7 +127,9 @@ impl GameView {
                 self.notice = Some(Notice::Blocked(hole));
             }
         } else if let Some(from) = self.selected {
-            if self.round.play(Jump { from, to: hole }).is_some() {
+            let jump = Jump { from, to: hole };
+            if self.round.play(jump).is_some() {
+                self.flight = motion::enabled(cx).then(|| (jump, cx.background_executor().now()));
                 self.clear_selection();
                 self.save();
                 self.record_result();
@@ -178,6 +186,7 @@ impl GameView {
             self.attempt = AttemptId::default();
         }
         self.cursor = jump.from;
+        self.flight = None;
         self.clear_selection();
         self.confirm_replay = false;
         self.notice = Some(Notice::Undo);
@@ -197,6 +206,7 @@ impl GameView {
         self.round = Round::default();
         self.attempt = AttemptId::default();
         self.cursor = start_cursor(&self.round);
+        self.flight = None;
         self.clear_selection();
         self.confirm_replay = false;
         self.notice = None;
@@ -423,6 +433,19 @@ impl Render for GameView {
         let cell = ((board_width.min(height - 142.) - board::FRAME * 2.) / 7.)
             .floor()
             .clamp(32., 69.);
+        let flight = self.flight.and_then(|(jump, started)| {
+            let elapsed = cx
+                .background_executor()
+                .now()
+                .saturating_duration_since(started);
+            (elapsed < JUMP_DURATION && motion::enabled(cx))
+                .then(|| (jump, elapsed.as_secs_f32() / JUMP_DURATION.as_secs_f32()))
+        });
+        if flight.is_some() {
+            window.request_animation_frame();
+        } else {
+            self.flight = None;
+        }
 
         div()
             .id("peg-solitaire")
@@ -430,7 +453,7 @@ impl Render for GameView {
             .items_start()
             .gap(px(gap))
             .on_key_down(cx.listener(Self::key_down))
-            .child(self.board(cell, window, cx))
+            .child(self.board(cell, flight, window, cx))
             .child(
                 div()
                     .id("peg-solitaire-rail")

@@ -39,6 +39,40 @@ const CENTER_FINISH: [[u8; 2]; 31] = [
 ];
 
 #[gpui::test]
+fn first_peg_lifts_and_settles_in_the_center(cx: &mut TestAppContext) {
+    let launch = GameLaunch {
+        game: GameId("peg-solitaire".into()),
+        entry: GameEntry::Challenge("peg-flight-test".into()),
+    };
+    let window = cx.open_window(size(px(760.), px(540.)), |_, cx| GameView::new(&launch, cx));
+    let mut ui = VisualTestContext::from_window(window.into(), cx);
+    let draw = |ui: &mut VisualTestContext| {
+        ui.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    };
+    window
+        .update(&mut ui.cx, |view, _, cx| {
+            view.activate(Hole::from_index(10).unwrap(), cx);
+            view.activate(Hole::CENTER, cx);
+            assert!(view.position().occupied(Hole::CENTER));
+        })
+        .unwrap();
+    draw(&mut ui);
+    let start = ui.debug_bounds("peg-solitaire-flight").unwrap();
+    ui.cx.executor().advance_clock(JUMP_DURATION / 2);
+    draw(&mut ui);
+    let middle = ui.debug_bounds("peg-solitaire-flight").unwrap();
+    let landing = ui.debug_bounds("peg-solitaire-hole-D4").unwrap();
+    assert_eq!(start.left(), middle.left());
+    assert!(start.top() < middle.top() && middle.top() < landing.top());
+    ui.cx.executor().advance_clock(JUMP_DURATION);
+    draw(&mut ui);
+    assert!(ui.debug_bounds("peg-solitaire-flight").is_none());
+}
+
+#[gpui::test]
 fn peg_solitaire_compact_input_resume_and_results(cx: &mut TestAppContext) {
     cx.update(|cx| cx.set_reduce_motion(true));
     let launch = GameLaunch {

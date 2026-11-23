@@ -1,4 +1,4 @@
-use corner_table_peg_solitaire::{Hole, SIDE, Status};
+use corner_table_peg_solitaire::{Hole, Jump, SIDE, Status};
 use gpui::{
     Bounds, BoxShadow, Context, Div, FontWeight, Role, Stateful, Window, canvas, div, fill,
     linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba, size,
@@ -12,10 +12,17 @@ const SELECTED: u32 = 0xffc869;
 const HINT: u32 = 0x9ef3dc;
 
 impl GameView {
-    pub(super) fn board(&self, cell: f32, window: &Window, cx: &Context<Self>) -> Stateful<Div> {
+    pub(super) fn board(
+        &self,
+        cell: f32,
+        flight: Option<(Jump, f32)>,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
         let width = cell * f32::from(SIDE) + FRAME * 2.;
         let focused = self.focus.is_focused(window);
         let playing = self.position().status() == Status::Playing;
+        let landing = flight.map(|(jump, _)| jump.to);
         div()
             .id("peg-solitaire-board")
             .debug_selector(|| "peg-solitaire-board".into())
@@ -85,13 +92,26 @@ impl GameView {
                             .children((0..SIDE).map(|column| {
                                 match Hole::new(row, column) {
                                     Some(hole) => self
-                                        .hole(hole, cell, focused, playing, cx)
+                                        .hole(hole, cell, focused, playing, landing, cx)
                                         .into_any_element(),
                                     None => div().size(px(cell)).flex_none().into_any_element(),
                                 }
                             }))
                     })),
             )
+            .children(flight.map(|(jump, progress)| {
+                let interpolate = |from: u8, to: u8| {
+                    FRAME + (f32::from(from) * (1. - progress) + f32::from(to) * progress) * cell
+                };
+                let rise = cell * 1.65 * progress * (1. - progress);
+                div()
+                    .debug_selector(|| "peg-solitaire-flight".into())
+                    .absolute()
+                    .left(px(interpolate(jump.from.column(), jump.to.column())))
+                    .top(px(interpolate(jump.from.row(), jump.to.row()) - rise))
+                    .size(px(cell))
+                    .child(peg(cell, false))
+            }))
     }
 
     fn hole(
@@ -100,6 +120,7 @@ impl GameView {
         cell: f32,
         focused: bool,
         playing: bool,
+        flying_to: Option<Hole>,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let position = self.position();
@@ -170,7 +191,9 @@ impl GameView {
                 )
             })
             .child(socket(cell, center, marker))
-            .when(occupied, |square| square.child(peg(cell, selected)))
+            .when(occupied && flying_to != Some(hole), |square| {
+                square.child(peg(cell, selected))
+            })
             .when(!occupied && (landing || hinted), |square| {
                 square.child(
                     div()
