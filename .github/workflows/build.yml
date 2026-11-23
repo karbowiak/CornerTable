@@ -156,7 +156,7 @@ jobs:
           ditto -c -k --sequesterRsrc "$stage" "$stage.zip"
           unzip -Z1 "$stage.zip" | grep -Fx 'Corner Table.app/Contents/MacOS/corner-table'
           bash scripts/package-dmg.sh "$stage" "$stage.dmg"
-          tar -C "$stage" -czf "$stage.app.tar.gz" 'Corner Table.app'
+          COPYFILE_DISABLE=1 tar -C "$stage" -czf "$stage.app.tar.gz" 'Corner Table.app'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.PACKAGE_NAME }}

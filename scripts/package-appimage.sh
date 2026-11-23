@@ -7,17 +7,27 @@ appdir=$(mktemp -d)
 tools=$(mktemp -d)
 trap 'rm -rf -- "$appdir" "$tools"' EXIT
 
+download_checked() {
+    local url=$1 checksum=$2 destination=$3
+    curl --fail --silent --show-error --location --retry 3 "$url" -o "$destination"
+    printf '%s  %s\n' "$checksum" "$destination" | sha256sum -c -
+}
+
 linuxdeploy="$tools/linuxdeploy-x86_64.AppImage"
-curl --fail --silent --show-error --location --retry 3 \
+runtime="$tools/runtime-x86_64"
+download_checked \
     https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage \
-    -o "$linuxdeploy"
-printf '%s  %s\n' c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d "$linuxdeploy" | sha256sum -c -
+    c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d "$linuxdeploy"
+download_checked \
+    https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 \
+    2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d "$runtime"
 chmod +x "$linuxdeploy"
 
 install -Dm755 "$stage/corner-table" "$appdir/usr/bin/corner-table"
 docs="$appdir/usr/share/doc/corner-table"
 mkdir -p "$docs"
 cp -r "$stage/README.md" "$stage/CHANGELOG.md" "$stage/Third-Party Notices" "$docs/"
+cp packaging/linux/AppImage-runtime-LICENSE.txt "$docs/Third-Party Notices/"
 
 # Include distribution notices for libraries linuxdeploy may bring into the image.
 ldd "$stage/corner-table" | awk '$3 ~ /^\// { print $3 }' | while read -r library; do
@@ -28,7 +38,7 @@ ldd "$stage/corner-table" | awk '$3 ~ /^\// { print $3 }' | while read -r librar
     fi
 done
 
-APPIMAGE_EXTRACT_AND_RUN=1 LDAI_OUTPUT="$(realpath -m "$output")" \
+APPIMAGE_EXTRACT_AND_RUN=1 LDAI_OUTPUT="$(realpath -m "$output")" LDAI_RUNTIME_FILE="$runtime" \
     "$linuxdeploy" --appdir "$appdir" --desktop-file packaging/linux/corner-table.desktop \
     --icon-file packaging/linux/corner-table.png --output appimage
 

@@ -6,13 +6,13 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use cargo_packager_updater::{
-    Config, Update, UpdaterBuilder, WindowsConfig, WindowsUpdateInstallMode,
-};
+use cargo_packager_updater::{Config, Update, UpdaterBuilder};
 use gpui::{App, AsyncWindowContext, PromptLevel, Window};
 use minisign_verify::Signature;
 
 use crate::app::CheckForUpdates;
+
+mod install;
 
 const RELEASES: &str = "https://github.com/karbowiak/CornerTable/releases";
 const MANIFEST: &str =
@@ -88,10 +88,7 @@ fn find_update() -> Result<Option<Update>> {
     let config = Config {
         endpoints: vec![MANIFEST.parse()?],
         pubkey: PUBLIC_KEY.trim().to_owned(),
-        windows: Some(WindowsConfig {
-            install_mode: Some(WindowsUpdateInstallMode::BasicUi),
-            ..WindowsConfig::default()
-        }),
+        windows: None,
     };
     let updater = UpdaterBuilder::new(semver::Version::parse(env!("CARGO_PKG_VERSION"))?, config)
         .timeout(Duration::from_secs(20))
@@ -186,7 +183,7 @@ async fn offer(update: Update, cx: &mut AsyncWindowContext) {
     let result = cx
         .background_executor()
         .spawn(async move {
-            update.download_and_install()?;
+            install::verified_package(&path, &update.download()?)?;
             restart(path)
         })
         .await;
@@ -215,7 +212,7 @@ async fn offer_download(title: &str, detail: &str, cx: &mut AsyncWindowContext) 
 
 fn restart(path: PathBuf) -> Result<()> {
     if cfg!(windows) {
-        // The installer takes over after the updater closes the running process.
+        // The setup window is already open.
         return Ok(());
     }
     let mut command = std::process::Command::new("/bin/sh");

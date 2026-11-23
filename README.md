@@ -16,7 +16,7 @@ An offline desktop collection of 21 classic card, board, and puzzle games, with 
 
 The 0.1.0 preview ships portable archives. Linux needs a Wayland or X11 desktop and a Vulkan driver. The macOS app uses an ad hoc signature.
 
-Release builds check for updates at launch. To check manually, open **Help → Check for Updates**. Corner Table verifies update signatures and asks before installing. Portable copies can open the downloads page from the update prompt.
+Release builds check for updates at launch. To check manually, open **Help → Check for Updates**. Corner Table verifies update signatures and asks before installing. Copies in a read-only location can open the downloads page from the update prompt.
 
 Use **How to Play** or press **F1** for rules and controls. The sidebar follows your system appearance by default, and **View → Always Reduce Motion** reduces gameplay effects. The macOS build offers a **Game sounds** toggle.
 

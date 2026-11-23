@@ -1279,6 +1279,7 @@ dependencies = [
  "corner-table-word-games",
  "dirs 7.0.0",
  "fastrand",
+ "flate2",
  "gpui-pre",
  "gpui-pre-platform",
  "image",
@@ -1291,6 +1292,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
  "unicode-segmentation",
 ]

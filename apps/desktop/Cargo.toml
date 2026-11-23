@@ -56,8 +56,10 @@ gpui = { package = "gpui-pre", version = "=0.3.14", default-features = false, fe
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false, features = ["wayland", "x11"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+flate2 = "1"
 # macOS can compile the shaders on launch with just Command Line Tools installed.
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false, features = ["font-kit", "runtime_shaders"] }
 objc2 = "0.6"
 objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["AVAudioPlayer"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData"] }
+tar = "0.4"
