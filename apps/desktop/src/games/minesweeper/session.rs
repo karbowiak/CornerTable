@@ -68,11 +68,14 @@ impl Round {
     }
 
     pub(super) fn replay(&self) -> Option<Self> {
-        let board = self.board.replay()?;
+        Self::practice(self.board.replay()?, self.mode)
+    }
+
+    pub(super) fn practice(board: Board, mode: Mode) -> Option<Self> {
         Some(Self {
             selected: board.required_opening()?,
             board,
-            mode: self.mode,
+            mode,
             flag_mode: false,
             replay: true,
             attempt: AttemptId::default(),

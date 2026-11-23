@@ -1,5 +1,6 @@
 //! Seeded Minesweeper rules independent of the desktop view.
 
+mod deal;
 mod logic;
 
 pub use logic::{Clue, Hint, HintReason};

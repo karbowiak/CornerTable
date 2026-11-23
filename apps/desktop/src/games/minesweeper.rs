@@ -11,8 +11,9 @@ use std::{
 
 use corner_table_minesweeper::{Board, Clue, Difficulty, Hint, HintReason, Status, Tile};
 use gpui::{
-    AnyElement, Context, Div, FocusHandle, FontFeatures, FontWeight, KeyDownEvent, MouseButton,
-    Render, Role, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb, rgba,
+    AnyElement, ClipboardItem, Context, Div, FocusHandle, FontFeatures, FontWeight, KeyDownEvent,
+    MouseButton, Render, Role, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
+    rgba,
 };
 
 use crate::{
@@ -129,6 +130,9 @@ impl Clock {
 pub struct GameView {
     storage: Session,
     round: Round,
+    /// Paused while playing a clipboard field, including across repeated imports.
+    original_field: Option<(Round, Duration)>,
+    share_feedback: Option<&'static str>,
     bests: Bests,
     challenge_seed: Option<u64>,
     challenge_label: Option<String>,
@@ -171,6 +175,8 @@ impl GameView {
         let mut view = Self {
             storage,
             round,
+            original_field: None,
+            share_feedback: None,
             bests,
             challenge_seed,
             challenge_label,
@@ -182,11 +188,7 @@ impl GameView {
             field_motion: None,
             focus: cx.focus_handle().tab_stop(true),
         };
-        match view.round.board.status() {
-            Status::Ready => {}
-            Status::Playing => view.start_clock(Instant::now(), elapsed, cx),
-            Status::Won | Status::Lost => view.clock = Clock::Finished(elapsed),
-        }
+        view.restore_clock(elapsed, cx);
         // A native window close on macOS can release its views before app quit.
         cx.on_release(|view, _| view.save()).detach();
         cx.on_app_quit(|view, _| {
@@ -198,6 +200,9 @@ impl GameView {
     }
 
     fn save(&self) {
+        if self.original_field.is_some() {
+            return;
+        }
         self.storage.save(&SavedGame::capture(
             &self.round,
             self.clock.elapsed(),
@@ -218,14 +223,67 @@ impl GameView {
 
     fn replace_round(&mut self, round: Round, cx: &mut Context<Self>) {
         self.round = round;
-        self.clock = Clock::Ready;
-        self.clock_task = None;
+        self.activate_round(Duration::ZERO, cx);
+    }
+
+    fn activate_round(&mut self, elapsed: Duration, cx: &mut Context<Self>) {
+        self.restore_clock(elapsed, cx);
         self.generation_task = None;
         self.generation_failed = false;
         self.hint = HintState::Hidden;
+        self.share_feedback = None;
         self.field_motion = None;
         self.save();
         cx.notify();
+    }
+
+    fn restore_clock(&mut self, elapsed: Duration, cx: &Context<Self>) {
+        self.clock_task = None;
+        match self.round.board.status() {
+            Status::Ready => self.clock = Clock::Ready,
+            Status::Playing => self.start_clock(Instant::now(), elapsed, cx),
+            Status::Won | Status::Lost => self.clock = Clock::Finished(elapsed),
+        }
+    }
+
+    fn sharing_allowed(&self) -> bool {
+        self.challenge_seed.is_none()
+            && matches!(self.round.mode, Mode::Classic | Mode::LogicOnly)
+            && self.generation_task.is_none()
+    }
+
+    fn copy_field(&mut self, cx: &mut Context<Self>) {
+        if self.sharing_allowed()
+            && let Some(code) = self.round.board.deal_code()
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(code));
+            self.share_feedback = Some("Field code copied.");
+            cx.notify();
+        }
+    }
+
+    fn paste_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sharing_allowed() {
+            return;
+        }
+        let shared = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .and_then(|code| Board::from_deal_code(&code))
+            .and_then(|board| Round::practice(board, Mode::Classic));
+        let Some(shared) = shared else {
+            self.share_feedback = Some("No valid Minesweeper field code in the clipboard.");
+            cx.notify();
+            return;
+        };
+        let elapsed = self.clock.elapsed();
+        self.save();
+        let previous = std::mem::replace(&mut self.round, shared);
+        if self.original_field.is_none() {
+            self.original_field = Some((previous, elapsed));
+        }
+        self.activate_round(Duration::ZERO, cx);
+        self.focus.focus(window, cx);
     }
 
     fn start_clock(&mut self, started: Instant, carried: Duration, cx: &Context<Self>) {
@@ -320,6 +378,7 @@ impl GameView {
             }
             return;
         }
+        self.share_feedback = None;
         self.hint = HintState::Hidden;
         self.field_motion = if animate {
             if board.status() == Status::Lost {
@@ -357,12 +416,14 @@ impl GameView {
         }
         self.save();
         let effect = if let Some((outcome, elapsed)) = result {
-            self.storage.record_result(
-                self.round.attempt,
-                self.result_mode(),
-                outcome,
-                ResultMetric::TimeMillis(milliseconds(elapsed)),
-            );
+            if self.original_field.is_none() {
+                self.storage.record_result(
+                    self.round.attempt,
+                    self.result_mode(),
+                    outcome,
+                    ResultMetric::TimeMillis(milliseconds(elapsed)),
+                );
+            }
             if outcome == Outcome::Won {
                 Effect::Complete
             } else {
@@ -475,7 +536,7 @@ impl GameView {
             .role(Role::GridCell)
             .aria_column_index(x)
             .aria_label(if opening {
-                "Replay opening".into()
+                "Required first reveal".into()
             } else {
                 tile_label(tile)
             })
@@ -599,6 +660,7 @@ impl GameView {
         let difficulty = self.round.board.difficulty();
         let mode = self.round.mode;
         let ended = matches!(self.round.board.status(), Status::Won | Status::Lost);
+        let can_configure = self.challenge_seed.is_none() && self.original_field.is_none();
         let actions = div()
             .flex()
             .flex_wrap()
@@ -635,7 +697,7 @@ impl GameView {
             .items_center()
             .gap_x_4()
             .gap_y_2()
-            .when(self.challenge_seed.is_none(), |toolbar| {
+            .when(can_configure, |toolbar| {
                 toolbar
                     .child(
                         div()
@@ -678,6 +740,11 @@ impl GameView {
     }
 
     fn reset_control(&self, cx: &Context<Self>) -> Stateful<Div> {
+        if self.original_field.is_some() {
+            return themed_control(cx, "minesweeper-return", "Return to my field", true)
+                .debug_selector(|| "minesweeper-return".into())
+                .on_click(cx.listener(|view, _, window, cx| view.return_to_field(window, cx)));
+        }
         let reset_label = if self.challenge_seed.is_some() {
             "Restart"
         } else {
@@ -689,6 +756,52 @@ impl GameView {
                 view.focus.focus(window, cx);
             },
         ))
+    }
+
+    fn return_to_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((round, elapsed)) = self.original_field.take() {
+            self.round = round;
+            self.activate_round(elapsed, cx);
+            self.focus.focus(window, cx);
+        }
+    }
+
+    fn deal_controls(&self, cx: &Context<Self>) -> Div {
+        let can_copy = self.round.board.status() != Status::Ready
+            || self.round.board.required_opening().is_some();
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .child(
+                themed_control(cx, "minesweeper-copy", "Copy field code", can_copy)
+                    .debug_selector(|| "minesweeper-copy".into())
+                    .aria_description("Copy the mines and first reveal after opening a field.")
+                    .when(can_copy, |button| {
+                        button.on_click(cx.listener(|view, _, _, cx| view.copy_field(cx)))
+                    }),
+            )
+            .child(
+                themed_control(cx, "minesweeper-paste", "Play from clipboard", true)
+                    .debug_selector(|| "minesweeper-paste".into())
+                    .aria_description(
+                        "Open a shared practice field and keep your current progress.",
+                    )
+                    .on_click(cx.listener(|view, _, window, cx| view.paste_field(window, cx))),
+            )
+            .when_some(self.share_feedback, |row, message| {
+                row.child(
+                    div()
+                        .id("minesweeper-share-status")
+                        .role(Role::Status)
+                        .aria_label(message)
+                        .px_1()
+                        .text_size(px(13.))
+                        .text_color(rgb(t::colors(cx).muted))
+                        .child(message),
+                )
+            })
     }
 
     fn status(&self, elapsed: Duration, limit: Option<Duration>, cx: &Context<Self>) -> AnyElement {
@@ -711,7 +824,12 @@ impl GameView {
                 palette.gold_text,
             ),
             (Status::Ready, _) if self.round.replay => (
-                "Replay field".into(),
+                if self.original_field.is_some() {
+                    "Shared field"
+                } else {
+                    "Replay field"
+                }
+                .into(),
                 "Open the marked square to practice the same field.".into(),
                 palette.ink,
             ),
@@ -752,7 +870,12 @@ impl GameView {
                 palette.ink,
             ),
             (Status::Won, _) if self.round.replay => (
-                "Replay cleared".into(),
+                if self.original_field.is_some() {
+                    "Shared field cleared"
+                } else {
+                    "Replay cleared"
+                }
+                .into(),
                 format!("You cleared the field in {elapsed_label}."),
                 palette.success,
             ),
@@ -776,8 +899,12 @@ impl GameView {
             ),
             (Status::Lost, _) => (
                 "Mine hit".into(),
-                "Mines and misplaced flags are marked. Replay this field or start a new one."
-                    .into(),
+                if self.original_field.is_some() {
+                    "Mines and misplaced flags are marked. Replay or return to your field."
+                } else {
+                    "Mines and misplaced flags are marked. Replay this field or start a new one."
+                }
+                .into(),
                 palette.danger,
             ),
         };
@@ -802,11 +929,14 @@ impl GameView {
                                 view.focus.focus(window, cx);
                             }
                         })),
-                );
+                )
+                .when(self.sharing_allowed(), |row| {
+                    row.child(self.deal_controls(cx))
+                });
             return round_result(cx, "minesweeper-result", outcome, title, detail, actions);
         }
 
-        div()
+        let status = div()
             .id("minesweeper-status")
             .role(Role::Status)
             .aria_label(format!("{title}. {detail}"))
@@ -826,7 +956,18 @@ impl GameView {
                     .line_height(px(18.))
                     .text_color(rgb(palette.muted))
                     .child(detail),
-            )
+            );
+        div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(status)
+            .when(self.sharing_allowed(), |row| {
+                row.child(self.deal_controls(cx))
+            })
             .into_any_element()
     }
 
@@ -865,11 +1006,8 @@ impl GameView {
             .max(1.)
             .floor();
         let field_width = width as f32 * tile + seams + 2. * FIELD_INSET;
-        let counter_count = if self.challenge_seed.is_some() {
-            3.
-        } else {
-            4.
-        };
+        let show_best = self.challenge_seed.is_none() && self.original_field.is_none();
+        let counter_count = if show_best { 4. } else { 3. };
         let counter_width = (field_width - 2. * (FRAME_PADDING + 1.)) / counter_count;
         let (mine_label, mines) = if board.status() == Status::Lost {
             ("Mines", difficulty.mines() as isize)
@@ -920,7 +1058,7 @@ impl GameView {
                     .border_l_1()
                     .border_color(rgb(art.rule)),
             )
-            .when(self.challenge_seed.is_none(), |meters| {
+            .when(show_best, |meters| {
                 let best = self.bests.time(&self.round);
                 meters.child(
                     meter(
