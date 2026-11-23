@@ -94,4 +94,4 @@ git worktree add ../corner-table-mahjong -b game/mahjong main
 
 The integration pass adds workspace members, desktop dependencies, dispatch entries, a guide, cover art, and a catalog entry. Update `Cargo.lock` when combining workspace changes.
 
-The appearance control at the bottom of the sidebar offers System, Light, and Dark. The sidebar Back and Forward controls also respond to mouse navigation buttons and keyboard shortcuts. Last Played, Favorites, appearance, and game sessions are saved on this device. Use the GPUI test harness or set `CORNER_TABLE_DATA_DIR` for a separate profile in a normal development process.
+The bottom of the sidebar holds System, Light, and Dark appearance options and a Game sounds toggle. The sidebar Back and Forward controls also respond to mouse navigation buttons and keyboard shortcuts. Last Played, Favorites, appearance, sound preference, and game sessions are saved on this device. See [audio sources](apps/desktop/local-audio/README.md) for the licensed local sound mix. Use the GPUI test harness or set `CORNER_TABLE_DATA_DIR` for a separate profile in a normal development process.

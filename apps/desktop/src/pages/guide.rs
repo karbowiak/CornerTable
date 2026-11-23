@@ -383,12 +383,12 @@ impl Guide {
                         "Find pairs with identical marks. A cube is free when nothing sits directly above it and at least one of its four sides has no neighbor at the same level.",
                     ),
                     (
-                        "Turn the stack and choose",
-                        "Click visible faces on two free cubes to match them. Rotate view exposes faces around the back. Use Tab and Enter to activate the toolbar controls.",
+                        "Orbit the stack and choose",
+                        "Drag the board to turn or tilt it, then click visible faces on two free cubes to match them. Use Q and E to turn, Shift with Up or Down to tilt, and R to reset the view. Use the arrows to browse exposed free cubes and Enter to select.",
                     ),
                     (
                         "Find the last pairs",
-                        "You win when every cube is gone. Hint highlights a pair if one is available. Rotate to look for a highlighted cube hidden from your current angle, or use Restart to replay the deal.",
+                        "You win when every cube is gone. Press H for a hint and orbit to find a highlighted cube hidden from your current angle. Press U to undo, or use Restart to replay the deal.",
                     ),
                 ],
             },
@@ -456,7 +456,7 @@ impl Guide {
                     ),
                     (
                         "Finish the field",
-                        "Clear every safe square to win. After hitting a mine, choose New field or Restart on the daily board. In Time trial you can still finish the field after the countdown reaches zero.",
+                        "Clear every safe square to win. After hitting a mine, choose Replay field to practice the same layout. New field gives you a fresh layout, and Restart begins the daily board again. In Time trial you can still finish the field after the countdown reaches zero.",
                     ),
                 ],
             },
