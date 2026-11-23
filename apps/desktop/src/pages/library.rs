@@ -1,10 +1,10 @@
 use gpui::{Context, Div, FontWeight, KeyDownEvent, MouseButton, Window, div, prelude::*, px, rgb};
 
 use crate::app::{Action, Desktop, Page};
-use crate::{theme as t, widgets};
+use crate::{daily, theme as t, widgets};
 
 pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
-    let daily = &app.api.home.challenge;
+    let daily = daily::today();
     let palette = t::colors(cx);
     let query = app.search.trim().to_lowercase();
     let games = app
@@ -50,8 +50,8 @@ pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 .child(search_field(app, narrow, cx)),
         )
         .child(widgets::hero(
-            &format!("Daily challenge · {}", daily.title),
-            widgets::challenge_art(&daily.game_id.0),
+            &format!("Daily {}", daily.title),
+            widgets::challenge_art(daily.game),
             widgets::button(
                 "daily-feature",
                 "View challenge",

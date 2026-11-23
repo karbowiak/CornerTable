@@ -1,5 +1,6 @@
 mod app;
 mod assets;
+mod daily;
 mod games;
 mod pages;
 mod storage;

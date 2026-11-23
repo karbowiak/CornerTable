@@ -28,7 +28,6 @@ pub enum Action {
     Navigate(Page),
     History(NavigationDirection),
     OpenGame(GameId),
-    ChallengeLeaderboard,
     ToggleGamePicker,
     SelectGame(GameId),
     SelectPeriod(Period),
@@ -102,11 +101,6 @@ impl Desktop {
                 game,
                 entry: GameEntry::Classic,
             })),
-            Action::ChallengeLeaderboard => {
-                self.board_game = self.api.home.challenge.game_id.clone();
-                self.board_period = Period::Today;
-                self.navigate(Page::Leaderboard);
-            }
             Action::ToggleGamePicker => self.game_picker_open = !self.game_picker_open,
             Action::SelectGame(game) => {
                 self.board_game = game;
@@ -193,7 +187,7 @@ impl Render for Desktop {
         let content = match &self.page {
             Page::Library => pages::library(self, narrow, cx),
             Page::Solitaire => pages::solitaire(self, narrow, cx),
-            Page::DailyChallenge => pages::daily_challenge(self, cx),
+            Page::DailyChallenge => pages::daily_challenge(cx),
             Page::Leaderboard => pages::leaderboard(self, narrow, cx),
             Page::Game(launch) => {
                 if !self.games.contains_key(launch)
