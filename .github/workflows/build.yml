@@ -1,0 +1,172 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  RUSTUP_TOOLCHAIN: '1.100.0'
+
+jobs:
+  quality:
+    name: Format, lint, and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - run: bash scripts/ci-linux-deps.sh
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+
+  build:
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            extension: tar.gz
+          - platform: windows-x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            extension: zip
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            extension: zip
+    env:
+      CARGO_BUILD_JOBS: '2'
+      PACKAGE_NAME: corner-table-${{ matrix.platform }}
+      PACKAGE_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        shell: bash
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Install Linux development libraries
+        if: runner.os == 'Linux'
+        run: bash scripts/ci-linux-deps.sh
+      - name: Locate the Windows SDK shader compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $fxc = Get-ChildItem $sdk -Directory |
+            Where-Object Name -Match '^\d+\.\d+\.\d+\.\d+$' |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64\fxc.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (-not $fxc) { throw 'fxc.exe was not found in the Windows SDK' }
+          "GPUI_FXC_PATH=$fxc" >> $env:GITHUB_ENV
+      - name: Build the desktop executable
+        if: runner.os != 'macOS'
+        run: cargo build --locked --release -p corner-table --bin corner-table
+      - name: Build and verify the macOS app
+        if: runner.os == 'macOS'
+        run: |
+          cargo xtask bundle
+          codesign --verify --strict 'target/Corner Table.app'
+          test "$(lipo -archs 'target/Corner Table.app/Contents/MacOS/corner-table')" = arm64
+      - name: Collect distribution notices
+        shell: bash
+        run: |
+          python_command=python3
+          if [[ "$RUNNER_OS" == Windows ]]; then python_command=python; fi
+          "$python_command" scripts/release-notices.py "$PACKAGE_TARGET" "dist/$PACKAGE_NAME/Third-Party Notices"
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          file target/release/corner-table | grep -E 'ELF 64-bit.*x86-64'
+          ldd target/release/corner-table > "$RUNNER_TEMP/corner-table-ldd.txt"
+          if grep -q 'not found' "$RUNNER_TEMP/corner-table-ldd.txt"; then
+            cat "$RUNNER_TEMP/corner-table-ldd.txt"
+            exit 1
+          fi
+          install -m 755 target/release/corner-table "dist/$PACKAGE_NAME/"
+          cp README.md "dist/$PACKAGE_NAME/"
+          tar -C dist -czf "dist/$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
+          tar -tzf "dist/$PACKAGE_NAME.tar.gz" | grep -Fx "$PACKAGE_NAME/corner-table"
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "dist/$env:PACKAGE_NAME"
+          $binary = 'target/release/corner-table.exe'
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $binary))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550 -or
+              [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) {
+            throw 'Expected a Windows x64 executable'
+          }
+          Copy-Item $binary, README.md -Destination $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip"
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          stage="dist/$PACKAGE_NAME"
+          ditto 'target/Corner Table.app' "$stage/Corner Table.app"
+          cp README.md "$stage/"
+          ditto -c -k --sequesterRsrc "$stage" "$stage.zip"
+          unzip -Z1 "$stage.zip" | grep -Fx 'Corner Table.app/Contents/MacOS/corner-table'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: dist/${{ env.PACKAGE_NAME }}.${{ matrix.extension }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [quality, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify the release version
+        shell: bash
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          test "$GITHUB_REF_NAME" = "v$version"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: corner-table-*
+          path: dist
+          merge-multiple: true
+      - name: Publish the verified archives
+        shell: bash
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archives=(corner-table-linux-x86_64.tar.gz corner-table-windows-x86_64.zip corner-table-macos-arm64.zip)
+          for archive in "${archives[@]}"; do test -s "$archive"; done
+          sha256sum "${archives[@]}" > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" "${archives[@]}" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "Corner Table $GITHUB_REF_NAME"
