@@ -22,11 +22,11 @@ use crate::{
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme,
 };
-use scene::{FadingPair, Orientation, Scene, TileStates};
+use scene::{FadingPair, Orbit, Scene, TileStates};
 
 const INSTRUCTION: &str = "Match identical cubes with a clear top and an open side.";
 const HINT: &str = "Gold edges mark a matching pair.";
-const HINT_TURN: &str = "Gold edges mark the pair. Turn to see the other cube.";
+const HINT_TURN: &str = "Gold edges mark the pair. Turn or tilt to see the other cube.";
 const HINT_CHOOSE: &str = "Choose the other gold-edged cube.";
 const SAVE_VERSION: u8 = 1;
 
@@ -90,20 +90,34 @@ struct RoundProgress {
     attempt: AttemptId,
     moves: Vec<[usize; 2]>,
     cleared: bool,
+    #[serde(default)]
+    orientation: Orbit,
 }
 
-fn load_round(table: Table, saved: Option<&RoundProgress>) -> (Board, u64, AttemptId, bool) {
+fn load_round(table: Table, saved: Option<&RoundProgress>) -> (Board, u64, AttemptId, bool, Orbit) {
     let fixed_seed = table.fixed_seed();
     if let Some(saved) = saved
         && fixed_seed.is_none_or(|seed| seed == saved.seed)
     {
         let mut board = table.deal(saved.seed);
         if saved.moves.iter().all(|&pair| board.remove_pair(pair)) {
-            return (board, saved.seed, saved.attempt, saved.cleared);
+            return (
+                board,
+                saved.seed,
+                saved.attempt,
+                saved.cleared,
+                saved.orientation.normalized(),
+            );
         }
     }
     let seed = fixed_seed.unwrap_or_else(fresh_seed);
-    (table.deal(seed), seed, AttemptId::default(), false)
+    (
+        table.deal(seed),
+        seed,
+        AttemptId::default(),
+        false,
+        Orbit::default(),
+    )
 }
 
 pub struct GameView {
@@ -114,7 +128,7 @@ pub struct GameView {
     attempt: AttemptId,
     board: Board,
     cleared: bool,
-    orientation: Orientation,
+    orientation: Orbit,
     press: Option<Press>,
     board_focus: FocusHandle,
     keyed: Option<usize>,
@@ -140,7 +154,8 @@ impl GameView {
             _ if saved.active == "daily" => daily(),
             _ => Table::Layout(Layout::from_id(&saved.active).unwrap_or(Layout::Terrace)),
         };
-        let (board, seed, attempt, cleared) = load_round(table, saved.rounds.get(table.key()));
+        let (board, seed, attempt, cleared, orientation) =
+            load_round(table, saved.rounds.get(table.key()));
         let mut view = Self {
             session,
             saved,
@@ -149,7 +164,7 @@ impl GameView {
             attempt,
             board,
             cleared,
-            orientation: Orientation::default(),
+            orientation,
             press: None,
             board_focus: cx.focus_handle(),
             keyed: None,
@@ -171,6 +186,7 @@ impl GameView {
                 attempt: self.attempt,
                 moves: self.board.moves().to_vec(),
                 cleared: self.cleared,
+                orientation: self.orientation,
             },
         );
         self.session.save(&self.saved);
@@ -181,9 +197,14 @@ impl GameView {
             return;
         }
         self.table = table;
-        (self.board, self.seed, self.attempt, self.cleared) =
-            load_round(table, self.saved.rounds.get(table.key()));
-        self.reset_view();
+        (
+            self.board,
+            self.seed,
+            self.attempt,
+            self.cleared,
+            self.orientation,
+        ) = load_round(table, self.saved.rounds.get(table.key()));
+        self.reset_interaction();
         self.save();
     }
 
@@ -192,19 +213,18 @@ impl GameView {
         self.attempt = AttemptId::default();
         self.board = self.table.deal(self.seed);
         self.cleared = false;
-        self.reset_view();
+        self.reset_interaction();
         self.save();
     }
 
     fn restart(&mut self) {
         self.board.restart();
         self.attempt = AttemptId::default();
-        self.reset_view();
+        self.reset_interaction();
         self.save();
     }
 
-    fn reset_view(&mut self) {
-        self.orientation = Orientation::default();
+    fn reset_interaction(&mut self) {
         self.press = None;
         self.keyed = None;
         self.fading = None;
@@ -289,7 +309,7 @@ impl GameView {
         {
             self.board.deselect();
         }
-        self.orientation = hint.orientation;
+        self.set_orbit(hint.orientation);
         self.keyed = keyboard
             .then(|| hint.target(self.board.selected()))
             .flatten();
@@ -324,9 +344,21 @@ impl GameView {
         }
     }
 
-    fn turn(&mut self, quarters: i32) {
-        self.orientation = self.orientation.turn(quarters);
-        self.keyed = None;
+    fn set_orbit(&mut self, orbit: Orbit) {
+        if self.orientation != orbit {
+            self.orientation = orbit;
+            self.keyed = None;
+            self.save();
+        }
+    }
+
+    fn turn(&mut self, yaw: f32) {
+        self.set_orbit(self.orientation.offset(yaw, 0.));
+    }
+
+    fn reset_camera(&mut self) {
+        self.press = None;
+        self.set_orbit(Orbit::default());
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -335,6 +367,8 @@ impl GameView {
             return;
         }
         match key.key.as_str() {
+            "up" if key.modifiers.shift => self.set_orbit(self.orientation.offset(0., 7.)),
+            "down" if key.modifiers.shift => self.set_orbit(self.orientation.offset(0., -7.)),
             "left" | "right" | "up" | "down" => {
                 let step = match key.key.as_str() {
                     "left" => point(-1., 0.),
@@ -351,8 +385,9 @@ impl GameView {
                     self.choose(id, cx);
                 }
             }
-            "q" if !event.is_held => self.turn(1),
-            "e" if !event.is_held => self.turn(-1),
+            "q" if !event.is_held => self.turn(-90.),
+            "e" if !event.is_held => self.turn(90.),
+            "r" if !event.is_held => self.reset_camera(),
             "h" if !event.is_held => self.hint(true, cx),
             "u" if !event.is_held => self.undo(cx),
             "escape" => {
@@ -525,9 +560,10 @@ impl GameView {
         let cleared = self.board.remaining() == 0;
         div()
             .id("cube-table")
+            .when(cfg!(test), |board| board.debug_selector(|| "cube-table".into()))
             .role(Role::Group)
             .aria_label("Cube board")
-            .aria_description("Arrow keys move between visible free cubes. Enter selects. Q and E turn the board. H hints. U undoes.")
+            .aria_description("Drag to orbit the board. Arrow keys browse visible free cubes. Enter selects. Q and E turn. Shift plus Up or Down tilts. R resets the view. H hints. U undoes.")
             .track_focus(&self.board_focus)
             .tab_index(0)
             .on_key_down(cx.listener(Self::key_down))
@@ -536,10 +572,10 @@ impl GameView {
             .relative()
             .rounded_lg()
             .border_1()
-            .border_color(rgb(0x425844))
+            .border_color(rgb(0x4c5c47))
             .focus_visible(|style| style.border_color(rgb(theme::GOLD)))
             .overflow_hidden()
-            .bg(linear_gradient(145., linear_color_stop(rgb(0x253e32), 0.), linear_color_stop(rgb(0x0e2922), 1.)))
+            .bg(linear_gradient(145., linear_color_stop(rgb(0x293e33), 0.), linear_color_stop(rgb(0x101f19), 1.)))
             .child(canvas(
                 move |bounds, window, cx| {
                     let view = entity.read(cx);
@@ -551,11 +587,12 @@ impl GameView {
                         fading: view.fading,
                         pressed: view.press.filter(|press| !press.moved).and_then(|press| press.cube),
                     };
-                    let turning = view.press.is_some_and(|press| press.moved);
+                    let press = view.press;
                     let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-                    (scene, state, hitbox, turning)
+                    (scene, state, hitbox, press)
                 },
-                move |_, (scene, state, hitbox, turning), window, _| {
+                move |_, (scene, state, hitbox, press), window, _| {
+                    let turning = press.is_some_and(|press| press.moved);
                     let hovered = hitbox.is_hovered(window)
                         .then(|| scene.hit(window.mouse_position()))
                         .flatten()
@@ -598,22 +635,27 @@ impl GameView {
                         if phase != DispatchPhase::Bubble {
                             return;
                         }
-                        if event.dragging() || turning || state.pressed.is_some() {
+                        if event.dragging() || press.is_some() {
                             let _ = move_entity.update(cx, |view, cx| {
                                 if let Some(press) = &mut view.press {
                                     if event.dragging() {
-                                        let moved_before = press.moved;
-                                        let turns = press.advance(event.position);
-                                        if turns != 0 || moved_before != press.moved {
-                                            view.turn(turns);
+                                        let (yaw, pitch) = press.advance(event.position);
+                                        if yaw != 0. || pitch != 0. {
+                                            view.orientation = view.orientation.offset(yaw, pitch);
                                             cx.notify();
                                         }
                                     } else {
+                                        if press.moved {
+                                            view.save();
+                                        }
                                         view.press = None;
                                         cx.notify();
                                     }
                                 }
                             });
+                        }
+                        if turning {
+                            return;
                         }
                         let next = move_scene.hit(event.position)
                             .filter(|cube| cube.free && move_hitbox.is_hovered(window))
@@ -630,9 +672,10 @@ impl GameView {
                         }
                         let _ = up_entity.update(cx, |view, cx| {
                             if let Some(mut press) = view.press.take() {
-                                let turns = press.advance(event.position);
+                                let (yaw, pitch) = press.advance(event.position);
                                 if press.moved {
-                                    view.turn(turns);
+                                    view.orientation = view.orientation.offset(yaw, pitch);
+                                    view.save();
                                 } else if let Some(id) = press.cube
                                     && hitbox.is_hovered(window)
                                     && scene.hit(event.position).is_some_and(|cube| cube.id == id)
@@ -656,8 +699,7 @@ impl GameView {
             })
     }
 
-    fn tools(&self, cx: &Context<Self>) -> Div {
-        let colors = theme::colors(cx);
+    fn tools(&self, narrow: bool, cx: &Context<Self>) -> Div {
         let cleared = self.board.remaining() == 0;
         let started = !self.board.moves().is_empty() || self.board.selected().is_some();
         div()
@@ -671,35 +713,40 @@ impl GameView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(button(
-                        "cubes-turn-left",
-                        "Turn left",
-                        !cleared,
-                        None,
-                        |view, _| view.turn(1),
-                        cx,
-                    ))
+                    .gap(px(if narrow { 5. } else { 8. }))
                     .child(
-                        div()
-                            .id("cubes-viewpoint")
-                            .role(Role::Label)
-                            .aria_label(format!("{} view", self.orientation.label()))
-                            .w(px(26.))
-                            .text_center()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(colors.muted))
-                            .child(self.orientation.label()),
+                        button(
+                            "cubes-turn-left",
+                            "Turn left",
+                            !cleared,
+                            None,
+                            |view, _| view.turn(-90.),
+                            cx,
+                        )
+                        .when(narrow, |button| button.px_2()),
                     )
-                    .child(button(
-                        "cubes-turn-right",
-                        "Turn right",
-                        !cleared,
-                        None,
-                        |view, _| view.turn(-1),
-                        cx,
-                    )),
+                    .child(
+                        button(
+                            "cubes-reset-view",
+                            "Reset view",
+                            self.orientation != Orbit::default(),
+                            None,
+                            |view, _| view.reset_camera(),
+                            cx,
+                        )
+                        .when(narrow, |button| button.px_2()),
+                    )
+                    .child(
+                        button(
+                            "cubes-turn-right",
+                            "Turn right",
+                            !cleared,
+                            None,
+                            |view, _| view.turn(90.),
+                            cx,
+                        )
+                        .when(narrow, |button| button.px_2()),
+                    ),
             )
             .child(
                 div()
@@ -771,7 +818,7 @@ impl Render for GameView {
                     .when(narrow, |panel| panel.p_2().gap_2())
                     .child(self.progress(narrow, cx))
                     .child(self.playfield(height, cx))
-                    .child(self.tools(cx))
+                    .child(self.tools(narrow, cx))
                     .child(
                         div()
                             .flex()
@@ -790,10 +837,10 @@ impl Render for GameView {
                                     .child(status),
                             )
                             .when(!cleared, |row| {
-                                row.child(div().child(match (keyboard, narrow) {
-                                    (true, _) => "Arrows select · Enter chooses · Q / E turns",
-                                    (false, true) => "Drag sideways to turn",
-                                    (false, false) => "Drag sideways to turn the stack",
+                                row.child(div().child(if keyboard {
+                                    "Arrows browse · Enter selects · Q / E turn · Shift ↑ / ↓ tilts · R resets"
+                                } else {
+                                    "Drag to turn and tilt"
                                 }))
                             }),
                     ),
@@ -813,6 +860,7 @@ fn button(
     let filled = active == Some(true);
     div()
         .id(id)
+        .when(cfg!(test), |button| button.debug_selector(|| id.into()))
         .role(Role::Button)
         .aria_label(label)
         .when_some(active, |button, active| button.aria_toggled(active.into()))
@@ -881,7 +929,7 @@ fn fresh_seed() -> u64 {
 #[derive(Clone, Copy)]
 struct Press {
     origin: Point<Pixels>,
-    anchor_x: Pixels,
+    last: Point<Pixels>,
     cube: Option<usize>,
     moved: bool,
 }
@@ -890,19 +938,21 @@ impl Press {
     fn new(origin: Point<Pixels>, cube: Option<usize>) -> Self {
         Self {
             origin,
-            anchor_x: origin.x,
+            last: origin,
             cube,
             moved: false,
         }
     }
 
-    fn advance(&mut self, pointer: Point<Pixels>) -> i32 {
-        const TURN_DISTANCE: f32 = 62.;
-        let delta = pointer - self.origin;
-        self.moved |= delta.x.abs().max(delta.y.abs()) >= px(6.);
-        let steps = (f32::from(pointer.x - self.anchor_x) / TURN_DISTANCE) as i32;
-        self.anchor_x += px(TURN_DISTANCE * steps as f32);
-        -steps
+    fn advance(&mut self, pointer: Point<Pixels>) -> (f32, f32) {
+        let travel = pointer - self.origin;
+        self.moved |= f32::from(travel.x).hypot(f32::from(travel.y)) >= 6.;
+        if !self.moved {
+            return (0., 0.);
+        }
+        let delta = pointer - self.last;
+        self.last = pointer;
+        (f32::from(delta.x) * 0.58, f32::from(delta.y) * 0.42)
     }
 }
 
@@ -914,22 +964,26 @@ mod tests {
     fn pointer_jitter_can_click_but_dragging_never_clicks_on_release() {
         let start = point(px(90.), px(90.));
         let mut press = Press::new(start, Some(4));
-        assert_eq!(press.advance(point(px(94.), px(92.))), 0);
+        assert_eq!(press.advance(point(px(94.), px(92.))), (0., 0.));
         assert!(!press.moved);
-        assert_eq!(press.advance(point(px(155.), px(92.))), -1);
-        assert_eq!(press.advance(point(px(230.), px(92.))), -1);
-        assert_eq!(press.advance(start), 2);
+        let (yaw, pitch) = press.advance(point(px(102.), px(98.)));
+        assert!(yaw > 0. && yaw < 10.);
+        assert!(pitch > 0. && pitch < 5.);
+        assert_eq!(press.advance(point(px(102.), px(98.))), (0., 0.));
+        assert_eq!(press.advance(start), (-yaw, -pitch));
         assert!(press.moved);
 
         let mut press = Press::new(start, Some(4));
-        assert_eq!(press.advance(point(px(90.), px(117.))), 0);
+        let (yaw, pitch) = press.advance(point(px(90.), px(117.)));
+        assert_eq!(yaw, 0.);
+        assert!(pitch > 10.);
         assert!(press.moved);
     }
 
     #[test]
     fn saved_moves_replay_and_previous_daily_does_not_carry_over() {
         let yesterday = Table::Daily(1234);
-        let (mut board, seed, attempt, _) = load_round(yesterday, None);
+        let (mut board, seed, attempt, _, _) = load_round(yesterday, None);
         let pair = board.hint().unwrap();
         assert!(board.remove_pair(pair));
         let save = RoundProgress {
@@ -937,37 +991,156 @@ mod tests {
             attempt,
             moves: vec![pair],
             cleared: true,
+            orientation: Orbit::new(117., 59.),
         };
-        let (restored, resumed_seed, resumed_attempt, cleared) = load_round(yesterday, Some(&save));
+        let (restored, resumed_seed, resumed_attempt, cleared, orientation) =
+            load_round(yesterday, Some(&save));
         assert_eq!(resumed_seed, seed);
         assert!(resumed_attempt == attempt);
         assert!(cleared);
         assert!(restored.cubes().eq(board.cubes()));
+        assert_eq!(orientation, save.orientation);
 
-        let (today, todays_seed, todays_attempt, cleared) =
+        let (today, todays_seed, todays_attempt, cleared, orientation) =
             load_round(Table::Daily(1235), Some(&save));
         assert_ne!(todays_seed, seed);
         assert!(todays_attempt != attempt);
         assert_ne!(today.shape(), board.shape());
         assert!(!cleared);
         assert!(today.moves().is_empty());
+        assert_eq!(orientation, Orbit::default());
+    }
+
+    #[test]
+    fn legacy_round_replays_with_the_opening_angle() {
+        let table = Table::Layout(Layout::Terrace);
+        let seed = 42;
+        let pair = table.deal(seed).hint().unwrap();
+        let mut legacy = serde_json::json!({
+            "version": 1,
+            "active": "terrace",
+            "rounds": { "terrace": { "seed": seed, "moves": [pair], "cleared": false } }
+        });
+        let save: Save = serde_json::from_value(legacy.clone()).unwrap();
+        let (restored, _, _, _, orientation) = load_round(table, save.rounds.get(table.key()));
+        assert_eq!(restored.moves(), &[pair]);
+        assert_eq!(orientation, Orbit::default());
+
+        legacy["rounds"]["terrace"]["orientation"] =
+            serde_json::json!({ "yaw": 731., "pitch": 120. });
+        let save: Save = serde_json::from_value(legacy).unwrap();
+        let (restored, _, _, _, orientation) = load_round(table, save.rounds.get(table.key()));
+        assert_eq!(restored.moves(), &[pair]);
+        assert_eq!(orientation, Orbit::new(11., 82.));
     }
 
     #[test]
     fn corrupt_replay_cannot_partially_remove_cubes() {
         let table = Table::Daily(1234);
-        let (board, seed, attempt, _) = load_round(table, None);
+        let (board, seed, attempt, _, _) = load_round(table, None);
         let pair = board.hint().unwrap();
         let corrupt = RoundProgress {
             seed,
             attempt,
             moves: vec![pair, pair],
             cleared: true,
+            orientation: Orbit::new(270., 60.),
         };
-        let (restored, _, restored_attempt, cleared) = load_round(table, Some(&corrupt));
+        let (restored, _, restored_attempt, cleared, orientation) =
+            load_round(table, Some(&corrupt));
         assert!(restored_attempt != attempt);
         assert_eq!(restored.remaining(), board.remaining());
         assert!(restored.moves().is_empty());
         assert!(!cleared);
+        assert_eq!(orientation, Orbit::default());
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    fn dragging_and_picking_work_in_wide_and_compact_windows(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, size};
+
+        for (width, height, layout) in [
+            (1080., 760., Layout::Gatehouse),
+            (632., 540., Layout::Terrace),
+        ] {
+            let launch = GameLaunch {
+                game: corner_table_api::GameId(format!("cubes-orbit-test-{width}")),
+                entry: GameEntry::Classic,
+            };
+            let window = cx.open_window(size(px(width), px(height)), |_, cx| {
+                let mut view = GameView::new(&launch, cx);
+                view.table = Table::Layout(layout);
+                view.seed = 42;
+                view.board = view.table.deal(view.seed);
+                view.orientation = Orbit::default();
+                view
+            });
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let bounds = visual.debug_bounds("cube-table").unwrap().inset(px(1.));
+            let free_point = |view: &GameView| {
+                let scene = Scene::new(&view.board, bounds, view.orientation);
+                view.board
+                    .cubes()
+                    .filter_map(|(id, _)| view.board.is_free(id).then_some(id))
+                    .find_map(|id| scene.visible_cube_point(id).map(|point| (id, point)))
+                    .unwrap()
+            };
+            let (_, start) = window.read_with(cx, |view, _| free_point(view)).unwrap();
+            let pointer = Modifiers::none();
+            let offset = point(px(28.), px(31.));
+            visual.simulate_mouse_move(start, None, pointer);
+            visual.simulate_mouse_down(start, MouseButton::Left, pointer);
+            visual.simulate_mouse_move(start + offset, MouseButton::Left, pointer);
+            let orbit = Orbit::default().offset(28. * 0.58, 31. * 0.42);
+            window
+                .read_with(cx, |view, _| {
+                    assert_eq!(view.orientation, orbit);
+                    assert!(view.press.unwrap().moved);
+                    assert!(view.board.selected().is_none());
+                })
+                .unwrap();
+            visual.simulate_mouse_up(start + offset, MouseButton::Left, pointer);
+            assert_eq!(
+                Session::new(&launch).load::<Save>().unwrap().rounds[layout.id()].orientation,
+                orbit
+            );
+
+            let (id, position) = window.read_with(cx, |view, _| free_point(view)).unwrap();
+            visual.simulate_click(position, pointer);
+            window
+                .read_with(cx, |view, _| {
+                    assert_eq!(view.board.selected(), Some(id));
+                    assert!(view.press.is_none());
+                })
+                .unwrap();
+
+            visual.simulate_keystrokes("escape q shift-up right");
+            window
+                .read_with(cx, |view, _| {
+                    assert_eq!(view.orientation, orbit.offset(-90., 7.));
+                    assert!(view.keyed.is_some_and(|id| view.board.is_free(id)));
+                })
+                .unwrap();
+            visual.simulate_keystrokes("h enter h enter");
+            window
+                .read_with(cx, |view, _| {
+                    assert_eq!(view.board.moves().len(), 1);
+                })
+                .unwrap();
+            visual.simulate_keystrokes("u");
+            window
+                .read_with(cx, |view, _| assert!(view.board.moves().is_empty()))
+                .unwrap();
+
+            let reset = visual.debug_bounds("cubes-reset-view").unwrap().center();
+            visual.simulate_click(reset, pointer);
+            window
+                .read_with(cx, |view, _| {
+                    assert_eq!(view.orientation, Orbit::default());
+                })
+                .unwrap();
+        }
     }
 }

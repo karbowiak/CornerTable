@@ -1,94 +1,15 @@
-use std::{f32::consts::TAU, time::Instant};
+mod geometry;
+mod paint;
 
-use corner_table_mahjong_cubes::{Board, Face, Position, Suit};
-use gpui::{
-    Background, Bounds, PathBuilder, Pixels, Point, Window, linear_color_stop, linear_gradient,
-    point, px, rgb, size,
+use std::time::Instant;
+
+use corner_table_mahjong_cubes::{Board, Face, Suit};
+use gpui::{Bounds, Pixels, Point, point, px, size};
+
+pub(super) use geometry::Orbit;
+use geometry::{
+    CUBE_HALF, Camera, MESH, Vec3, convex_hull, cube_center, edge_side, edges, on_quad,
 };
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Orientation {
-    #[default]
-    SouthEast,
-    NorthEast,
-    NorthWest,
-    SouthWest,
-}
-
-impl Orientation {
-    const ALL: [Self; 4] = [
-        Self::SouthEast,
-        Self::NorthEast,
-        Self::NorthWest,
-        Self::SouthWest,
-    ];
-
-    pub fn turn(self, quarters: i32) -> Self {
-        Self::ALL[(self as i32 + quarters).rem_euclid(4) as usize]
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::SouthEast => "SE",
-            Self::NorthEast => "NE",
-            Self::NorthWest => "NW",
-            Self::SouthWest => "SW",
-        }
-    }
-
-    fn rotate(self, x: f32, y: f32) -> (f32, f32) {
-        match self {
-            Self::SouthEast => (x, y),
-            Self::NorthEast => (-y, x),
-            Self::NorthWest => (-x, -y),
-            Self::SouthWest => (y, -x),
-        }
-    }
-
-    fn depth(self, position: Position) -> i16 {
-        let (u, v) = self.rotate(f32::from(position.x), f32::from(position.y));
-        // Along every ray toward the camera, u, v and z increase. Any two
-        // overlapping lattice cubes therefore have this same depth order.
-        (u + v) as i16 + i16::from(position.level)
-    }
-}
-
-type Quad = [Point<Pixels>; 4];
-
-fn project(u: f32, v: f32, z: f32) -> Point<Pixels> {
-    point(px((u - v) * 0.866), px((u + v) * 0.55 - z * 0.77))
-}
-
-fn cube_faces(position: Position, orientation: Orientation) -> [Quad; 3] {
-    let (u, v) = orientation.rotate(f32::from(position.x) + 0.5, f32::from(position.y) + 0.5);
-    let base = f32::from(position.level);
-    let top = base + 0.94;
-    let right = project(u + 0.47, v - 0.47, top);
-    let front = project(u + 0.47, v + 0.47, top);
-    let left = project(u - 0.47, v + 0.47, top);
-    let back = project(u - 0.47, v - 0.47, top);
-    let right_base = project(u + 0.47, v - 0.47, base);
-    let front_base = project(u + 0.47, v + 0.47, base);
-    let left_base = project(u - 0.47, v + 0.47, base);
-    [
-        [left, front, front_base, left_base],
-        [front, right, right_base, front_base],
-        [back, right, front, left],
-    ]
-}
-
-fn ground(position: Position, orientation: Orientation) -> Quad {
-    let (u, v) = orientation.rotate(f32::from(position.x) + 0.5, f32::from(position.y) + 0.5);
-    [(-0.43, -0.43), (0.43, -0.43), (0.43, 0.43), (-0.43, 0.43)]
-        .map(|(du, dv)| project(u + du, v + dv, 0.))
-}
-
-pub(super) struct ProjectedCube {
-    pub id: usize,
-    pub free: bool,
-    face: Face,
-    quads: [Quad; 3],
-}
 
 #[derive(Clone, Copy)]
 pub(super) struct FadingPair {
@@ -107,13 +28,110 @@ pub(super) struct TileStates {
 
 pub(super) struct Scene {
     bounds: Bounds<Pixels>,
-    footprint: Vec<(usize, Quad)>,
-    original: Vec<[Quad; 3]>,
+    camera: Camera,
+    table: Tabletop,
+    original: Vec<Vec3>,
+    mesh: ProjectedMesh,
     cubes: Vec<ProjectedCube>,
 }
 
+pub(super) struct ProjectedCube {
+    pub id: usize,
+    pub free: bool,
+    face: Face,
+    center: Vec3,
+    offset: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+}
+
+struct ProjectedMesh {
+    surfaces: Vec<Surface>,
+    outline: Vec<Point<Pixels>>,
+    bounds: Bounds<Pixels>,
+}
+
+struct Surface {
+    normal: Vec3,
+    vertices: Vec<Point<Pixels>>,
+    bounds: Bounds<Pixels>,
+    mark: Option<[Point<Pixels>; 4]>,
+}
+
+impl ProjectedMesh {
+    fn new(camera: &Camera) -> Self {
+        // Orthographic projection leaves every cube with the same silhouette
+        // and facets. Project them once, then translate each cube on screen.
+        let project = |vertex| camera.project_offset(vertex);
+        let surfaces: Vec<_> = MESH
+            .iter()
+            .filter(|facet| facet.normal.dot(camera.toward) > 0.00001)
+            .map(|facet| {
+                let vertices: Vec<_> = facet.vertices.iter().copied().map(project).collect();
+                Surface {
+                    normal: facet.normal,
+                    bounds: polygon_bounds(&vertices),
+                    vertices,
+                    mark: facet.mark.map(|quad| quad.map(project)),
+                }
+            })
+            .collect();
+        let outline = convex_hull(
+            surfaces
+                .iter()
+                .flat_map(|surface| surface.vertices.iter().copied())
+                .collect(),
+        );
+        Self {
+            surfaces,
+            bounds: polygon_bounds(&outline),
+            outline,
+        }
+    }
+}
+
+struct Tabletop {
+    min: Vec3,
+    max: Vec3,
+}
+
+impl Tabletop {
+    const APRON: f32 = 0.27;
+    const MARGIN: f32 = 0.73;
+
+    fn around(centers: &[Vec3]) -> Self {
+        let mut min = Vec3::new(f32::INFINITY, f32::INFINITY, 0.);
+        let mut max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, 0.);
+        let pad = 0.5 + Self::MARGIN;
+        for center in centers {
+            min.x = min.x.min(center.x - pad);
+            min.y = min.y.min(center.y - pad);
+            max.x = max.x.max(center.x + pad);
+            max.y = max.y.max(center.y + pad);
+        }
+        Self { min, max }
+    }
+
+    fn rim(&self, inset: f32, cut: f32, z: f32) -> [Vec3; 8] {
+        let x0 = self.min.x + inset;
+        let x1 = self.max.x - inset;
+        let y0 = self.min.y + inset;
+        let y1 = self.max.y - inset;
+        [
+            (x0 + cut, y0),
+            (x1 - cut, y0),
+            (x1, y0 + cut),
+            (x1, y1 - cut),
+            (x1 - cut, y1),
+            (x0 + cut, y1),
+            (x0, y1 - cut),
+            (x0, y0 + cut),
+        ]
+        .map(|(x, y)| Vec3::new(x, y, z))
+    }
+}
+
 pub(super) struct Hint {
-    pub orientation: Orientation,
+    pub orientation: Orbit,
     pub pair: [usize; 2],
     pub visible: [bool; 2],
 }
@@ -129,100 +147,129 @@ impl Hint {
 }
 
 impl Scene {
-    pub fn new(board: &Board, bounds: Bounds<Pixels>, orientation: Orientation) -> Self {
-        // Always fit the full layout so removing tiles never moves or zooms the stack.
-        let original: Vec<_> = board
-            .layout()
-            .map(|pos| cube_faces(pos, orientation))
-            .collect();
-        let mut min = point(px(f32::INFINITY), px(f32::INFINITY));
-        let mut max = point(px(f32::NEG_INFINITY), px(f32::NEG_INFINITY));
-        for vertex in original.iter().flatten().flatten() {
-            min = point(min.x.min(vertex.x), min.y.min(vertex.y));
-            max = point(max.x.max(vertex.x), max.y.max(vertex.y));
+    pub fn new(board: &Board, bounds: Bounds<Pixels>, orientation: Orbit) -> Self {
+        let original: Vec<_> = board.layout().map(cube_center).collect();
+        let table = Tabletop::around(&original);
+        let pivot = (table.min + table.max) * 0.5;
+        let mut framing = table.rim(0., 0.25, -Tabletop::APRON).to_vec();
+        framing.extend(table.rim(0., 0.25, 0.));
+        for center in &original {
+            for x in [-CUBE_HALF.x, CUBE_HALF.x] {
+                for y in [-CUBE_HALF.y, CUBE_HALF.y] {
+                    framing.push(*center + Vec3::new(x, y, CUBE_HALF.z));
+                }
+            }
         }
-        let stack = Bounds::from_corners(min, max);
-        let vertical_padding = px(if bounds.size.height < px(330.) {
-            32.
-        } else {
-            40.
-        });
-        let scale = ((bounds.size.width - px(42.)) / stack.size.width)
-            .min((bounds.size.height - vertical_padding) / stack.size.height)
-            .clamp(0.1, 108.);
-        let fit = |vertex| bounds.center() + (vertex - stack.center()) * scale;
-        let original: Vec<_> = original
-            .into_iter()
-            .map(|faces| faces.map(|quad| quad.map(fit)))
-            .collect();
-        let footprint = board
-            .layout()
-            .enumerate()
-            .filter(|(_, pos)| pos.level == 0)
-            .map(|(id, pos)| (id, ground(pos, orientation).map(fit)))
-            .collect();
-        let mut active: Vec<_> = board.cubes().collect();
-        active.sort_by_key(|(_, cube)| orientation.depth(cube.position));
-        let cubes = active
-            .into_iter()
-            .map(|(id, cube)| ProjectedCube {
-                id,
-                face: cube.face,
-                free: board.is_free(id),
-                quads: original[id],
+        let camera = Camera::fit(orientation, bounds, pivot, &framing);
+        let mesh = ProjectedMesh::new(&camera);
+
+        let mut cubes = board
+            .cubes()
+            .map(|(id, cube)| {
+                let center = original[id];
+                let offset = camera.project(center);
+                ProjectedCube {
+                    id,
+                    free: board.is_free(id),
+                    face: cube.face,
+                    center,
+                    offset,
+                    bounds: Bounds::new(mesh.bounds.origin + offset, mesh.bounds.size),
+                }
             })
-            .collect();
+            .collect::<Vec<_>>();
+
+        // Along an orthographic ray the coordinates advance monotonically.
+        // If two lattice cells overlap on screen, every differing coordinate
+        // orders them the same way along that ray. The center depth therefore
+        // orders entire cubes exactly, including stacked cubes at shallow pitch.
+        cubes.sort_by(|a, b| {
+            a.center
+                .dot(camera.toward)
+                .total_cmp(&b.center.dot(camera.toward))
+        });
         Self {
             bounds,
-            footprint,
+            camera,
+            table,
             original,
+            mesh,
             cubes,
         }
     }
 
     pub fn hit(&self, position: Point<Pixels>) -> Option<&ProjectedCube> {
-        // The same polygons and reverse paint order keep blocked front faces
-        // from sending clicks through to any deeper cube.
+        self.bounds.contains(&position).then_some(())?;
+        // A bevel belongs to its solid silhouette. Test the same solids in
+        // reverse paint order, even when the nearest one is blocked.
         self.cubes
             .iter()
             .rev()
-            .find(|cube| cube.quads.iter().rev().any(|quad| contains(quad, position)))
+            .find(|cube| cube.contains(&self.mesh, position))
     }
 
-    fn visible_point(&self, cube: &ProjectedCube) -> Option<Point<Pixels>> {
-        const SAMPLES: [(f32, f32); 9] = [
-            (0.50, 0.50),
-            (0.29, 0.31),
-            (0.71, 0.31),
-            (0.29, 0.69),
-            (0.71, 0.69),
-            (0.50, 0.15),
-            (0.85, 0.50),
-            (0.50, 0.85),
-            (0.15, 0.50),
-        ];
-        cube.quads.iter().rev().find_map(|quad| {
-            SAMPLES.into_iter().find_map(|(u, v)| {
-                let sample = on_quad(quad, u, v);
-                self.hit(sample)
-                    .is_some_and(|hit| hit.id == cube.id)
-                    .then_some(sample)
-            })
-        })
+    #[cfg(all(test, debug_assertions))]
+    pub fn visible_cube_point(&self, id: usize) -> Option<Point<Pixels>> {
+        let index = self.cubes.iter().position(|cube| cube.id == id)?;
+        self.visible_point(index)
     }
 
-    fn for_view(board: &Board, orientation: Orientation) -> Self {
+    fn visible_point(&self, index: usize) -> Option<Point<Pixels>> {
+        let cube = &self.cubes[index];
+        let occluders: Vec<_> = self.occluders(index).collect();
+
+        // Try the markings first so that navigation favors recognizable faces.
+        for face in self
+            .mesh
+            .surfaces
+            .iter()
+            .rev()
+            .filter_map(|surface| surface.mark)
+        {
+            for (u, v) in [(0.5, 0.5), (0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)] {
+                let point = cube.offset + on_quad(&face, u, v);
+                if !occluders
+                    .iter()
+                    .any(|front| front.contains(&self.mesh, point))
+                {
+                    return Some(point);
+                }
+            }
+        }
+
+        // An upper tile can leave only a sliver exposed at an oblique angle.
+        // Subtract the very same opaque silhouettes used by pointer picking.
+        let mut visible = vec![cube.translated_outline(&self.mesh)];
+        for front in occluders {
+            let cutter = front.translated_outline(&self.mesh);
+            visible = visible
+                .into_iter()
+                .flat_map(|patch| subtract_polygon(patch, &cutter))
+                .collect();
+        }
+        let patch = visible
+            .into_iter()
+            .max_by(|a, b| area(a).total_cmp(&area(b)))?;
+        let sum = patch.iter().fold(point(px(0.), px(0.)), |sum, p| sum + *p);
+        Some(sum * (1. / patch.len() as f32))
+    }
+
+    fn occluders(&self, index: usize) -> impl Iterator<Item = &ProjectedCube> {
+        let cube = &self.cubes[index];
+        self.cubes[index + 1..]
+            .iter()
+            .filter(|front| front.bounds.intersects(&cube.bounds))
+    }
+
+    fn for_view(board: &Board, orientation: Orbit) -> Self {
         Self::new(
             board,
-            Bounds {
-                origin: point(px(0.), px(0.)),
-                size: size(px(1000.), px(700.)),
-            },
+            Bounds::new(point(px(0.), px(0.)), size(px(1000.), px(700.))),
             orientation,
         )
     }
 
-    pub fn hint(board: &Board, current: Orientation) -> Option<Hint> {
+    pub fn hint(board: &Board, current: Orbit) -> Option<Hint> {
         let mut pairs = board.available_pairs();
         let selected = board
             .selected()
@@ -235,16 +282,22 @@ impl Scene {
             pair: *pairs.first()?,
             visible: [false; 2],
         };
-        for offset in [0, 1, -1, 2] {
-            let orientation = current.turn(offset);
+        let raised = current.raised();
+        for orientation in [
+            current,
+            raised,
+            raised.offset(90., 0.),
+            raised.offset(-90., 0.),
+            raised.offset(180., 0.),
+        ] {
             let scene = Self::for_view(board, orientation);
             for &pair in &pairs {
                 let visible = pair.map(|id| {
                     scene
                         .cubes
                         .iter()
-                        .find(|cube| cube.id == id)
-                        .and_then(|cube| scene.visible_point(cube))
+                        .position(|cube| cube.id == id)
+                        .and_then(|index| scene.visible_point(index))
                         .is_some()
                 });
                 let hint = Hint {
@@ -265,7 +318,7 @@ impl Scene {
 
     pub fn keyboard_target(
         board: &Board,
-        orientation: Orientation,
+        orientation: Orbit,
         focused: Option<usize>,
         step: Point<f32>,
     ) -> Option<usize> {
@@ -273,8 +326,9 @@ impl Scene {
         let targets: Vec<_> = scene
             .cubes
             .iter()
-            .filter(|cube| cube.free)
-            .filter_map(|cube| scene.visible_point(cube).map(|point| (cube.id, point)))
+            .enumerate()
+            .filter(|(_, cube)| cube.free)
+            .filter_map(|(index, cube)| scene.visible_point(index).map(|point| (cube.id, point)))
             .collect();
         let Some(&(_, origin)) = targets.iter().find(|(id, _)| Some(*id) == focused) else {
             return targets
@@ -289,183 +343,85 @@ impl Scene {
                 let dy = f32::from(position.y - origin.y);
                 let forward = dx * step.x + dy * step.y;
                 let across = dx * step.y - dy * step.x;
-                (forward > 1.).then_some((id, forward.hypot(across) + across.abs()))
+                (forward > 0.).then_some((id, forward.hypot(across) + across.abs()))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(id, _)| id)
             .or(focused)
     }
-
-    pub fn paint(&self, states: TileStates, hovered: Option<usize>, window: &mut Window) {
-        paint_felt(self.bounds, window);
-
-        let mut wells = PathBuilder::fill();
-        let mut rims = PathBuilder::stroke(px(0.9));
-        let mut shadows = PathBuilder::fill();
-        let mut contact = PathBuilder::fill();
-        for (id, quad) in &self.footprint {
-            let center = on_quad(quad, 0.5, 0.5);
-            add_polygon(&mut wells, quad);
-            add_polygon(&mut rims, &quad.map(|p| center + (p - center) * 0.92));
-            if self.cubes.iter().any(|cube| cube.id == *id) {
-                add_polygon(
-                    &mut shadows,
-                    &quad.map(|p| center + (p - center) * 1.14 + point(px(2.), px(5.))),
-                );
-                add_polygon(&mut contact, &quad.map(|p| p + point(px(1.), px(2.5))));
-            }
-        }
-        paint(window, wells, rgb(0x0d2b21).opacity(0.48));
-        paint(window, rims, rgb(0x98a779).opacity(0.28));
-        paint(window, shadows, rgb(0x061b15).opacity(0.28));
-        paint(window, contact, rgb(0x091a13).opacity(0.52));
-
-        if let Some(pair) = states.fading {
-            let progress = pair.at.elapsed().as_secs_f32() / 0.24;
-            if progress < 1. {
-                let mut edges = PathBuilder::stroke(px(1.4));
-                for id in pair.ids {
-                    let top = &self.original[id][2];
-                    let center = on_quad(top, 0.5, 0.5);
-                    let outline = top.map(|vertex| {
-                        center + (vertex - center) * (1. - progress * 0.14)
-                            - point(px(0.), px(8. * progress))
-                    });
-                    add_polygon(&mut edges, &outline);
-                }
-                paint(window, edges, rgb(0xffdd94).opacity(0.82 * (1. - progress)));
-                window.request_animation_frame();
-            }
-        }
-        for cube in &self.cubes {
-            cube.paint(states, hovered == Some(cube.id), window);
-        }
-    }
-}
-
-fn paint_felt(bounds: Bounds<Pixels>, window: &mut Window) {
-    let width = f32::from(bounds.size.width) as u32;
-    let height = f32::from(bounds.size.height) as u32;
-    let start = bounds.origin;
-    let mut nap = PathBuilder::fill();
-    let mut weave = PathBuilder::fill();
-    for row in (8..height.saturating_sub(8)).step_by(9) {
-        for col in (8..width.saturating_sub(8)).step_by(11) {
-            let hash = (row * 233 + col * 941).wrapping_mul(0x9e37_79b9);
-            let x = col as f32 + ((hash >> 8) & 7) as f32;
-            let y = row as f32 + ((hash >> 20) & 7) as f32;
-            let fiber = [
-                (x, y),
-                (x + 2., y - 0.6),
-                (x + 3.2, y - 0.4),
-                (x + 0.8, y + 0.55),
-            ]
-            .map(|(x, y)| start + point(px(x), px(y)));
-            add_polygon(if hash & 1 == 0 { &mut nap } else { &mut weave }, &fiber);
-        }
-    }
-    paint(window, weave, rgb(0x060f09).opacity(0.16));
-    paint(window, nap, rgb(0xdde6a1).opacity(0.12));
-
-    let (w, h) = (width as f32, height as f32);
-    let mut inlay = PathBuilder::stroke(px(0.8));
-    let border = [
-        (16., 9.),
-        (w - 16., 9.),
-        (w - 9., 16.),
-        (w - 9., h - 16.),
-        (w - 16., h - 9.),
-        (16., h - 9.),
-        (9., h - 16.),
-        (9., 16.),
-    ]
-    .map(|(x, y)| start + point(px(x), px(y)));
-    add_polygon(&mut inlay, &border);
-    paint(window, inlay, rgb(0xccb77a).opacity(0.27));
 }
 
 impl ProjectedCube {
-    fn paint(&self, states: TileStates, hovered: bool, window: &mut Window) {
-        let selected = states.selected == Some(self.id);
-        let hinted = states.hinted.is_some_and(|ids| ids.contains(&self.id));
-        let keyed = states.keyed == Some(self.id);
-        let pressed = states.pressed == Some(self.id);
-        let enamel = enamel(self.face.suit);
-        let rim = if selected {
-            0x90601d
-        } else if hinted {
-            0x986d25
-        } else if self.free {
-            0x74654c
-        } else {
-            0x64593f
-        };
-        let ivory = [0xb29f7c, 0xd8c7a5, 0xf6ebd0];
-        for (index, quad) in self.quads.iter().enumerate() {
-            let glaze = mix(ivory[index], enamel.tint, [0.23, 0.32, 0.48][index]);
-            let glaze = if selected {
-                mix(glaze, 0xffcc65, 0.52)
-            } else if !self.free || pressed {
-                mix(glaze, 0x8a8168, if pressed { 0.24 } else { 0.28 })
-            } else if hovered {
-                mix(glaze, 0xfffae6, 0.45)
-            } else {
-                glaze
-            };
-            polygon(window, quad, rgb(rim));
-            let border = if selected || hinted { 0.058 } else { 0.027 };
-            let lip = chamfer(quad, 0.014, 0.04);
-            let edge = if hinted || selected {
-                [0xe3aa42, 0xf4c560, 0xffde85][index]
-            } else {
-                mix(glaze, 0xffffe9, [0.26, 0.40, 0.65][index])
-            };
-            polygon(window, &lip, rgb(edge));
-            let body = chamfer(quad, border, 0.045);
-            polygon(
-                window,
-                &body,
-                linear_gradient(
-                    155.,
-                    linear_color_stop(rgb(mix(glaze, 0xfff6dd, 0.21)), 0.),
-                    linear_color_stop(rgb(mix(glaze, 0x7a6549, 0.16)), 1.),
-                ),
-            );
-            let lower_bevel = [(0.09, 0.89), (0.91, 0.89), (0.94, 0.93), (0.07, 0.93)]
-                .map(|(u, v)| on_quad(quad, u, v));
-            polygon(
-                window,
-                &lower_bevel,
-                rgb(0x69533b).opacity(if index == 2 { 0.09 } else { 0.15 }),
-            );
-            paint_marks(window, quad, self.face, enamel, glaze);
+    fn contains(&self, mesh: &ProjectedMesh, point: Point<Pixels>) -> bool {
+        if !self.bounds.contains(&point) {
+            return false;
         }
-        if keyed {
-            let mut focus = PathBuilder::stroke(px(1.8));
-            for quad in &self.quads {
-                add_polygon(&mut focus, &chamfer(quad, 0.09, 0.05));
-            }
-            paint(window, focus, rgb(0x207e68));
-        }
+        let local = point - self.offset;
+        edges(&mesh.outline).all(|(a, b)| edge_side(a, b, local) >= 0.)
+    }
+
+    fn translated_outline(&self, mesh: &ProjectedMesh) -> Vec<Point<Pixels>> {
+        mesh.outline.iter().map(|&p| self.offset + p).collect()
     }
 }
 
-#[derive(Clone, Copy)]
-struct Enamel {
-    tint: u32,
-    ink: u32,
+fn polygon_bounds(vertices: &[Point<Pixels>]) -> Bounds<Pixels> {
+    let first = vertices[0];
+    let (min, max) = vertices[1..].iter().fold((first, first), |(min, max), p| {
+        (
+            point(min.x.min(p.x), min.y.min(p.y)),
+            point(max.x.max(p.x), max.y.max(p.y)),
+        )
+    });
+    Bounds::from_corners(min, max)
 }
 
-fn enamel(suit: Suit) -> Enamel {
-    let (tint, ink) = match suit {
-        Suit::Dots => (0xdceff3, 0x1b526e),
-        Suit::Diamonds => (0xf9d8c8, 0x8d3329),
-        Suit::Leaves => (0xd9e8c8, 0x27563c),
-        Suit::Blossoms => (0xeed9e9, 0x7e3b66),
-        Suit::Waves => (0xcce9dc, 0x236557),
-        Suit::Suns => (0xfbe3ac, 0x8a4a0e),
-    };
-    Enamel { tint, ink }
+fn subtract_polygon(
+    mut patch: Vec<Point<Pixels>>,
+    cutter: &[Point<Pixels>],
+) -> Vec<Vec<Point<Pixels>>> {
+    let mut remaining = Vec::new();
+    for (a, b) in edges(cutter) {
+        // The outside piece survives this clip. Only the inside portion can
+        // overlap the cutter's next edge.
+        let mut inside = Vec::new();
+        let mut outside = Vec::new();
+        for (p, q) in edges(&patch) {
+            let dp = edge_side(a, b, p);
+            let dq = edge_side(a, b, q);
+            if dp >= 0. {
+                inside.push(p);
+            } else {
+                outside.push(p);
+            }
+            if (dp >= 0.) != (dq >= 0.) {
+                let split = p + (q - p) * (dp / (dp - dq));
+                inside.push(split);
+                outside.push(split);
+            }
+        }
+        if area(&outside) > 0.02 {
+            remaining.push(outside);
+        }
+        patch = inside;
+        if area(&patch) <= 0.02 {
+            break;
+        }
+    }
+    remaining
+}
+
+fn area(polygon: &[Point<Pixels>]) -> f32 {
+    match polygon {
+        [first, rest @ ..] => {
+            rest.windows(2)
+                .map(|edge| edge_side(*first, edge[0], edge[1]))
+                .sum::<f32>()
+                .abs()
+                * 0.5
+        }
+        [] => 0.,
+    }
 }
 
 pub(super) fn suit_name(suit: Suit) -> &'static str {
@@ -479,241 +435,158 @@ pub(super) fn suit_name(suit: Suit) -> &'static str {
     }
 }
 
-fn paint_marks(window: &mut Window, quad: &Quad, face: Face, enamel: Enamel, glaze: u32) {
-    let corners = [(0.28, 0.28), (0.72, 0.72), (0.28, 0.72), (0.72, 0.28)];
-    let corner_count = match face.rank {
-        1 => 0,
-        2 | 3 => 2,
-        _ => 4,
-    };
-    let centers = corners
-        .into_iter()
-        .take(corner_count)
-        .chain((face.rank % 2 == 1).then_some((0.5, 0.5)));
-    let radius = if face.rank == 1 { 0.23 } else { 0.115 };
-    let mut marks = PathBuilder::fill();
-    let mut highlights = PathBuilder::fill();
-    for (u, v) in centers {
-        let stamp = |x, y| on_quad(quad, u + x * radius, v + y * radius);
-        match face.suit {
-            Suit::Dots => {
-                circle(&mut marks, stamp, 0., 0., 0.96);
-                circle(&mut highlights, stamp, -0.24, -0.28, 0.27);
-            }
-            Suit::Diamonds => {
-                add_polygon(
-                    &mut marks,
-                    &[(0., -1.12), (0.96, 0.), (0., 1.12), (-0.96, 0.)].map(|(x, y)| stamp(x, y)),
-                );
-                add_polygon(
-                    &mut highlights,
-                    &[(0., -0.78), (-0.63, 0.), (0., 0.08)].map(|(x, y)| stamp(x, y)),
-                );
-            }
-            Suit::Leaves => {
-                let leaf = [
-                    (-1., 0.96),
-                    (-0.88, 0.14),
-                    (-0.48, -0.52),
-                    (0.19, -0.84),
-                    (0.99, -0.98),
-                    (0.86, -0.19),
-                    (0.44, 0.43),
-                    (-0.16, 0.79),
-                ];
-                add_polygon(&mut marks, &leaf.map(|(x, y)| stamp(x, y)));
-                add_polygon(
-                    &mut highlights,
-                    &[(-0.7, 0.69), (0.64, -0.63), (0.10, 0.14)].map(|(x, y)| stamp(x, y)),
-                );
-            }
-            Suit::Blossoms => {
-                let petals = std::array::from_fn::<_, 30, _>(|i| {
-                    let angle = TAU * i as f32 / 30.;
-                    let radius = 0.80 + 0.20 * (angle * 5.).cos();
-                    stamp(radius * angle.sin(), -radius * angle.cos())
-                });
-                add_polygon(&mut marks, &petals);
-                circle(&mut highlights, stamp, 0., 0., 0.25);
-            }
-            Suit::Waves => {
-                for (radius, thickness) in [(1., 0.22), (0.59, 0.20)] {
-                    let arch = std::array::from_fn::<_, 18, _>(|i| {
-                        let (step, radius) = if i < 9 {
-                            (i, radius)
-                        } else {
-                            (17 - i, radius - thickness)
-                        };
-                        let angle = std::f32::consts::PI * step as f32 / 8.;
-                        stamp(radius * angle.cos(), 0.47 - radius * angle.sin())
-                    });
-                    add_polygon(&mut marks, &arch);
-                }
-                circle(&mut highlights, stamp, 0., 0.45, 0.28);
-            }
-            Suit::Suns => {
-                let rays = std::array::from_fn::<_, 16, _>(|i| {
-                    let angle = TAU * i as f32 / 16.;
-                    let radius = if i % 2 == 0 { 1. } else { 0.57 };
-                    stamp(radius * angle.sin(), -radius * angle.cos())
-                });
-                add_polygon(&mut marks, &rays);
-                circle(&mut highlights, stamp, 0., 0., 0.29);
-            }
-        }
-    }
-    paint(window, marks, rgb(enamel.ink));
-    paint(window, highlights, rgb(mix(enamel.ink, glaze, 0.49)));
-}
-
-fn circle(
-    path: &mut PathBuilder,
-    stamp: impl Fn(f32, f32) -> Point<Pixels>,
-    x: f32,
-    y: f32,
-    radius: f32,
-) {
-    let ring = std::array::from_fn::<_, 14, _>(|i| {
-        let angle = TAU * i as f32 / 14.;
-        stamp(x + radius * angle.cos(), y + radius * angle.sin())
-    });
-    add_polygon(path, &ring);
-}
-
-fn on_quad(quad: &Quad, u: f32, v: f32) -> Point<Pixels> {
-    quad[0] + (quad[1] - quad[0]) * u + (quad[3] - quad[0]) * v
-}
-
-fn chamfer(quad: &Quad, inset: f32, cut: f32) -> [Point<Pixels>; 8] {
-    let n = inset;
-    let f = 1. - inset;
-    [
-        (n + cut, n),
-        (f - cut, n),
-        (f, n + cut),
-        (f, f - cut),
-        (f - cut, f),
-        (n + cut, f),
-        (n, f - cut),
-        (n, n + cut),
-    ]
-    .map(|(u, v)| on_quad(quad, u, v))
-}
-
-fn contains(quad: &Quad, point: Point<Pixels>) -> bool {
-    let mut positive = false;
-    let mut negative = false;
-    for (start, end) in quad.iter().zip(quad.iter().cycle().skip(1)) {
-        let edge = *end - *start;
-        let offset = point - *start;
-        let cross =
-            f32::from(edge.x) * f32::from(offset.y) - f32::from(edge.y) * f32::from(offset.x);
-        positive |= cross > 0.;
-        negative |= cross < 0.;
-    }
-    !(positive && negative)
-}
-
-fn mix(a: u32, b: u32, weight: f32) -> u32 {
-    let channel = |shift: u32| {
-        let first = ((a >> shift) & 0xff) as f32;
-        let second = ((b >> shift) & 0xff) as f32;
-        (first + (second - first) * weight).round() as u32
-    };
-    channel(16) << 16 | channel(8) << 8 | channel(0)
-}
-
-fn add_polygon(path: &mut PathBuilder, vertices: &[Point<Pixels>]) {
-    path.move_to(vertices[0]);
-    for &vertex in &vertices[1..] {
-        path.line_to(vertex);
-    }
-    path.close();
-}
-
-fn polygon(window: &mut Window, vertices: &[Point<Pixels>], color: impl Into<Background>) {
-    let mut path = PathBuilder::fill();
-    add_polygon(&mut path, vertices);
-    paint(window, path, color);
-}
-
-fn paint(window: &mut Window, path: PathBuilder, color: impl Into<Background>) {
-    if let Ok(path) = path.build() {
-        window.paint_path(path, color);
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use corner_table_mahjong_cubes::Layout;
 
-    #[test]
-    fn hit_follows_visible_faces_instead_of_cube_bounds_or_eligibility() {
-        for orientation in Orientation::ALL {
-            let project = |id, position, free| ProjectedCube {
-                id,
-                free,
-                face: Face {
-                    suit: Suit::Dots,
-                    rank: 1,
-                },
-                quads: cube_faces(position, orientation),
-            };
-            // Rotate a known occlusion around the rear cube.
-            let (dx, dy) = match orientation {
-                Orientation::SouthEast => (1, 1),
-                Orientation::NorthEast => (1, -1),
-                Orientation::NorthWest => (-1, -1),
-                Orientation::SouthWest => (-1, 1),
-            };
-            let rear = project(
-                0,
-                Position {
-                    x: 1,
-                    y: 1,
-                    level: 0,
-                },
-                true,
-            );
-            let front = project(
-                1,
-                Position {
-                    x: (1 + dx) as u8,
-                    y: (1 + dy) as u8,
-                    level: 1,
-                },
-                false,
-            );
-            let overlap = on_quad(&rear.quads[2], 0.83, 0.83);
-            let exposed = on_quad(&rear.quads[2], 0.18, 0.18);
-            let outside = on_quad(&rear.quads[2], 0.01, -0.12);
-            assert!(contains(&front.quads[2], overlap));
+    use super::*;
 
-            let scene = Scene {
-                bounds: Bounds::default(),
-                original: vec![],
-                footprint: vec![],
-                cubes: vec![rear, front],
-            };
-            assert_eq!(scene.hit(overlap).map(|cube| cube.id), Some(1));
-            assert_eq!(scene.hit(exposed).map(|cube| cube.id), Some(0));
-            assert!(scene.hit(outside).is_none());
+    fn front_depth(p: Vec3, toward: Vec3, center: Vec3) -> Option<f32> {
+        // Independently intersect a ray with the solid's face planes.
+        let mut back = f32::NEG_INFINITY;
+        let mut front = f32::INFINITY;
+        for facet in MESH.iter() {
+            let offset = facet.normal.dot(facet.vertices[0] + center - p);
+            let rate = facet.normal.dot(toward);
+            if rate > 0.000_001 {
+                front = front.min(offset / rate);
+            } else if rate < -0.000_001 {
+                back = back.max(offset / rate);
+            } else if offset < 0. {
+                return None;
+            }
+        }
+        (back <= front).then_some(front)
+    }
+
+    #[test]
+    fn picking_agrees_with_the_nearest_ray_hit_across_yaw_and_pitch() {
+        let board = Board::with_layout(Layout::Gatehouse, 75);
+        let bounds = Bounds::new(point(px(8.), px(15.)), size(px(520.), px(340.)));
+        let mut occluded_samples = 0;
+        for yaw in [-30., 0., 9., 38., 89.9, 90., 132., 187., 254., 312.] {
+            for pitch in [14., 37., 56., 82.] {
+                let scene = Scene::new(&board, bounds, Orbit::new(yaw, pitch));
+                for x in (4..520).step_by(13) {
+                    for y in (4..340).step_by(11) {
+                        let point = bounds.origin + point(px(x as f32 + 0.27), px(y as f32 + 0.32));
+                        let ray = scene.camera.ray_origin(point);
+                        let hits: Vec<_> = scene
+                            .cubes
+                            .iter()
+                            .filter_map(|cube| {
+                                front_depth(ray, scene.camera.toward, cube.center)
+                                    .map(|depth| (depth, cube.id))
+                            })
+                            .collect();
+                        occluded_samples += usize::from(hits.len() > 1);
+                        let front = hits
+                            .into_iter()
+                            .max_by(|a, b| a.0.total_cmp(&b.0))
+                            .map(|(_, id)| id);
+                        assert_eq!(
+                            scene.hit(point).map(|cube| cube.id),
+                            front,
+                            "yaw {yaw}, pitch {pitch}, {point:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            occluded_samples > 1_000,
+            "{occluded_samples} overlapping rays"
+        );
+    }
+
+    #[test]
+    fn bevel_can_be_picked_but_its_cut_corner_is_empty() {
+        let board = Board::with_layout(Layout::Terrace, 9);
+        let mut scene = Scene::for_view(&board, Orbit::new(23., 71.));
+        scene.cubes.retain(|cube| cube.id == 1);
+        let cube = &scene.cubes[0];
+        let chamfer = MESH
+            .iter()
+            .find(|face| face.normal.z > 0. && face.normal.x > 0. && face.normal.y > 0.)
+            .unwrap();
+        let center = chamfer
+            .vertices
+            .iter()
+            .fold(Vec3::default(), |sum, &p| sum + p)
+            * (1. / 3.);
+        assert_eq!(
+            scene
+                .hit(scene.camera.project(cube.center + center))
+                .map(|hit| hit.id),
+            Some(cube.id)
+        );
+        let mut box_corners = Vec::new();
+        for x in [-CUBE_HALF.x, CUBE_HALF.x] {
+            for y in [-CUBE_HALF.y, CUBE_HALF.y] {
+                for z in [-CUBE_HALF.z, CUBE_HALF.z] {
+                    box_corners.push(scene.camera.project(cube.center + Vec3::new(x, y, z)));
+                }
+            }
+        }
+        let uncut_outline = convex_hull(box_corners);
+        assert!(edges(&uncut_outline).any(|(a, b)| {
+            (1..20).any(|step| {
+                let point = a + (b - a) * (step as f32 / 20.);
+                cube.bounds.contains(&point) && scene.hit(point).is_none()
+            })
+        }));
+    }
+
+    #[test]
+    fn frame_fits_both_window_shapes_and_does_not_shift_after_matching() {
+        for layout in Layout::ALL {
+            let mut board = Board::with_layout(layout, 124);
+            let pair = board.hint().unwrap();
+            for (width, height) in [(632., 268.), (1020., 545.), (385., 248.)] {
+                let bounds = Bounds::new(point(px(22.), px(50.)), size(px(width), px(height)));
+                for yaw in [0., 44., 95., 223., 358.] {
+                    for pitch in [14., 38., 82.] {
+                        let view = Orbit::new(yaw, pitch);
+                        let before = Scene::new(&board, bounds, view);
+                        for z in [-Tabletop::APRON, 0.] {
+                            for p in before.table.rim(0., 0.25, z) {
+                                assert!(bounds.contains(&before.camera.project(p)));
+                            }
+                        }
+                        for cube in &before.cubes {
+                            assert!(
+                                cube.translated_outline(&before.mesh)
+                                    .iter()
+                                    .all(|p| bounds.contains(p))
+                            );
+                        }
+
+                        assert!(board.remove_pair(pair));
+                        let after = Scene::new(&board, bounds, view);
+                        assert_eq!(after.camera.scale, before.camera.scale);
+                        assert!(after.cubes.iter().all(|cube| {
+                            let original =
+                                before.cubes.iter().find(|old| old.id == cube.id).unwrap();
+                            cube.bounds == original.bounds
+                        }));
+                        assert!(board.undo());
+                    }
+                }
+            }
         }
     }
 
     #[test]
-    fn every_free_cube_can_be_reached_from_at_least_one_view() {
+    fn each_free_cube_is_reachable_from_a_high_view() {
         for layout in Layout::ALL {
             let board = Board::with_layout(layout, 0);
             let positions: Vec<_> = board.layout().collect();
             for (id, target) in positions.iter().enumerate() {
                 for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    // For each side, test the most obscured possible state
-                    // in which that cube is free. Additional removals can
-                    // only reveal more of its faces.
-                    let visible = Orientation::ALL.into_iter().any(|view| {
-                        let mut scene = Scene::for_view(&board, view);
+                    // Restore every possible occluder except those whose
+                    // absence is necessary for this cube to become free.
+                    let visible = [13., 103., 193., 283.].into_iter().any(|yaw| {
+                        let mut scene = Scene::for_view(&board, Orbit::new(yaw, 72.));
                         scene.cubes.retain(|cube| {
                             let pos = positions[cube.id];
                             let x = i16::from(pos.x) - i16::from(target.x);
@@ -722,13 +595,12 @@ mod tests {
                             let covers_side = (x, y) == (dx, dy) && pos.level == target.level;
                             !(covers_top || covers_side)
                         });
-                        let cube = scene.cubes.iter().find(|cube| cube.id == id).unwrap();
-                        scene.visible_point(cube).is_some()
+                        let index = scene.cubes.iter().position(|cube| cube.id == id).unwrap();
+                        scene
+                            .visible_point(index)
+                            .is_some_and(|point| scene.hit(point).is_some_and(|cube| cube.id == id))
                     });
-                    assert!(
-                        visible,
-                        "{layout:?}, cube {id} with side ({dx}, {dy}) open is obscured"
-                    );
+                    assert!(visible, "{layout:?}, cube {id} with side ({dx}, {dy}) open");
                 }
             }
         }
