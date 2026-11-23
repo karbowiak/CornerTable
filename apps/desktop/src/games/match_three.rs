@@ -1,207 +1,520 @@
-use corner_table_match_three::{Cell, GOAL, Game, Gem, SIDE, Status, SwapError};
-use gpui::{Context, Div, FontWeight, Window, div, prelude::*, px, rgb};
+mod field;
+mod hud;
+mod journal;
 
-use crate::theme as t;
+use std::{cell::Cell as ValueCell, rc::Rc, time::Instant};
 
-use super::{GameLaunch, board_space, control};
+use corner_table_match_three::{CELLS, Cell, Game, SIDE, Status, SwapError};
+use gpui::{
+    Bounds, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Role, Stateful, Window, canvas, div, prelude::*,
+    px, rgb,
+};
 
-const BOARD: u32 = 0x183a34;
-const WELL: u32 = 0x244c42;
-const WELL_HOVER: u32 = 0x315f52;
+use crate::{storage::Session, theme as t};
+
+use super::{GameLaunch, board_space};
+use field::{Exchange, Motion, Scene};
+use journal::Journal;
+
+#[derive(Clone, Copy)]
+enum Action {
+    Hint,
+    Replay,
+    NewBoard,
+    Stage(usize),
+    NextStage,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Feedback {
+    #[default]
+    Ready,
+    Hint,
+    NoMatch,
+    Turn {
+        points: u32,
+        chain: usize,
+        reshuffled: bool,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct Pointer {
+    from: Cell,
+    origin: Point<Pixels>,
+    preview: Option<Exchange>,
+}
+
+impl Pointer {
+    fn displacement(self, position: Point<Pixels>) -> (f32, f32) {
+        let delta = position - self.origin;
+        (f32::from(delta.x), f32::from(delta.y))
+    }
+
+    fn exchange(self, position: Point<Pixels>, step: f32) -> Option<Exchange> {
+        let (dx, dy) = self.displacement(position);
+        let (dr, dc, distance) = if dx.abs() > dy.abs() {
+            (0, dx.signum() as isize, dx.abs())
+        } else {
+            (dy.signum() as isize, 0, dy.abs())
+        };
+        if distance < 5. {
+            return None;
+        }
+        let second = offset(self.from, dr, dc)?;
+        Some(Exchange {
+            first: self.from,
+            second,
+            fraction: ((distance - 5.) / (step - 5.)).min(0.85),
+        })
+    }
+}
 
 pub struct GameView {
+    session: Session,
+    journal: Journal,
     game: Game,
-    seed: u64,
     selected: Option<Cell>,
     hint: Option<(Cell, Cell)>,
-    feedback: String,
+    cursor: Cell,
+    pointer: Option<Pointer>,
+    bounds: Rc<ValueCell<Option<Bounds<Pixels>>>>,
+    feedback: Feedback,
+    motion: Option<Motion>,
+    focus: FocusHandle,
+    focus_on_open: bool,
+    keyboard_cursor: bool,
 }
 
 impl GameView {
-    pub fn new(launch: &GameLaunch, _cx: &mut Context<Self>) -> Self {
-        let seed = launch.seed();
+    pub fn new(launch: &GameLaunch, cx: &mut Context<Self>) -> Self {
+        let session = Session::new(launch);
+        let mut journal = session
+            .load::<Journal>()
+            .unwrap_or_else(|| Journal::new(launch.seed()));
+        let game = journal.resume();
+        session.save(&journal);
         Self {
-            game: Game::new(seed),
-            seed,
+            session,
+            journal,
+            game,
             selected: None,
             hint: None,
-            feedback: String::new(),
+            cursor: Cell::from_index(0),
+            pointer: None,
+            bounds: Rc::default(),
+            feedback: Feedback::Ready,
+            motion: None,
+            focus: cx.focus_handle().tab_stop(true),
+            focus_on_open: true,
+            keyboard_cursor: false,
         }
     }
 
-    fn reset(&mut self) {
-        self.game = Game::new(self.seed);
-        self.selected = None;
-        self.hint = None;
-        self.feedback.clear();
+    fn can_play(&self) -> bool {
+        self.motion.is_none() && self.game.status() == Status::Playing
     }
 
-    fn choose(&mut self, cell: Cell) {
-        if self.game.status() != Status::Playing {
+    fn perform(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        if self.motion.is_some() {
+            return;
+        }
+        match action {
+            Action::Hint if self.can_play() => {
+                self.selected = None;
+                self.hint = self.game.suggestion();
+                self.feedback = Feedback::Hint;
+            }
+            Action::Hint => return,
+            Action::Replay | Action::NewBoard => {
+                self.game = self.journal.restart(matches!(action, Action::NewBoard));
+            }
+            Action::Stage(_) | Action::NextStage => {
+                let index = match action {
+                    Action::Stage(index) => index,
+                    _ => self.journal.active + 1,
+                };
+                if index == self.journal.active || !self.journal.is_unlocked(index) {
+                    return;
+                }
+                self.journal.active = index;
+                self.game = self.journal.resume();
+            }
+        }
+        if !matches!(action, Action::Hint) {
+            self.selected = None;
+            self.hint = None;
+            self.pointer = None;
+            self.cursor = Cell::from_index(0);
+            self.feedback = Feedback::Ready;
+            self.session.save(&self.journal);
+        }
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn choose(&mut self, cell: Cell, cx: &mut Context<Self>) {
+        if !self.can_play() {
             return;
         }
         self.hint = None;
-        self.feedback.clear();
+        self.feedback = Feedback::Ready;
+        self.cursor = cell;
         match self.selected.take() {
             Some(first) if first == cell => {}
-            Some(first) if first.touches(cell) => match self.game.swap(first, cell) {
-                Ok(turn) => {
-                    let cascades = turn.cascades.len();
-                    self.feedback = if turn.reshuffled {
-                        format!("+{} points. The board was reshuffled.", turn.points)
-                    } else if cascades > 1 {
-                        format!("+{} points from a {cascades}-match chain.", turn.points)
-                    } else {
-                        format!("+{} points for {} gems.", turn.points, turn.gems)
-                    };
-                }
-                Err(SwapError::NoMatch) => {
-                    self.feedback = "That swap needs to make a line of three or more.".into();
-                }
-                Err(_) => {}
-            },
+            Some(first) if first.touches(cell) => self.swap(
+                Exchange {
+                    first,
+                    second: cell,
+                    fraction: 0.,
+                },
+                cx,
+            ),
             _ => self.selected = Some(cell),
         }
     }
 
-    fn board(&self, side: f32, cx: &Context<Self>) -> Div {
-        let playing = self.game.status() == Status::Playing;
-        div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .gap(px(4.))
-            .p_2()
-            .rounded_lg()
-            .bg(rgb(BOARD))
-            .children((0..SIDE).map(|row| {
-                div().flex().gap(px(4.)).children((0..SIDE).map(|col| {
-                    let cell = Cell { row, col };
-                    let gem = self.game.gem(cell).expect("board cell");
-                    let highlighted = self.selected == Some(cell)
-                        || self.hint.is_some_and(|(a, b)| cell == a || cell == b);
+    fn swap(&mut self, exchange: Exchange, cx: &mut Context<Self>) {
+        let Exchange { first, second, .. } = exchange;
+        let original = *self.game.board();
+        let progress = self.game.progress();
+        self.selected = None;
+        self.hint = None;
+        self.cursor = second;
+        let turn = match self.game.swap(first, second) {
+            Ok(turn) => {
+                self.journal.add_move(
+                    first.index().expect("field cell"),
+                    second.index().expect("field cell"),
+                    &self.game,
+                );
+                self.session.save(&self.journal);
+                self.feedback = Feedback::Turn {
+                    points: turn.points,
+                    chain: turn.cascades.len(),
+                    reshuffled: turn.reshuffled,
+                };
+                Some(turn)
+            }
+            Err(SwapError::NoMatch) => {
+                self.feedback = Feedback::NoMatch;
+                None
+            }
+            Err(_) => return,
+        };
+        if !cx.reduce_motion() {
+            self.motion = Some(Motion::new(
+                exchange,
+                original,
+                progress,
+                turn,
+                self.game.status() == Status::Won,
+            ));
+        }
+        cx.notify();
+    }
+
+    fn cell_at(&self, position: Point<Pixels>, step: f32) -> Option<Cell> {
+        let bounds = self.bounds.get()?;
+        if !bounds.contains(&position) {
+            return None;
+        }
+        let delta = position - bounds.origin;
+        let cell = Cell {
+            row: (f32::from(delta.y) / step) as usize,
+            col: (f32::from(delta.x) / step) as usize,
+        };
+        cell.index().map(|_| cell)
+    }
+
+    fn pointer_down(
+        &mut self,
+        position: Point<Pixels>,
+        step: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.can_play()
+            && let Some(from) = self.cell_at(position, step)
+        {
+            self.focus.focus(window, cx);
+            self.keyboard_cursor = false;
+            self.cursor = from;
+            self.pointer = Some(Pointer {
+                from,
+                origin: position,
+                preview: None,
+            });
+            cx.notify();
+        }
+    }
+
+    fn pointer_up(&mut self, position: Point<Pixels>, step: f32, cx: &mut Context<Self>) {
+        let Some(pointer) = self.pointer.take() else {
+            return;
+        };
+        let (dx, dy) = pointer.displacement(position);
+        if self.can_play() {
+            if dx.abs().max(dy.abs()) >= step * 0.29 {
+                if let Some(exchange) = pointer.exchange(position, step) {
+                    self.swap(exchange, cx);
+                }
+            } else if self.cell_at(position, step).is_some() {
+                self.choose(pointer.from, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let stroke = &event.keystroke;
+        if stroke.modifiers.alt || stroke.modifiers.control || stroke.modifiers.platform {
+            return;
+        }
+        if !self.can_play() {
+            return;
+        }
+        self.keyboard_cursor = true;
+        let direction = match stroke.key.as_str() {
+            "up" => (-1, 0),
+            "down" => (1, 0),
+            "left" => (0, -1),
+            "right" => (0, 1),
+            "enter" | "space" => {
+                if !event.is_held {
+                    self.choose(self.cursor, cx);
+                    cx.notify();
+                }
+                cx.stop_propagation();
+                return;
+            }
+            "escape" => {
+                self.selected = None;
+                self.hint = None;
+                self.pointer = None;
+                self.feedback = Feedback::Ready;
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
+            "h" => {
+                if !event.is_held {
+                    self.perform(Action::Hint, window, cx);
+                }
+                cx.stop_propagation();
+                return;
+            }
+            _ => return,
+        };
+        self.pointer = None;
+        if let Some(cell) = offset(self.cursor, direction.0, direction.1) {
+            self.cursor = cell;
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn board(
+        &self,
+        step: f32,
+        scene: Scene<'_>,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let focused = self.focus.is_focused(window);
+        let playing = self.can_play();
+        let bounds = Rc::clone(&self.bounds);
+        let board_size = step * SIDE as f32;
+        let tiles = scene.board();
+        let current_gem = tiles[self.cursor.index().expect("cursor within field")];
+
+        field::frame(
+            focused,
+            self.motion.is_none() && self.game.status() == Status::Won,
+        )
+        .id("match-three-board")
+        .role(Role::Grid)
+        .aria_label("Match Three field")
+        .aria_description(format!(
+            "Arrow keys move. Space selects a jewel. H shows a hint. Row {}, column {}, {}.",
+            self.cursor.row + 1,
+            self.cursor.col + 1,
+            current_gem.name()
+        ))
+        .track_focus(&self.focus)
+        .on_key_down(cx.listener(Self::key_down))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                view.pointer_down(event.position, step, window, cx);
+            }),
+        )
+        .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
+            if let Some(pointer) = &mut view.pointer {
+                if event.dragging() {
+                    pointer.preview = if cx.reduce_motion() {
+                        None
+                    } else {
+                        pointer.exchange(event.position, step)
+                    };
+                } else {
+                    view.pointer = None;
+                }
+                cx.notify();
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |view, event: &MouseUpEvent, _, cx| {
+                view.pointer_up(event.position, step, cx)
+            }),
+        )
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(|view, _, _, cx| {
+                if view.pointer.take().is_some() {
+                    cx.notify();
+                }
+            }),
+        )
+        .child(
+            field::floor()
+                .size(px(board_size))
+                .child(
+                    canvas(move |area, _, _| bounds.set(Some(area)), |_, (), _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
+                .children((0..CELLS).map(|index| field::well(step, Cell::from_index(index))))
+                .child(scene.sprites(step))
+                .children(scene.sparks(step))
+                .children(tiles.into_iter().enumerate().map(|(index, gem)| {
+                    let cell = Cell::from_index(index);
+                    let is_hint = self.hint.is_some_and(|(a, b)| cell == a || cell == b);
+                    let armed = self.selected == Some(cell);
+                    let is_cursor = focused && self.keyboard_cursor && self.cursor == cell;
+                    let is_pressed = self.pointer.is_some_and(|pointer| pointer.from == cell);
+                    let gold = rgb(0xffcf70);
+                    let ivory = rgb(0xf2f0d4);
+                    let highlight = armed || is_hint || is_cursor || is_pressed;
                     div()
-                        .id(("match-three-cell", row * SIDE + col))
-                        .size(px(side))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_md()
-                        .bg(rgb(WELL))
-                        .border_2()
-                        .border_color(rgb(if highlighted { t::GOLD } else { WELL }))
-                        .child(gem_face(gem, side))
+                        .id(("match-three-jewel", index))
+                        .role(Role::Button)
+                        .aria_label(format!(
+                            "{} at row {}, column {}{}",
+                            gem.name(),
+                            cell.row + 1,
+                            cell.col + 1,
+                            if is_hint { ", hint pair" } else { "" },
+                        ))
+                        .aria_selected(armed)
+                        .when(is_cursor, |tile| tile.aria_active_descendant())
+                        .absolute()
+                        .left(px(cell.col as f32 * step + 1.))
+                        .top(px(cell.row as f32 * step + 1.))
+                        .size(px(step - 2.))
+                        .rounded(px((step * 0.15).clamp(4., 9.)))
+                        .when(highlight, |tile| {
+                            tile.border_2()
+                                .border_color(if is_cursor && !armed && !is_hint {
+                                    ivory
+                                } else {
+                                    gold
+                                })
+                        })
+                        .when(armed || is_pressed, |tile| tile.bg(gold.opacity(0.10)))
+                        .when(is_hint && !armed, |tile| tile.bg(gold.opacity(0.13)))
                         .when(playing, |tile| {
-                            tile.tab_index(0)
-                                .cursor_pointer()
-                                .hover(|style| style.bg(rgb(WELL_HOVER)))
-                                .focus(|style| style.border_color(rgb(t::PAPER)))
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    view.choose(cell);
-                                    cx.notify();
+                            tile.cursor_pointer()
+                                .hover(|style| style.bg(ivory.opacity(0.12)))
+                                .on_click(cx.listener(move |view, event, window, cx| {
+                                    // Pointer releases go through the field's shared drag handler.
+                                    if !matches!(event, ClickEvent::Mouse(_)) {
+                                        view.focus.focus(window, cx);
+                                        view.keyboard_cursor = true;
+                                        view.choose(cell, cx);
+                                        cx.notify();
+                                    }
                                 }))
                         })
-                }))
-            }))
+                })),
+        )
     }
 }
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let space = board_space(window);
-        let side = ((space - 44.) / SIDE as f32).clamp(28., 52.);
-        let playing = self.game.status() == Status::Playing;
-        let message = match self.game.status() {
-            Status::Won => "You reached the score goal!",
-            Status::Lost => "Out of moves. Restart this board or try a new one.",
-            Status::Playing if !self.feedback.is_empty() => self.feedback.as_str(),
-            Status::Playing if self.hint.is_some() => "Swap the two outlined gems.",
-            Status::Playing if self.selected.is_some() => "Choose an adjacent gem to swap.",
-            Status::Playing => "Swap neighboring gems to make a row or column of three or more.",
-        };
+        if std::mem::take(&mut self.focus_on_open) {
+            cx.on_next_frame(window, |view, window, cx| view.focus.focus(window, cx));
+        }
+        let now = Instant::now();
+        if let Some(motion) = &mut self.motion {
+            if cx.reduce_motion() || !motion.advance(now) {
+                self.motion = None;
+            } else {
+                window.request_animation_frame();
+            }
+        }
 
-        t::surface()
-            .p_4()
+        let available = board_space(window) + 36.;
+        let compact = available < 660.;
+        let gutter = if compact { 12. } else { 20. };
+        let hud_width = ((available - gutter * 3.) * 0.315).clamp(150., 294.);
+        let field_width = available - gutter * 3. - hud_width - 2.;
+        let field_height = f32::from(window.viewport_size().height) - 107. - gutter * 2.;
+        let step = ((field_width.min(field_height) - field::FRAME * 2.) / SIDE as f32)
+            .floor()
+            .clamp(30., 89.);
+        let settled = self.game.board();
+        let scene = match &self.motion {
+            Some(motion) => motion.scene(now, settled),
+            None => self
+                .pointer
+                .and_then(|pointer| pointer.preview)
+                .map_or(Scene::Still(settled), |exchange| {
+                    Scene::Exchange(settled, exchange)
+                }),
+        };
+        let displayed = self
+            .motion
+            .as_ref()
+            .map_or(self.game.progress(), Motion::progress);
+
+        t::panel(cx)
             .w_full()
             .flex()
-            .flex_wrap()
-            .gap_5()
             .items_start()
-            .child(self.board(side, cx))
+            .justify_center()
+            .gap(px(gutter))
+            .p(px(gutter))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_3()
-                    .w(px(270.))
-                    .max_w_full()
-                    .child(t::display_type(
-                        format!("{} points", self.game.score()),
-                        24.,
-                    ))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(format!(
-                        "Goal: {GOAL}   ·   Moves left: {}",
-                        self.game.moves_left()
-                    )))
-                    .child(
-                        div()
-                            .min_h(px(48.))
-                            .text_color(rgb(t::MUTED))
-                            .child(message.to_owned()),
-                    )
+                    .gap(px(6.))
+                    .flex_none()
+                    .child(self.board(step, scene, window, cx))
                     .child(
                         div()
                             .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(control("match-three-hint", "Hint", playing).on_click(
-                                cx.listener(move |view, _, _, cx| {
-                                    if playing {
-                                        view.selected = None;
-                                        view.hint = view.game.hint();
-                                        view.feedback.clear();
-                                        cx.notify();
-                                    }
-                                }),
-                            ))
-                            .child(control("match-three-restart", "Restart", true).on_click(
-                                cx.listener(|view, _, _, cx| {
-                                    view.reset();
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(control("match-three-new", "New board", true).on_click(
-                                cx.listener(|view, _, _, cx| {
-                                    view.seed = view.seed.wrapping_add(1);
-                                    view.reset();
-                                    cx.notify();
-                                }),
-                            )),
+                            .justify_between()
+                            .px(px(1.))
+                            .text_size(px(if compact { 11. } else { 12. }))
+                            .line_height(px(17.))
+                            .text_color(rgb(t::colors(cx).muted))
+                            .child("Drag or click an adjacent pair")
+                            .child("Arrows + Space"),
                     ),
             )
+            .child(self.hud(hud_width, compact, displayed, cx))
     }
 }
 
-fn gem_face(gem: Gem, side: f32) -> Div {
-    let (mark, face, rim, ink) = match gem {
-        Gem::Ruby => ("R", 0xdb7983, 0xf3a6a6, 0x502031),
-        Gem::Amber => ("A", 0xf0b65c, 0xffd58e, 0x5d3b15),
-        Gem::Peridot => ("P", 0xb4cb70, 0xd5e69e, 0x344219),
-        Gem::Aquamarine => ("Q", 0x73c4ca, 0x9ce7e5, 0x19494b),
-        Gem::Amethyst => ("V", 0xb5a0db, 0xe3caff, 0x442960),
-        Gem::Moonstone => ("M", 0xeee1c7, 0xfff8e7, 0x50483c),
+fn offset(cell: Cell, row: isize, col: isize) -> Option<Cell> {
+    let target = Cell {
+        row: cell.row.checked_add_signed(row)?,
+        col: cell.col.checked_add_signed(col)?,
     };
-    div()
-        .size(px(side - 10.))
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(rim))
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgb(face))
-        .font_weight(FontWeight::BOLD)
-        .text_color(rgb(ink))
-        .text_size(px((side * 0.36).max(12.)))
-        .child(mark)
+    target.index().map(|_| target)
 }
