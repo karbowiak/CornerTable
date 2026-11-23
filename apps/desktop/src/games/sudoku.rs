@@ -554,6 +554,7 @@ impl GameView {
             .gap_2()
             .rounded_md()
             .bg(rgb(HINT_SURFACE))
+            .text_color(rgb(t::INK))
             .p_3()
             .child(div().font_weight(FontWeight::BOLD).child(title))
             .child(div().text_size(px(13.)).line_height(px(18.)).child(detail))
@@ -589,11 +590,12 @@ impl GameView {
     }
 
     fn controls(&self, width: f32, compact: bool, cx: &Context<Self>) -> Div {
+        let palette = t::colors(cx);
         let round = self.round();
         let game = &round.game;
         let solved = game.is_solved();
         let daily = self.puzzle.is_daily();
-        let mut panel = t::surface()
+        let mut panel = t::panel(cx)
             .w(px(width))
             .flex_shrink_0()
             .p_4()
@@ -607,11 +609,11 @@ impl GameView {
         }
 
         if solved {
-            panel = panel.child(completed(round, daily));
+            panel = panel.child(completed(round, daily, palette));
         } else {
             panel = panel
-                .child(progress(game))
-                .when(daily, |panel| panel.child(daily_goal(round)))
+                .child(progress(game, palette))
+                .when(daily, |panel| panel.child(daily_goal(round, palette)))
                 .when(!compact, |panel| panel.child(self.keypad(compact, cx)));
         }
 
@@ -669,6 +671,7 @@ impl GameView {
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = t::colors(cx);
         if self.focus_on_mount {
             self.focus_on_mount = false;
             cx.defer_in(window, |view, window, cx| view.focus.focus(window, cx));
@@ -717,7 +720,7 @@ impl Render for GameView {
             })
             .child(
                 div()
-                    .text_color(rgb(t::MUTED))
+                    .text_color(rgb(palette.muted))
                     .text_size(px(14.))
                     .child(instruction),
             )
@@ -735,7 +738,7 @@ impl Render for GameView {
                             .flex_col()
                             .gap_2()
                             .child(self.board(cell, cx))
-                            .child(shortcuts(size)),
+                            .child(shortcuts(size, palette)),
                     )
                     .child(self.controls(panel_width, compact, cx)),
             )
@@ -767,7 +770,7 @@ fn notes_grid(format: Format, size: f32, notes: u16) -> Div {
         }))
 }
 
-fn progress(game: &Game) -> Div {
+fn progress(game: &Game, palette: t::Palette) -> Div {
     let cells = game.format().cell_count();
     let left = cells - game.filled();
     let to_fill = (0..cells).filter(|&index| !game.is_given(index)).count();
@@ -791,18 +794,18 @@ fn progress(game: &Game) -> Div {
                 }),
         )
         .child(
-            div().h(px(5.)).rounded_full().bg(rgb(t::SAGE)).child(
+            div().h(px(5.)).rounded_full().bg(rgb(palette.hover)).child(
                 div()
                     .h_full()
                     .w(relative(progress))
                     .rounded_full()
-                    .bg(rgb(PLAYER_INK)),
+                    .bg(rgb(palette.success)),
             ),
         )
         .when(conflict, |status| {
             status.child(
                 div()
-                    .text_color(rgb(ERROR))
+                    .text_color(rgb(palette.danger))
                     .text_size(px(12.))
                     .line_height(px(17.))
                     .child("Check the underlined digits for duplicates."),
@@ -810,12 +813,12 @@ fn progress(game: &Game) -> Div {
         })
 }
 
-fn daily_goal(round: &Round) -> Div {
+fn daily_goal(round: &Round, palette: t::Palette) -> Div {
     div()
         .flex()
         .flex_col()
         .gap_1()
-        .bg(rgb(t::SAGE))
+        .bg(rgb(palette.hover))
         .rounded_md()
         .p_3()
         .text_size(px(13.))
@@ -832,13 +835,13 @@ fn daily_goal(round: &Round) -> Div {
         .when_some(round.best, |goal, best| {
             goal.child(
                 div()
-                    .text_color(rgb(t::MUTED))
+                    .text_color(rgb(palette.muted))
                     .child(format!("Best · {}", result(best))),
             )
         })
 }
 
-fn completed(round: &Round, daily: bool) -> Div {
+fn completed(round: &Round, daily: bool, palette: t::Palette) -> Div {
     let description = if daily && round.hints_used == 0 {
         "Daily goal met. Solved without hints.".to_owned()
     } else if round.hints_used == 0 {
@@ -854,7 +857,7 @@ fn completed(round: &Round, daily: bool) -> Div {
         .flex_col()
         .gap_1()
         .rounded_md()
-        .bg(rgb(t::SAGE))
+        .bg(rgb(palette.hover))
         .p_3()
         .child(t::display_type("Puzzle complete", 20.))
         .child(
@@ -869,7 +872,7 @@ fn completed(round: &Round, daily: bool) -> Div {
                 panel.child(
                     div()
                         .text_size(px(13.))
-                        .text_color(rgb(t::MUTED))
+                        .text_color(rgb(palette.muted))
                         .child(format!("Best · {}", result(best))),
                 )
             },
@@ -966,14 +969,14 @@ fn unit_name(unit: Unit) -> String {
     }
 }
 
-fn shortcuts(size: usize) -> Div {
+fn shortcuts(size: usize, palette: t::Palette) -> Div {
     div()
         .flex()
         .flex_wrap()
         .gap_x(px(12.))
         .text_size(px(12.))
         .line_height(px(19.))
-        .text_color(rgb(t::MUTED))
+        .text_color(rgb(palette.muted))
         .children([
             "Arrows move".to_owned(),
             format!("1–{size} enter digits"),
@@ -1013,16 +1016,18 @@ fn control(
     cx: &Context<GameView>,
     action: impl Fn(&mut GameView) + 'static,
 ) -> Stateful<Div> {
+    let palette = t::colors(cx);
+    let title = title.into();
     let (fill, border, ink) = match style {
-        ButtonStyle::Normal => (t::SURFACE, t::BORDER, t::INK),
-        ButtonStyle::Active => (t::SAGE, PLAYER_INK, t::INK),
+        ButtonStyle::Normal => (palette.surface, palette.border, palette.ink),
+        ButtonStyle::Active => (palette.hover, palette.success, palette.ink),
         ButtonStyle::Primary => (t::GOLD, t::GOLD, t::INK),
-        ButtonStyle::Disabled => (t::PAPER, t::BORDER, t::MUTED),
+        ButtonStyle::Disabled => (palette.paper, palette.border, palette.muted),
     };
     let hover = if style == ButtonStyle::Primary {
         t::GOLD_HOVER
     } else {
-        t::SAGE
+        palette.hover
     };
     div()
         .id(id.into())
@@ -1041,17 +1046,19 @@ fn control(
         .line_height(px(20.))
         .when(style != ButtonStyle::Disabled, |button| {
             button
+                .role(gpui::Role::Button)
+                .aria_label(title.clone())
                 .tab_index(0)
                 .cursor_pointer()
                 .hover(|style| style.bg(rgb(hover)))
-                .focus(|style| style.border_color(rgb(t::INK)).bg(rgb(hover)))
+                .focus_visible(|style| style.border_color(rgb(palette.ink)).bg(rgb(hover)))
                 .on_click(cx.listener(move |view, _, window, cx| {
                     action(view);
                     view.focus.focus(window, cx);
                     cx.notify();
                 }))
         })
-        .child(title.into())
+        .child(title)
 }
 
 #[cfg(test)]

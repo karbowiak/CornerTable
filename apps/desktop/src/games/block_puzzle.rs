@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::storage::Session;
 use crate::theme as t;
 
-use super::{GameLaunch, board_space, control};
+use super::{GameLaunch, board_space, themed_control};
 
 const BOARD: u32 = 0x49382e;
 const WELL: u32 = 0x625043;
@@ -202,6 +202,7 @@ impl GameView {
     }
 
     fn tray(&self, cx: &Context<Self>) -> Div {
+        let palette = t::colors(cx);
         div()
             .flex()
             .gap_2()
@@ -212,8 +213,12 @@ impl GameView {
                     .size(px(76.))
                     .rounded_md()
                     .border_2()
-                    .border_color(rgb(if selected { t::GOLD } else { t::BORDER }))
-                    .bg(rgb(if selected { t::SAGE } else { t::PAPER }))
+                    .border_color(rgb(if selected { t::GOLD } else { palette.border }))
+                    .bg(rgb(if selected {
+                        palette.hover
+                    } else {
+                        palette.paper
+                    }))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -221,8 +226,8 @@ impl GameView {
                     .when(piece.is_some(), |card| {
                         card.tab_index(0)
                             .cursor_pointer()
-                            .hover(|style| style.bg(rgb(t::SAGE)))
-                            .focus(|style| style.border_color(rgb(t::INK)))
+                            .hover(|style| style.bg(rgb(palette.hover)))
+                            .focus_visible(|style| style.border_color(rgb(palette.ink)))
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.selected = (view.selected != Some(slot)).then_some(slot);
                                 view.feedback.clear();
@@ -246,7 +251,7 @@ impl Render for GameView {
             "Choose a piece to place. Complete rows or columns to clear space."
         };
 
-        t::surface()
+        t::panel(cx)
             .p_4()
             .w_full()
             .flex()
@@ -270,7 +275,7 @@ impl Render for GameView {
                     .child(
                         div()
                             .min_h(px(48.))
-                            .text_color(rgb(t::MUTED))
+                            .text_color(rgb(t::colors(cx).muted))
                             .child(status.to_owned()),
                     )
                     .child(
@@ -279,8 +284,14 @@ impl Render for GameView {
                             .flex_wrap()
                             .gap_2()
                             .child(
-                                control("block-puzzle-undo", "Undo", self.undo.is_some()).on_click(
-                                    cx.listener(|view, _, _, cx| {
+                                themed_control(
+                                    cx,
+                                    "block-puzzle-undo",
+                                    "Undo",
+                                    self.undo.is_some(),
+                                )
+                                .on_click(cx.listener(
+                                    |view, _, _, cx| {
                                         if let Some(game) = view.undo.take() {
                                             view.game = game;
                                             view.turns.pop();
@@ -289,22 +300,25 @@ impl Render for GameView {
                                             view.save();
                                             cx.notify();
                                         }
+                                    },
+                                )),
+                            )
+                            .child(
+                                themed_control(cx, "block-puzzle-restart", "Restart", true)
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.reset();
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                themed_control(cx, "block-puzzle-new", "New board", true).on_click(
+                                    cx.listener(|view, _, _, cx| {
+                                        view.seed = view.seed.wrapping_add(1);
+                                        view.reset();
+                                        cx.notify();
                                     }),
                                 ),
-                            )
-                            .child(control("block-puzzle-restart", "Restart", true).on_click(
-                                cx.listener(|view, _, _, cx| {
-                                    view.reset();
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(control("block-puzzle-new", "New board", true).on_click(
-                                cx.listener(|view, _, _, cx| {
-                                    view.seed = view.seed.wrapping_add(1);
-                                    view.reset();
-                                    cx.notify();
-                                }),
-                            )),
+                            ),
                     ),
             )
     }

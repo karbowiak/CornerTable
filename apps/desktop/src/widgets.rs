@@ -25,6 +25,7 @@ pub fn button(
     cx: &Context<Desktop>,
 ) -> Stateful<Div> {
     let palette = t::colors(cx);
+    let label = label.into();
     let bg = if primary { t::GOLD } else { palette.surface };
     let hover = if primary {
         t::GOLD_HOVER
@@ -32,6 +33,7 @@ pub fn button(
         palette.hover
     };
     clickable(id, action, cx)
+        .aria_label(label.clone())
         .min_h(px(42.))
         .px_4()
         .flex()
@@ -45,7 +47,7 @@ pub fn button(
         .font_weight(FontWeight::SEMIBOLD)
         .hover(|style| style.bg(rgb(hover)))
         .focus_visible(|style| style.border_color(rgb(palette.ink)))
-        .child(label.into())
+        .child(label)
 }
 
 pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
@@ -117,6 +119,7 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                     |(id, icon, label, page)| {
                         let active = page == current;
                         clickable(id, Action::Navigate(page), cx)
+                            .aria_label(label)
                             .w_full()
                             .h(px(46.))
                             .flex()
@@ -182,6 +185,7 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                             let launch = launch.clone();
                             button
                                 .role(Role::Button)
+                                .aria_label(format!("Open last played {title}"))
                                 .tab_index(0)
                                 .cursor_pointer()
                                 .hover(|style| style.bg(rgb(palette.rail_active)))
@@ -310,6 +314,7 @@ fn history_button(
         .when(enabled, |button| {
             button
                 .role(Role::Button)
+                .aria_label(label)
                 .tab_index(0)
                 .cursor_pointer()
                 .hover(|style| style.bg(rgb(palette.rail_active)))
@@ -408,6 +413,7 @@ pub fn tile(
 ) -> Stateful<Div> {
     let palette = t::colors(cx);
     clickable(SharedString::from(format!("tile-{id}")), action, cx)
+        .aria_label(title.to_owned())
         .w_full()
         .min_w_0()
         .h(px(height + 43.))

@@ -56,11 +56,13 @@ pub struct Palette {
     pub muted: u32,
     pub hover: u32,
     pub gold_text: u32,
+    pub success: u32,
+    pub danger: u32,
     pub rail: u32,
     pub rail_active: u32,
 }
 
-const LIGHT: Palette = Palette {
+pub const LIGHT: Palette = Palette {
     paper: PAPER,
     surface: SURFACE,
     border: BORDER,
@@ -68,6 +70,8 @@ const LIGHT: Palette = Palette {
     muted: MUTED,
     hover: SAGE,
     gold_text: 0x855713,
+    success: 0x286448,
+    danger: 0xa2352e,
     rail: RAIL,
     rail_active: RAIL_ACTIVE,
 };
@@ -80,6 +84,8 @@ const DARK: Palette = Palette {
     muted: 0xb9c9bd,
     hover: 0x344a3e,
     gold_text: GOLD,
+    success: 0xa6dfae,
+    danger: 0xffab9d,
     rail: 0x111d19,
     rail_active: 0x294539,
 };

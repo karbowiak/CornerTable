@@ -15,8 +15,8 @@ mod word_games;
 
 use corner_table_api::GameId;
 use gpui::{
-    AnyView, AppContext as _, Context, Div, FontWeight, SharedString, Stateful, Window, div,
-    prelude::*, px, rgb,
+    AnyView, App, AppContext as _, Context, Div, FontWeight, Role, SharedString, Stateful, Window,
+    div, prelude::*, px, rgb,
 };
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -82,6 +82,25 @@ fn board_space(window: &Window) -> f32 {
 }
 
 fn control(id: &'static str, label: impl Into<SharedString>, enabled: bool) -> Stateful<Div> {
+    styled_control(theme::LIGHT, id, label, enabled)
+}
+
+fn themed_control(
+    cx: &App,
+    id: &'static str,
+    label: impl Into<SharedString>,
+    enabled: bool,
+) -> Stateful<Div> {
+    styled_control(theme::colors(cx), id, label, enabled)
+}
+
+fn styled_control(
+    palette: theme::Palette,
+    id: &'static str,
+    label: impl Into<SharedString>,
+    enabled: bool,
+) -> Stateful<Div> {
+    let label = label.into();
     div()
         .id(id)
         .flex()
@@ -90,21 +109,23 @@ fn control(id: &'static str, label: impl Into<SharedString>, enabled: bool) -> S
         .px_3()
         .rounded_md()
         .border_1()
-        .border_color(rgb(theme::BORDER))
+        .border_color(rgb(palette.border))
         .bg(rgb(if enabled {
-            theme::SURFACE
+            palette.surface
         } else {
-            theme::PAPER
+            palette.paper
         }))
-        .text_color(rgb(if enabled { theme::INK } else { theme::MUTED }))
+        .text_color(rgb(if enabled { palette.ink } else { palette.muted }))
         .text_size(px(13.))
         .font_weight(FontWeight::SEMIBOLD)
         .when(enabled, |button| {
             button
+                .role(Role::Button)
+                .aria_label(label.clone())
                 .tab_index(0)
                 .cursor_pointer()
-                .hover(|style| style.bg(rgb(theme::SAGE)))
-                .focus(|style| style.border_color(rgb(theme::INK)))
+                .hover(|style| style.bg(rgb(palette.hover)))
+                .focus_visible(|style| style.border_color(rgb(palette.ink)))
         })
-        .child(label.into())
+        .child(label)
 }

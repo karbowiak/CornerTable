@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::{
-    games::{GameEntry, GameLaunch, control},
+    games::{GameEntry, GameLaunch, themed_control},
     theme as t,
 };
 
@@ -15,9 +15,6 @@ const CELL_GAP: f32 = 2.;
 const FIELD_INSET: f32 = 10.;
 const FIELD_RULE: u32 = 0x426257;
 const FIELD_CAPTION: u32 = 0xbdd2bf;
-const SUCCESS: u32 = 0x286248;
-const WARNING: u32 = 0x825207;
-const ERROR: u32 = 0x963f33;
 
 #[derive(Clone, Copy)]
 enum Move {
@@ -242,6 +239,7 @@ impl GameView {
     }
 
     fn toolbar(&self, cx: &Context<Self>) -> Div {
+        let palette = t::colors(cx);
         let difficulty = self.board.difficulty();
         let active = matches!(self.board.status(), Status::Ready | Status::Playing);
         let reset_label = if self.challenge_seed.is_some() {
@@ -252,27 +250,36 @@ impl GameView {
         let mut actions = div().flex().flex_wrap().items_center().gap_1();
         if self.challenge_seed.is_none() {
             actions = actions.child(
-                toggle("minesweeper-time-trial", "Time trial", self.time_trial)
-                    .aria_description("Start a new field with or without a countdown.")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.time_trial = !view.time_trial;
-                        view.reset(view.board.difficulty(), cx);
-                    })),
+                toggle(
+                    palette,
+                    "minesweeper-time-trial",
+                    "Time trial",
+                    self.time_trial,
+                )
+                .aria_description("Start a new field with or without a countdown.")
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.time_trial = !view.time_trial;
+                    view.reset(view.board.difficulty(), cx);
+                })),
             );
         }
         actions = actions
             .child(if active {
-                toggle("minesweeper-flag-mode", "Flag mode", self.flag_mode).on_click(cx.listener(
-                    |view, _, _, cx| {
-                        view.flag_mode = !view.flag_mode;
-                        cx.notify();
-                    },
-                ))
+                toggle(
+                    palette,
+                    "minesweeper-flag-mode",
+                    "Flag mode",
+                    self.flag_mode,
+                )
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.flag_mode = !view.flag_mode;
+                    cx.notify();
+                }))
             } else {
-                control("minesweeper-flag-mode", "Flag mode", false)
+                themed_control(cx, "minesweeper-flag-mode", "Flag mode", false)
             })
             .child(
-                control("minesweeper-reset", reset_label, true)
+                themed_control(cx, "minesweeper-reset", reset_label, true)
                     .role(Role::Button)
                     .aria_label(reset_label)
                     .on_click(cx.listener(|view, _, window, cx| {
@@ -294,20 +301,31 @@ impl GameView {
                         .flex_wrap()
                         .gap_1()
                         .children(Difficulty::ALL.map(|option| {
-                            toggle(option.label(), option.label(), difficulty == option).on_click(
-                                cx.listener(move |view, _, _, cx| {
+                            toggle(
+                                palette,
+                                option.label(),
+                                option.label(),
+                                difficulty == option,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
                                     if view.board.difficulty() != option {
                                         view.reset(option, cx);
                                     }
-                                }),
-                            )
+                                },
+                            ))
                         })),
                 )
             })
             .child(actions)
     }
 
-    fn status(&self, elapsed: Duration, limit: Option<Duration>) -> Stateful<Div> {
+    fn status(
+        &self,
+        elapsed: Duration,
+        limit: Option<Duration>,
+        palette: t::Palette,
+    ) -> Stateful<Div> {
         let difficulty = self.board.difficulty();
         let (width, height) = difficulty.dimensions();
         let field = format!(
@@ -318,24 +336,24 @@ impl GameView {
         let elapsed_label = format_time(elapsed.as_secs());
         let flag_hint = "Flag mode is on. Click a covered square to mark it.";
         let (title, detail, ink) = match (self.board.status(), limit) {
-            (Status::Ready, _) if self.flag_mode => (field, flag_hint.into(), t::INK),
+            (Status::Ready, _) if self.flag_mode => (field, flag_hint.into(), palette.ink),
             (Status::Ready, Some(limit)) => (
                 field,
                 format!(
                     "Clear the field in {}. The clock starts on your first reveal.",
                     format_time(limit.as_secs())
                 ),
-                t::INK,
+                palette.ink,
             ),
             (Status::Ready, None) => (
                 field,
                 "Choose any square to open a safe area.".into(),
-                t::INK,
+                palette.ink,
             ),
             (Status::Playing, Some(limit)) if elapsed >= limit => (
                 "Time is up".into(),
                 "Keep playing to clear the field.".into(),
-                WARNING,
+                palette.gold_text,
             ),
             (Status::Playing, _) => (
                 field,
@@ -345,12 +363,12 @@ impl GameView {
                     "Uncover every safe square."
                 }
                 .into(),
-                t::INK,
+                palette.ink,
             ),
             (Status::Won, Some(limit)) if elapsed < limit => (
                 "Time trial cleared".into(),
                 format!("You cleared the field in {elapsed_label}."),
-                SUCCESS,
+                palette.success,
             ),
             (Status::Won, Some(limit)) => (
                 "Field cleared".into(),
@@ -358,17 +376,17 @@ impl GameView {
                     "You finished in {elapsed_label}. The time trial target was {}.",
                     format_time(limit.as_secs())
                 ),
-                SUCCESS,
+                palette.success,
             ),
             (Status::Won, None) => (
                 "Field cleared".into(),
                 format!("You cleared every safe square in {elapsed_label}."),
-                SUCCESS,
+                palette.success,
             ),
             (Status::Lost, _) => (
                 "Mine hit".into(),
                 "Mines and misplaced flags are marked. Start a new field to try again.".into(),
-                ERROR,
+                palette.danger,
             ),
         };
 
@@ -390,7 +408,7 @@ impl GameView {
                 div()
                     .text_size(px(13.))
                     .line_height(px(18.))
-                    .text_color(rgb(t::MUTED))
+                    .text_color(rgb(palette.muted))
                     .child(detail),
             )
     }
@@ -411,7 +429,7 @@ impl GameView {
         };
         let viewport_height = f32::from(window.viewport_size().height);
         // Leave space for the game header, controls, meters, and keyboard help.
-        let tile = ((viewport_height - 390.) / height as f32 - CELL_GAP)
+        let tile = ((viewport_height - 240.) / height as f32 - CELL_GAP)
             .clamp(22., comfortable_tile)
             .floor();
         let field_width = width as f32 * (tile + CELL_GAP) - CELL_GAP + 2. * FIELD_INSET;
@@ -504,6 +522,7 @@ impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let elapsed = self.clock.elapsed();
         let limit = self.trial_limit();
+        let palette = t::colors(cx);
         div()
             .w_full()
             .max_w(px(940.))
@@ -512,7 +531,7 @@ impl Render for GameView {
             .items_start()
             .gap_3()
             .child(self.toolbar(cx))
-            .child(self.status(elapsed, limit))
+            .child(self.status(elapsed, limit, palette))
             .child(self.field(window, elapsed, limit, cx))
             .child(
                 div()
@@ -520,14 +539,19 @@ impl Render for GameView {
                     .flex_col()
                     .text_size(px(13.))
                     .line_height(px(19.))
-                    .text_color(rgb(t::MUTED))
+                    .text_color(rgb(palette.muted))
                     .child("Click to reveal · Right-click to flag · Click a clue when its neighboring flags match the number")
                     .child("Arrow keys to move · Enter or Space to reveal or chord · F to flag"),
             )
     }
 }
 
-fn toggle(id: &'static str, label: &'static str, selected: bool) -> Stateful<Div> {
+fn toggle(
+    palette: t::Palette,
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+) -> Stateful<Div> {
     div()
         .id(id)
         .role(Role::Button)
@@ -540,10 +564,17 @@ fn toggle(id: &'static str, label: &'static str, selected: bool) -> Stateful<Div
         .px_3()
         .rounded_md()
         .border_1()
-        .border_color(rgb(if selected { 0xcd9836 } else { t::BORDER }))
-        .bg(rgb(if selected { t::GOLD } else { t::SURFACE }))
-        .hover(|style| style.bg(rgb(if selected { t::GOLD_HOVER } else { t::SAGE })))
-        .focus(|style| style.border_color(rgb(t::INK)))
+        .border_color(rgb(if selected { 0xcd9836 } else { palette.border }))
+        .bg(rgb(if selected { t::GOLD } else { palette.surface }))
+        .text_color(rgb(if selected { t::INK } else { palette.ink }))
+        .hover(|style| {
+            style.bg(rgb(if selected {
+                t::GOLD_HOVER
+            } else {
+                palette.hover
+            }))
+        })
+        .focus_visible(|style| style.border_color(rgb(palette.ink)))
         .cursor_pointer()
         .text_size(px(13.))
         .font_weight(FontWeight::SEMIBOLD)

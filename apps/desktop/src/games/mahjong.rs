@@ -67,7 +67,7 @@ impl GameView {
             .justify_between()
             .gap_3()
             .child(
-                option_group("Layout").children(
+                option_group("Layout", cx).children(
                     [
                         ("mahjong-terrace", "Terrace", Layout::Terrace),
                         ("mahjong-atrium", "Atrium", Layout::Atrium),
@@ -90,7 +90,7 @@ impl GameView {
                 ),
             )
             .child(
-                option_group("Objective")
+                option_group("Objective", cx)
                     .child(choice(
                         "mahjong-classic",
                         "Classic",
@@ -196,7 +196,7 @@ fn control(
     action: impl Fn(&mut GameView) + 'static,
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
-    super::control(id, label, enabled).when(enabled, |button| {
+    super::themed_control(cx, id, label, enabled).when(enabled, |button| {
         button.on_click(cx.listener(move |view, _, _, cx| {
             action(view);
             cx.notify();
@@ -212,16 +212,19 @@ fn choice(
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
     control(id, label, true, action, cx).when(selected, |button| {
-        button.bg(rgb(theme::SAGE)).border_color(rgb(theme::MUTED))
+        let palette = theme::colors(cx);
+        button
+            .bg(rgb(palette.hover))
+            .border_color(rgb(palette.muted))
     })
 }
 
-fn option_group(label: &'static str) -> Div {
+fn option_group(label: &'static str, cx: &Context<GameView>) -> Div {
     div().flex().flex_wrap().items_center().gap_2().child(
         div()
             .text_size(px(13.))
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(theme::MUTED))
+            .text_color(rgb(theme::colors(cx).muted))
             .child(label),
     )
 }
@@ -234,7 +237,7 @@ impl Render for GameView {
         let fit_width = (super::board_space(window) - padding - 2.) / columns;
         // Reserve space for the game page header, controls, and objective text.
         let fit_height =
-            (f32::from(window.viewport_size().height) - 350. - padding) / (rows * TILE_RATIO);
+            (f32::from(window.viewport_size().height) - 247. - padding) / (rows * TILE_RATIO);
         let width = fit_width.min(fit_height.max(30.)).clamp(22., 49.).floor();
         let height = width * TILE_RATIO;
         let remaining = self.board.remaining();
@@ -319,10 +322,17 @@ impl Render for GameView {
                     )
                     .child(controls),
             )
-            .child(div().text_color(rgb(theme::MUTED)).child(status).when(
-                self.clean_clear && (remaining > 0 || self.board.used_assistance()),
-                |group| group.child(div().font_weight(FontWeight::SEMIBOLD).child(objective)),
-            ))
+            .child(
+                div()
+                    .text_color(rgb(theme::colors(cx).muted))
+                    .child(status)
+                    .when(
+                        self.clean_clear && (remaining > 0 || self.board.used_assistance()),
+                        |group| {
+                            group.child(div().font_weight(FontWeight::SEMIBOLD).child(objective))
+                        },
+                    ),
+            )
             .child(
                 div()
                     .w_full()
