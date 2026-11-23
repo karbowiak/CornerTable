@@ -1,7 +1,9 @@
 use std::{cell::Cell, rc::Rc, time::Instant};
 
 use corner_table_solitaire::{Card, DealMode, Game, TableCard, Variant};
-use gpui::{AvailableSpace, BoxShadow, IntoElement, Pixels, Point, canvas, point, prelude::*, px, rgba};
+use gpui::{
+    AvailableSpace, BoxShadow, IntoElement, Pixels, Point, canvas, point, prelude::*, px, rgba,
+};
 
 use super::{CardFace, CardSize, TablePalette, card_surface};
 
