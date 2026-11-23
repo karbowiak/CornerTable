@@ -5,6 +5,16 @@ All notable changes to Corner Table are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **After Dark** adds six painted Jigsaws, five Picture Logic prints, and four Word Search
+  themes. Find the paintings under **After Dark** in the Jigsaw gallery.
+- Word Games adds eight Letter Grove boards, eight Letter Racks, seven crosswords, and
+  122 familiar words for hints and round review. Saved puzzles and seeded daily deals keep
+  their original boards.
+- Release builds include a Linux AppImage, a per-user Windows setup executable, and an
+  Apple silicon disk image. Portable archives and SHA-256 checksums are still available.
+
 ### Changed
 
 #### Look and feel
@@ -87,3 +97,20 @@ layouts. They now match the shared panel widths and spacing and use the extra sp
   - The archive calendar spans the page with larger days.
   - The selected day shows its game's artwork.
 - **Solitaire:** each variant card shows a short description of the game.
+
+### Fixed
+
+- Rebuilding the macOS development client with Dioxus works with Cargo 1.100.
+
+## [0.1.0] - 2026-11-23
+
+### Added
+
+- First public preview with 21 offline card, board, and puzzle games, including five Solitaire
+  variants, daily challenges, favorites, and personal records.
+- Share Solitaire deals, Mahjong layouts, and Minesweeper fields with a code. Import photos
+  into Jigsaw and export your game progress as JSON.
+- Downloads for Windows x64, Linux x86-64, and Apple silicon macOS.
+
+[Unreleased]: https://github.com/karbowiak/CornerTable/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/karbowiak/CornerTable/releases/tag/v0.1.0

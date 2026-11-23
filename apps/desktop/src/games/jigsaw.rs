@@ -70,6 +70,8 @@ impl Painting {
     }
 }
 
+const AFTER_DARK_START: usize = 9;
+
 const GALLERY: &[Painting] = &[
     Painting::bundled(
         "lighthouse",
@@ -124,6 +126,42 @@ const GALLERY: &[Painting] = &[
         "Citrus Courtyard",
         "games/jigsaw/citrus-courtyard.jpg",
         3. / 2.,
+    ),
+    Painting::bundled(
+        "lantern-market",
+        "Lantern Market",
+        "games/jigsaw/after-dark/lantern-market.jpg",
+        1280. / 853.,
+    ),
+    Painting::bundled(
+        "hilltop-observatory",
+        "Hilltop Observatory",
+        "games/jigsaw/after-dark/hilltop-observatory.jpg",
+        1280. / 853.,
+    ),
+    Painting::bundled(
+        "moonlit-reef",
+        "Moonlit Reef",
+        "games/jigsaw/after-dark/moonlit-reef.jpg",
+        1280. / 853.,
+    ),
+    Painting::bundled(
+        "last-tram",
+        "Last Tram",
+        "games/jigsaw/after-dark/last-tram.jpg",
+        1280. / 853.,
+    ),
+    Painting::bundled(
+        "moths-at-the-window",
+        "Moths at the Window",
+        "games/jigsaw/after-dark/moths-at-the-window.jpg",
+        1280. / 853.,
+    ),
+    Painting::bundled(
+        "northern-lights",
+        "Northern Lights",
+        "games/jigsaw/after-dark/northern-lights.jpg",
+        1280. / 853.,
     ),
 ];
 

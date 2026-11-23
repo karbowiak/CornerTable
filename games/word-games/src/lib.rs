@@ -39,6 +39,14 @@ impl Mode {
             Self::Crossword => GridSize::Mini.puzzle_count(),
         }
     }
+
+    fn legacy_pool_size(self) -> u64 {
+        match self {
+            Self::Grove => 72,
+            Self::Rack => 64,
+            Self::Crossword => unreachable!("crosswords have their own catalog"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,9 +69,16 @@ pub struct WordRound {
 
 impl WordRound {
     pub fn new(mode: Mode, seed: u64) -> Self {
-        assert!(matches!(mode, Mode::Grove | Mode::Rack));
-        let index = (seed % mode.puzzle_count() as u64) as usize;
-        let cycle = seed / mode.puzzle_count() as u64;
+        // Preserve existing daily and challenge deals when the collection grows.
+        let size = mode.legacy_pool_size();
+        Self::from_pool(mode, (seed % size) as usize, seed, seed / size)
+    }
+
+    pub fn collection(mode: Mode, index: usize) -> Self {
+        Self::from_pool(mode, index, index as u64, 0)
+    }
+
+    fn from_pool(mode: Mode, index: usize, seed: u64, cycle: u64) -> Self {
         let letters = match mode {
             Mode::Grove => {
                 let board = GROVES[index].as_bytes();
@@ -408,27 +423,32 @@ mod tests {
         for mode in [Mode::Grove, Mode::Rack] {
             assert!(mode.puzzle_count() >= 60);
             let mut signatures = BTreeSet::new();
-            for seed in 0..mode.puzzle_count() as u64 {
-                let round = WordRound::new(mode, seed);
+            for index in 0..mode.puzzle_count() {
+                let round = WordRound::collection(mode, index);
                 let mut letters = round.letters().to_vec();
                 assert_eq!(letters.len(), if mode == Mode::Grove { 16 } else { 7 });
                 letters.sort_unstable();
-                assert!(signatures.insert(letters), "{mode:?} {seed}");
+                assert!(signatures.insert(letters), "{mode:?} {index}");
                 let available: u32 = round
                     .familiar_remaining()
                     .map(|word| points(word.len()))
                     .sum();
-                assert!(available >= WORD_BONUS, "{mode:?} {seed}: {available}");
-                if mode == Mode::Rack || seed >= 8 {
+                assert!(available >= WORD_BONUS, "{mode:?} {index}: {available}");
+                if mode == Mode::Rack || index >= 8 {
                     assert!(
                         round.familiar_remaining().any(|word| word.len() >= 7),
-                        "{mode:?} {seed} is missing a long answer"
+                        "{mode:?} {index} is missing a long answer"
                     );
                 }
                 let hint = round.hint_word().unwrap();
                 let path = round.path_for(hint).unwrap();
                 assert_eq!(path.len(), hint.len());
-                assert_eq!(round.letters(), WordRound::new(mode, seed).letters());
+                if (index as u64) < mode.legacy_pool_size() {
+                    assert_eq!(
+                        round.letters(),
+                        WordRound::new(mode, index as u64).letters()
+                    );
+                }
             }
         }
     }

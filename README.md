@@ -4,15 +4,17 @@ An offline desktop collection of 21 classic card, board, and puzzle games, with 
 
 ![Corner Table’s illustrated game library](docs/screenshots/library.jpg)
 
-[Browse all games](games/README.md) · [Download Corner Table](https://github.com/karbowiak/CornerTable/releases/latest) · [Share feedback](https://github.com/karbowiak/CornerTable/issues/new)
+[Browse all games](games/README.md) · [Download Corner Table](https://github.com/karbowiak/CornerTable/releases/latest) · [Changelog](CHANGELOG.md) · [Share feedback](https://github.com/karbowiak/CornerTable/issues/new)
 
 ## Play
 
-| Platform | Release archive | Open |
+| Platform | Installer | Portable archive |
 | --- | --- | --- |
-| Windows x64 | `corner-table-windows-x86_64.zip` | Extract and run `corner-table.exe`. |
-| Linux x86-64 | `corner-table-linux-x86_64.tar.gz` | Extract and run `./corner-table` from the extracted folder. Requires a Wayland or X11 desktop and a Vulkan driver. |
-| macOS Apple silicon | `corner-table-macos-arm64.zip` | Extract and open `Corner Table.app`. The preview build has an ad hoc signature. |
+| Windows x64 | Run `corner-table-windows-x86_64-setup.exe` to install for your user. | Extract the Windows ZIP and run `corner-table.exe`. |
+| Linux x86-64 | Make `corner-table-linux-x86_64.AppImage` executable and open it. | Extract the Linux tarball and run `./corner-table`. |
+| macOS Apple silicon | Open the DMG and drag **Corner Table** to **Applications**. | Extract the macOS ZIP and open `Corner Table.app`. |
+
+The 0.1.0 preview ships portable archives. Linux needs a Wayland or X11 desktop and a Vulkan driver. The macOS app uses an ad hoc signature.
 
 Use **How to Play** or press **F1** for rules and controls. The sidebar follows your system appearance by default, and **View → Always Reduce Motion** reduces gameplay effects. The macOS build offers a **Game sounds** toggle.
 
@@ -41,6 +43,6 @@ git config --local core.hooksPath .githooks
 bash scripts/check.sh
 ```
 
-On Windows, run the shell commands in Git Bash. The commit hook checks formatting and Clippy against staged Rust changes. The push hook runs those checks plus workspace tests against the commits being sent. GitHub Actions runs the same checks and builds the release archives. A `v` tag matching the workspace version publishes the archives and `SHA256SUMS` to GitHub Releases.
+On Windows, run the shell commands in Git Bash. The commit hook checks formatting and Clippy against staged Rust changes. The push hook runs those checks plus workspace tests against the commits being sent. GitHub Actions runs the same checks and builds the installers and portable archives. A `v` tag matching the workspace version publishes both sets with `SHA256SUMS` and that version’s changelog entry.
 
 Game rules live in `games/`, GPUI views and assets in `apps/desktop/`, and the offline catalog in `crates/api/fixtures/`. Release archives include third-party notices. [Audio sources and attribution](apps/desktop/local-audio/README.md)

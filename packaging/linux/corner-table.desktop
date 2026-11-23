@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Corner Table
+Comment=An offline collection of card, board, and puzzle games
+Exec=corner-table
+Icon=corner-table
+Terminal=false
+Categories=Game;BoardGame;LogicGame;

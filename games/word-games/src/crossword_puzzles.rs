@@ -338,6 +338,54 @@ pub(crate) const MINIS: &[CrosswordPuzzle] = &[
             c("DOG", "Pet that wags its tail", &[]),
         ],
     },
+    CrosswordPuzzle {
+        across: &[
+            c("OWL", "Hooting hunter with a swivelling head", &[]),
+            c("ROE", "Fish eggs served on sushi", &[]),
+            c("BED", "Place to sleep under a quilt", &["COT"]),
+        ],
+        down: &[
+            c("ORB", "A globe or sphere", &[]),
+            c("WOE", "Sorrow in an old ballad", &[]),
+            c("LED", "Energy-saving light in a lantern, for short", &[]),
+        ],
+    },
+    CrosswordPuzzle {
+        across: &[
+            c("BAT", "Flying mammal that uses echoes to navigate", &[]),
+            c("ERA", "A period in history", &["AGE"]),
+            c("DEN", "A fox’s underground home", &[]),
+        ],
+        down: &[
+            c("BED", "Garden plot for flowers", &[]),
+            c("ARE", "You ___ here, on a map", &[]),
+            c("TAN", "Light brown, like sand after it dries", &[]),
+        ],
+    },
+    CrosswordPuzzle {
+        across: &[
+            c("FOG", "A cloud right down at street level", &[]),
+            c("OWE", "Have a debt to repay", &[]),
+            c("ELM", "Tree in the name of a certain nightmare street", &[]),
+        ],
+        down: &[
+            c("FOE", "An enemy or adversary", &[]),
+            c("OWL", "A barn ___ hunts by night", &[]),
+            c("GEM", "Stone such as an opal or ruby", &[]),
+        ],
+    },
+    CrosswordPuzzle {
+        across: &[
+            c("SKY", "Where you see the moon", &[]),
+            c("PIE", "Fruit dessert with a pastry crust", &[]),
+            c("ANT", "Picnic visitor with six legs", &["FLY"]),
+        ],
+        down: &[
+            c("SPA", "Place for massages and steam baths", &[]),
+            c("KIN", "Relatives, collectively", &[]),
+            c("YET", "Have you seen the stars ___?", &[]),
+        ],
+    },
 ];
 
 pub(crate) const LARGER: &[CrosswordPuzzle] = &[
@@ -487,6 +535,48 @@ pub(crate) const LARGER: &[CrosswordPuzzle] = &[
             c("RUSE", "Trick meant to fool someone", &["SCAM"]),
             c("ITEM", "One entry on a shopping list", &[]),
             c("MERE", "Nothing more than, as in ‘a ___ coincidence’", &[]),
+        ],
+    },
+    CrosswordPuzzle {
+        across: &[
+            c("MOON", "Earth’s natural satellite", &[]),
+            c("UNDO", "Reverse an edit", &[]),
+            c("STOP", "The red octagonal sign’s instruction", &[]),
+            c("TORE", "Ripped through paper", &[]),
+        ],
+        down: &[
+            c("MUST", "Freshly pressed juice before it becomes wine", &[]),
+            c("ONTO", "The cat jumped ___ the roof", &["OVER"]),
+            c("ODOR", "A smell picked up by the nose", &["REEK"]),
+            c("NOPE", "Casual way to say absolutely not", &[]),
+        ],
+    },
+    CrosswordPuzzle {
+        across: &[
+            c("TRAM", "A streetcar on rails", &[]),
+            c("HIRE", "Take someone on for a job", &[]),
+            c("IDEA", "A light bulb moment", &[]),
+            c("NEAT", "Tidy and well ordered", &[]),
+        ],
+        down: &[
+            c("THIN", "Like paper compared with cardboard", &[]),
+            c("RIDE", "Go along as a passenger", &[]),
+            c("AREA", "Space measured in square metres", &[]),
+            c("MEAT", "What a butcher cuts and sells", &[]),
+        ],
+    },
+    CrosswordPuzzle {
+        across: &[
+            c("MOTH", "Insect drawn to a porch light", &[]),
+            c("AREA", "Named part of a city", &["ZONE"]),
+            c("SCAR", "Mark left by a healed cut", &[]),
+            c("TALE", "Story told by the fire", &["YARN"]),
+        ],
+        down: &[
+            c("MAST", "Upright pole that holds a sail", &[]),
+            c("ORCA", "Black-and-white whale", &[]),
+            c("TEAL", "Blue-green color, or a small duck", &[]),
+            c("HARE", "Long-eared runner in a fable", &[]),
         ],
     },
 ];

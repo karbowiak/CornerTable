@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use gpui::{Context, Div, PathPromptOptions, Role, div, prelude::*};
 
 use super::{
-    GALLERY, GameView, Painting, PictureSource, PuzzleKey, action_button, photos, segment,
-    segments, small_text,
+    AFTER_DARK_START, GALLERY, GameView, Painting, PictureSource, PuzzleKey, action_button, photos,
+    segment, segments, small_text,
 };
 
 const PAGE_SIZE: usize = 5;
@@ -13,6 +13,7 @@ const PAGE_SIZE: usize = 5;
 pub(super) enum Tab {
     #[default]
     Collection,
+    AfterDark,
     Photos,
 }
 
@@ -20,6 +21,7 @@ impl Tab {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Collection => "Collection",
+            Self::AfterDark => "After Dark",
             Self::Photos => "My photos",
         }
     }
@@ -27,7 +29,8 @@ impl Tab {
     fn index(self) -> usize {
         match self {
             Self::Collection => 0,
-            Self::Photos => 1,
+            Self::AfterDark => 1,
+            Self::Photos => 2,
         }
     }
 }
@@ -62,7 +65,7 @@ pub(super) struct Gallery {
     pub tab: Tab,
     photos: Vec<Painting>,
     directory: Option<PathBuf>,
-    pages: [usize; 2],
+    pages: [usize; 3],
     import: ImportStatus,
 }
 
@@ -101,6 +104,8 @@ impl Gallery {
     pub(super) fn reveal(&mut self, index: usize) {
         let (tab, local_index) = if let Some(photo) = index.checked_sub(GALLERY.len()) {
             (Tab::Photos, photo)
+        } else if let Some(painting) = index.checked_sub(AFTER_DARK_START) {
+            (Tab::AfterDark, painting)
         } else {
             (Tab::Collection, index)
         };
@@ -109,10 +114,7 @@ impl Gallery {
     }
 
     pub(super) fn visible(&self) -> impl ExactSizeIterator<Item = (usize, &Painting)> {
-        let (offset, pictures) = match self.tab {
-            Tab::Collection => (0, GALLERY),
-            Tab::Photos => (GALLERY.len(), self.photos.as_slice()),
-        };
+        let (offset, pictures) = self.entries();
         let start = (self.page() * PAGE_SIZE).min(pictures.len());
         let end = (start + PAGE_SIZE).min(pictures.len());
         pictures[start..end]
@@ -139,11 +141,15 @@ impl Gallery {
     }
 
     fn pages(&self) -> usize {
+        self.entries().1.len().div_ceil(PAGE_SIZE)
+    }
+
+    fn entries(&self) -> (usize, &[Painting]) {
         match self.tab {
-            Tab::Collection => GALLERY.len(),
-            Tab::Photos => self.photos.len(),
+            Tab::Collection => (0, &GALLERY[..AFTER_DARK_START]),
+            Tab::AfterDark => (AFTER_DARK_START, &GALLERY[AFTER_DARK_START..]),
+            Tab::Photos => (GALLERY.len(), self.photos.as_slice()),
         }
-        .div_ceil(PAGE_SIZE)
     }
 
     fn page(&self) -> usize {
@@ -238,6 +244,7 @@ impl GameView {
                         segments(cx).children(
                             [
                                 (Tab::Collection, "jigsaw-collection"),
+                                (Tab::AfterDark, "jigsaw-after-dark"),
                                 (Tab::Photos, "jigsaw-my-photos"),
                             ]
                             .into_iter()

@@ -103,9 +103,18 @@ impl Crossword {
     }
 
     pub fn with_size(size: GridSize, seed: u64) -> Self {
+        // Existing dates and saved challenge seeds use the original rotation.
+        let size_of_rotation = match size {
+            GridSize::Mini => 27,
+            GridSize::Large => 10,
+        };
+        Self::collection(size, (seed % size_of_rotation) as usize)
+    }
+
+    pub fn collection(size: GridSize, index: usize) -> Self {
         Self {
             size,
-            puzzle: &size.catalog()[(seed % size.puzzle_count() as u64) as usize],
+            puzzle: &size.catalog()[index],
             letters: vec![None; size.side() * size.side()],
             hinted: 0,
             revealed: false,

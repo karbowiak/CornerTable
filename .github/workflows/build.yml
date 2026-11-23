@@ -40,14 +40,17 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             extension: tar.gz
+            installer: corner-table-linux-x86_64.AppImage
           - platform: windows-x86_64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
             extension: zip
+            installer: corner-table-windows-x86_64-setup.exe
           - platform: macos-arm64
             runner: macos-15
             target: aarch64-apple-darwin
             extension: zip
+            installer: corner-table-macos-arm64.dmg
     env:
       CARGO_BUILD_JOBS: '2'
       PACKAGE_NAME: corner-table-${{ matrix.platform }}
@@ -89,6 +92,8 @@ jobs:
         run: |
           python_command=python3
           if [[ "$RUNNER_OS" == Windows ]]; then python_command=python; fi
+          version=$("$python_command" -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
           "$python_command" scripts/release-notices.py "$PACKAGE_TARGET" "dist/$PACKAGE_NAME/Third-Party Notices"
       - name: Package Linux
         if: runner.os == 'Linux'
@@ -101,9 +106,10 @@ jobs:
             exit 1
           fi
           install -m 755 target/release/corner-table "dist/$PACKAGE_NAME/"
-          cp README.md "dist/$PACKAGE_NAME/"
+          cp README.md CHANGELOG.md "dist/$PACKAGE_NAME/"
           tar -C dist -czf "dist/$PACKAGE_NAME.tar.gz" "$PACKAGE_NAME"
           tar -tzf "dist/$PACKAGE_NAME.tar.gz" | grep -Fx "$PACKAGE_NAME/corner-table"
+          bash scripts/package-appimage.sh "dist/$PACKAGE_NAME" "dist/$PACKAGE_NAME.AppImage"
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -117,21 +123,44 @@ jobs:
               [BitConverter]::ToUInt16($bytes, $pe + 24 + 68) -ne 2) {
             throw 'Expected a Windows x64 GUI executable'
           }
-          Copy-Item $binary, README.md -Destination $stage
+          Copy-Item $binary, README.md, CHANGELOG.md -Destination $stage
           Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip"
+          choco install nsis --version=3.11 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install the NSIS compiler' }
+          $nsis = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          $installer = Join-Path (Resolve-Path dist) "$env:PACKAGE_NAME-setup.exe"
+          & $nsis "/DSTAGE=$((Resolve-Path $stage).Path)" "/DOUTPUT=$installer" `
+            "/DVERSION=$env:PACKAGE_VERSION" packaging/windows/corner-table.nsi
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compile the Windows installer' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'Corner Table smoke test'
+          $setup = Start-Process $installer -ArgumentList "/S /D=$installDir" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Installer failed with exit code $($setup.ExitCode)" }
+          if ((Get-FileHash "$installDir/corner-table.exe").Hash -ne (Get-FileHash $binary).Hash) {
+            throw 'Installer payload differs from the built executable'
+          }
+          if (-not (Test-Path "$installDir/Third-Party Notices/README.md")) {
+            throw 'Installer is missing distribution notices'
+          }
+          $uninstall = Start-Process "$installDir/Uninstall.exe" -ArgumentList "/S _?=$installDir" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path "$installDir/corner-table.exe")) {
+            throw 'Uninstall failed'
+          }
       - name: Package macOS
         if: runner.os == 'macOS'
         shell: bash
         run: |
           stage="dist/$PACKAGE_NAME"
           ditto 'target/Corner Table.app' "$stage/Corner Table.app"
-          cp README.md "$stage/"
+          cp README.md CHANGELOG.md "$stage/"
           ditto -c -k --sequesterRsrc "$stage" "$stage.zip"
           unzip -Z1 "$stage.zip" | grep -Fx 'Corner Table.app/Contents/MacOS/corner-table'
+          bash scripts/package-dmg.sh "$stage" "$stage.dmg"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.PACKAGE_NAME }}
-          path: dist/${{ env.PACKAGE_NAME }}.${{ matrix.extension }}
+          path: |
+            dist/${{ env.PACKAGE_NAME }}.${{ matrix.extension }}
+            dist/${{ matrix.installer }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -158,14 +187,26 @@ jobs:
           pattern: corner-table-*
           path: dist
           merge-multiple: true
-      - name: Publish the verified archives
+      - name: Publish the verified installers and archives
         shell: bash
         working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          archives=(corner-table-linux-x86_64.tar.gz corner-table-windows-x86_64.zip corner-table-macos-arm64.zip)
-          for archive in "${archives[@]}"; do test -s "$archive"; done
-          sha256sum "${archives[@]}" > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" "${archives[@]}" SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "Corner Table $GITHUB_REF_NAME"
+          packages=(
+            corner-table-linux-x86_64.AppImage corner-table-linux-x86_64.tar.gz
+            corner-table-windows-x86_64-setup.exe corner-table-windows-x86_64.zip
+            corner-table-macos-arm64.dmg corner-table-macos-arm64.zip
+          )
+          for package in "${packages[@]}"; do test -s "$package"; done
+          sha256sum "${packages[@]}" > SHA256SUMS
+          notes=$(mktemp)
+          awk -v heading="## [${GITHUB_REF_NAME#v}]" '
+              section && /^## / { exit }
+              section { print }
+              index($0, heading) == 1 { section = 1 }
+          ' ../CHANGELOG.md > "$notes"
+          notes_args=(--generate-notes)
+          if grep -q '[^[:space:]]' "$notes"; then notes_args=(--notes-file "$notes"); fi
+          gh release create "$GITHUB_REF_NAME" "${packages[@]}" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag "${notes_args[@]}" --title "Corner Table $GITHUB_REF_NAME"

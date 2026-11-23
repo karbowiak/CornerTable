@@ -574,7 +574,10 @@ impl Play {
             Self::Search(SearchPlay::load(key, saved))
         } else if let Some(size) = key.variant.grid() {
             let mut play = CrosswordPlay {
-                board: Crossword::with_size(size, key.seed()),
+                board: match key.source {
+                    Source::Collection(index) => Crossword::collection(size, index),
+                    _ => Crossword::with_size(size, key.seed()),
+                },
                 cursor: 0,
                 down: false,
                 checked: 0,
@@ -614,7 +617,12 @@ impl Play {
             Self::Crossword(play)
         } else {
             let mut play = WordPlay {
-                round: WordRound::new(key.variant.word_mode(), key.seed()),
+                round: match key.source {
+                    Source::Collection(index) => {
+                        WordRound::collection(key.variant.word_mode(), index)
+                    }
+                    _ => WordRound::new(key.variant.word_mode(), key.seed()),
+                },
                 hint: None,
                 hints_used: 0,
                 shuffle: 0,
