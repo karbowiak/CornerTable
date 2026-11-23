@@ -12,7 +12,8 @@
     {"id": "block-puzzle", "title": "Block Puzzle", "description": "Fit shapes into the grid and make space for the next piece."},
     {"id": "gem-cascade", "title": "Gem Cascade", "description": "Drop gems into place and plan a chain reaction."},
     {"id": "mahjong-cubes", "title": "Mahjong Cubes", "description": "Turn a stack of cubes to uncover matching pairs."},
-    {"id": "reversi", "title": "Reversi", "description": "Surround your opponent’s discs and turn the board in your favor."}
+    {"id": "reversi", "title": "Reversi", "description": "Surround your opponent’s discs and turn the board in your favor."},
+    {"id": "checkers", "title": "Checkers", "description": "Jump opposing pieces and crown kings on a carved wooden board."}
   ],
   "solitaire_modes": [
     {"id": "klondike", "title": "Klondike", "description": "Build four foundations, starting with the aces."},

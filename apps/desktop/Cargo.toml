@@ -13,6 +13,7 @@ chrono = "0.4"
 corner-table-api = { path = "../../crates/api" }
 corner-table-block-puzzle = { path = "../../games/block-puzzle" }
 corner-table-bubble-shooter = { path = "../../games/bubble-shooter" }
+corner-table-checkers = { path = "../../games/checkers" }
 corner-table-gem-cascade = { path = "../../games/gem-cascade" }
 corner-table-jigsaw = { path = "../../games/jigsaw" }
 corner-table-mahjong = { path = "../../games/mahjong" }

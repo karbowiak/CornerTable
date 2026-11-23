@@ -5,6 +5,7 @@ members = [
     "crates/dev",
     "games/block-puzzle",
     "games/bubble-shooter",
+    "games/checkers",
     "games/gem-cascade",
     "games/jigsaw",
     "games/mahjong",

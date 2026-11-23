@@ -2,6 +2,7 @@
 
 mod block_puzzle;
 mod bubble_shooter;
+mod checkers;
 mod gem_cascade;
 mod jigsaw;
 mod mahjong;
@@ -57,6 +58,7 @@ pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
         "bubble-shooter" => cx
             .new(|cx| bubble_shooter::GameView::new(launch, cx))
             .into(),
+        "checkers" => cx.new(|cx| checkers::GameView::new(launch, cx)).into(),
         "gem-cascade" => cx.new(|cx| gem_cascade::GameView::new(launch, cx)).into(),
         "jigsaw" => cx.new(|cx| jigsaw::GameView::new(launch, cx)).into(),
         "mahjong" => cx.new(|cx| mahjong::GameView::new(launch, cx)).into(),

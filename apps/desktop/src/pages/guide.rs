@@ -252,6 +252,23 @@ impl Guide {
                     ),
                 ],
             },
+            "checkers" => Self {
+                title: "Checkers",
+                sections: &[
+                    (
+                        "Walk or jump",
+                        "Select a piece and then a highlighted square. Uncrowned pieces move diagonally forward. Jumping an opposing piece captures it, and a capture is compulsory when available. If that piece can keep jumping, finish the chain.",
+                    ),
+                    (
+                        "Crown a king",
+                        "Reach the far side of the board to crown the piece and end its turn. Kings can move and jump in both directions. Win when your opponent has no legal move left.",
+                    ),
+                    (
+                        "Choose an opponent",
+                        "Play the computer at one of three difficulties or share the board with a friend. Use the arrows to move the cursor, Enter or Space to select and move, and U to undo.",
+                    ),
+                ],
+            },
             "gem-cascade" => Self {
                 title: "Gem Cascade",
                 sections: &[
