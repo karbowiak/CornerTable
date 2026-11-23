@@ -4,6 +4,30 @@ pub const COLUMNS: usize = 4;
 pub const ROWS: usize = 3;
 pub const PIECE_COUNT: usize = COLUMNS * ROWS;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Size {
+    Twelve,
+    TwentyFour,
+    FortyEight,
+}
+
+impl Size {
+    pub const ALL: [Self; 3] = [Self::Twelve, Self::TwentyFour, Self::FortyEight];
+
+    pub fn dimensions(self) -> (usize, usize) {
+        match self {
+            Self::Twelve => (COLUMNS, ROWS),
+            Self::TwentyFour => (6, 4),
+            Self::FortyEight => (8, 6),
+        }
+    }
+
+    pub fn piece_count(self) -> usize {
+        let (columns, rows) = self.dimensions();
+        columns * rows
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selection {
     Ignored,
@@ -14,18 +38,22 @@ pub enum Selection {
 }
 
 pub struct Puzzle {
-    pieces: [usize; PIECE_COUNT],
+    pieces: Vec<usize>,
     selected: Option<usize>,
     moves: usize,
 }
 
 impl Puzzle {
     pub fn shuffled(seed: u64) -> Self {
-        let mut pieces = std::array::from_fn(|index| index);
+        Self::with_size(Size::Twelve, seed)
+    }
+
+    pub fn with_size(size: Size, seed: u64) -> Self {
+        let mut pieces: Vec<_> = (0..size.piece_count()).collect();
         let mut state = seed;
 
         // Swapping with strictly earlier positions makes a single cycle with no fixed pieces.
-        for position in (1..PIECE_COUNT).rev() {
+        for position in (1..pieces.len()).rev() {
             state = state
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
@@ -40,7 +68,7 @@ impl Puzzle {
         }
     }
 
-    pub fn pieces(&self) -> &[usize; PIECE_COUNT] {
+    pub fn pieces(&self) -> &[usize] {
         &self.pieces
     }
 
@@ -61,7 +89,7 @@ impl Puzzle {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.placed_count() == PIECE_COUNT
+        self.placed_count() == self.pieces.len()
     }
 
     pub fn select(&mut self, position: usize) -> Selection {
@@ -79,16 +107,28 @@ impl Puzzle {
                 Selection::Selected
             }
             Some(previous) if previous == position => Selection::Cleared,
-            Some(previous) => {
-                self.pieces.swap(previous, position);
-                self.moves += 1;
+            Some(previous) => self.swap(previous, position),
+        }
+    }
 
-                if self.is_complete() {
-                    Selection::Completed
-                } else {
-                    Selection::Swapped
-                }
-            }
+    pub fn swap(&mut self, first: usize, second: usize) -> Selection {
+        if first == second
+            || !self.pieces.get(first).is_some_and(|&piece| piece != first)
+            || !self
+                .pieces
+                .get(second)
+                .is_some_and(|&piece| piece != second)
+        {
+            return Selection::Ignored;
+        }
+
+        self.pieces.swap(first, second);
+        self.moves += 1;
+        self.selected = None;
+        if self.is_complete() {
+            Selection::Completed
+        } else {
+            Selection::Swapped
         }
     }
 }
@@ -99,12 +139,14 @@ mod tests {
 
     #[test]
     fn shuffle_preserves_all_pieces_and_displaces_each_one() {
-        for seed in 0..128 {
-            let puzzle = Puzzle::shuffled(seed);
-            let mut pieces = *puzzle.pieces();
-            pieces.sort_unstable();
-            assert_eq!(pieces, std::array::from_fn(|index| index));
-            assert_eq!(puzzle.placed_count(), 0);
+        for size in Size::ALL {
+            for seed in 0..128 {
+                let puzzle = Puzzle::with_size(size, seed);
+                let mut pieces = puzzle.pieces().to_vec();
+                pieces.sort_unstable();
+                assert!(pieces.into_iter().eq(0..size.piece_count()));
+                assert_eq!(puzzle.placed_count(), 0);
+            }
         }
         assert_eq!(Puzzle::shuffled(62).pieces(), Puzzle::shuffled(62).pieces());
         assert_ne!(Puzzle::shuffled(62).pieces(), Puzzle::shuffled(63).pieces());

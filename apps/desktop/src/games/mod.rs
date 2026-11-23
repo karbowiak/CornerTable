@@ -51,7 +51,9 @@ impl GameLaunch {
 pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
     let view = match launch.game.0.as_str() {
         "block-puzzle" => cx.new(|cx| block_puzzle::GameView::new(launch, cx)).into(),
-        "bubble-shooter" => cx.new(|cx| bubble_shooter::GameView::new(launch, cx)).into(),
+        "bubble-shooter" => cx
+            .new(|cx| bubble_shooter::GameView::new(launch, cx))
+            .into(),
         "gem-cascade" => cx.new(|cx| gem_cascade::GameView::new(launch, cx)).into(),
         "jigsaw" => cx.new(|cx| jigsaw::GameView::new(launch, cx)).into(),
         "mahjong" => cx.new(|cx| mahjong::GameView::new(launch, cx)).into(),
