@@ -7,20 +7,27 @@ use super::{
     segments, small_text,
 };
 
-const PAGE_SIZE: usize = GALLERY.len();
+const PAGE_SIZE: usize = 5;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Tab {
     #[default]
-    Paintings,
+    Collection,
     Photos,
 }
 
 impl Tab {
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Paintings => "Paintings",
+            Self::Collection => "Collection",
             Self::Photos => "My photos",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::Collection => 0,
+            Self::Photos => 1,
         }
     }
 }
@@ -55,7 +62,7 @@ pub(super) struct Gallery {
     pub tab: Tab,
     photos: Vec<Painting>,
     directory: Option<PathBuf>,
-    page: usize,
+    pages: [usize; 2],
     import: ImportStatus,
 }
 
@@ -92,25 +99,26 @@ impl Gallery {
     }
 
     pub(super) fn reveal(&mut self, index: usize) {
-        if let Some(photo) = index.checked_sub(GALLERY.len()) {
-            self.tab = Tab::Photos;
-            self.page = photo / PAGE_SIZE;
-        }
+        let (tab, local_index) = if let Some(photo) = index.checked_sub(GALLERY.len()) {
+            (Tab::Photos, photo)
+        } else {
+            (Tab::Collection, index)
+        };
+        self.tab = tab;
+        self.set_page(local_index / PAGE_SIZE);
     }
 
-    pub(super) fn visible(&self) -> impl Iterator<Item = (usize, &Painting)> {
-        let (start, entries) = match self.tab {
-            Tab::Paintings => (0, GALLERY),
-            Tab::Photos => {
-                let start = self.page * PAGE_SIZE;
-                let end = (start + PAGE_SIZE).min(self.photos.len());
-                (GALLERY.len() + start, &self.photos[start..end])
-            }
+    pub(super) fn visible(&self) -> impl ExactSizeIterator<Item = (usize, &Painting)> {
+        let (offset, pictures) = match self.tab {
+            Tab::Collection => (0, GALLERY),
+            Tab::Photos => (GALLERY.len(), self.photos.as_slice()),
         };
-        entries
+        let start = (self.page() * PAGE_SIZE).min(pictures.len());
+        let end = (start + PAGE_SIZE).min(pictures.len());
+        pictures[start..end]
             .iter()
             .enumerate()
-            .map(move |(offset, painting)| (start + offset, painting))
+            .map(move |(position, painting)| (offset + start + position, painting))
     }
 
     fn add(&mut self, directory: PathBuf) -> usize {
@@ -131,7 +139,19 @@ impl Gallery {
     }
 
     fn pages(&self) -> usize {
-        self.photos.len().div_ceil(PAGE_SIZE)
+        match self.tab {
+            Tab::Collection => GALLERY.len(),
+            Tab::Photos => self.photos.len(),
+        }
+        .div_ceil(PAGE_SIZE)
+    }
+
+    fn page(&self) -> usize {
+        self.pages[self.tab.index()]
+    }
+
+    fn set_page(&mut self, index: usize) {
+        self.pages[self.tab.index()] = index;
     }
 }
 
@@ -217,7 +237,7 @@ impl GameView {
                     .child(
                         segments(cx).children(
                             [
-                                (Tab::Paintings, "jigsaw-paintings"),
+                                (Tab::Collection, "jigsaw-collection"),
                                 (Tab::Photos, "jigsaw-my-photos"),
                             ]
                             .into_iter()
@@ -231,6 +251,9 @@ impl GameView {
                             }),
                         ),
                     )
+                    .when(gallery.pages() > 1, |header| {
+                        header.child(self.gallery_pages(cx))
+                    })
                     .child(
                         action_button("jigsaw-add-photo", "Add photo…", true, cx)
                             .when(pending, |button| {
@@ -262,19 +285,16 @@ impl GameView {
             .when(!show_photos || !gallery.photos.is_empty(), |panel| {
                 panel.child(self.gallery_row(available, cx))
             })
-            .when(show_photos && gallery.pages() > 1, |panel| {
-                panel.child(self.gallery_pages(cx))
-            })
     }
 
     fn gallery_pages(&self, cx: &Context<Self>) -> Div {
         let gallery = &self.gallery;
-        let page = gallery.page;
+        let page = gallery.page();
         let pages = gallery.pages();
         let step = |id, label, target: Option<usize>| {
             action_button(id, label, target.is_some(), cx).when_some(target, |button, target| {
                 button.on_click(cx.listener(move |view, _, _, cx| {
-                    view.gallery.page = target;
+                    view.gallery.set_page(target);
                     cx.notify();
                 }))
             })
@@ -292,7 +312,7 @@ impl GameView {
                 small_text(format!("{} / {pages}", page + 1), cx)
                     .id("jigsaw-gallery-page")
                     .role(Role::Status)
-                    .aria_label(format!("Photo page {} of {pages}", page + 1)),
+                    .aria_label(format!("Gallery page {} of {pages}", page + 1)),
             )
             .child(step(
                 "jigsaw-gallery-next",

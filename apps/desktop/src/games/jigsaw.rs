@@ -99,6 +99,18 @@ const GALLERY: &[Painting] = &[
         "games/jigsaw/orchard-market.jpg",
         1280. / 853.,
     ),
+    Painting::bundled(
+        "reef-at-noon",
+        "Reef at Noon",
+        "games/jigsaw/reef-at-noon.jpg",
+        1280. / 853.,
+    ),
+    Painting::bundled(
+        "rainy-bookshop",
+        "Rainy Bookshop",
+        "games/jigsaw/rainy-bookshop.jpg",
+        1280. / 853.,
+    ),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -455,8 +467,9 @@ impl GameView {
 
     fn gallery_row(&self, available: f32, cx: &Context<Self>) -> Stateful<Div> {
         const GAP: f32 = 7.;
-        let width =
-            ((available - GAP * (GALLERY.len() - 1) as f32) / GALLERY.len() as f32).min(138.);
+        let pictures = self.gallery.visible();
+        let count = pictures.len().max(1) as f32;
+        let width = ((available - GAP * (count - 1.)) / count).min(138.);
         let palette = t::colors(cx);
         let total = self.key.size.piece_count();
         div()
@@ -465,7 +478,7 @@ impl GameView {
             .aria_label(self.gallery.tab.label())
             .flex()
             .gap(px(GAP))
-            .children(self.gallery.visible().map(|(index, painting)| {
+            .children(pictures.map(|(index, painting)| {
                 let current = index == self.key.painting;
                 let key = PuzzleKey {
                     painting: index,
