@@ -17,6 +17,12 @@ use crate::{
 
 use super::{GameLaunch, board_space, themed_control};
 
+mod puzzle_controls;
+mod puzzle_progress;
+
+use puzzle_controls::marked_square;
+use puzzle_progress::{PuzzleBook, SavedPuzzleBook};
+
 const CELL_GAP: f32 = 3.;
 const BOARD_EDGE: f32 = 12.;
 const PANEL_EDGE: f32 = 17.;
@@ -72,6 +78,7 @@ enum Mode {
     #[default]
     Classic,
     TenTrays,
+    PuzzleBoards,
 }
 
 impl Mode {
@@ -79,13 +86,7 @@ impl Mode {
         match self {
             Self::Classic => "Classic",
             Self::TenTrays => "Ten Trays",
-        }
-    }
-
-    fn game(self, seed: u64) -> Game {
-        match self {
-            Self::Classic => Game::new(seed),
-            Self::TenTrays => Game::ten_trays(seed),
+            Self::PuzzleBoards => "Puzzle Boards",
         }
     }
 }
@@ -103,67 +104,110 @@ struct SavedSession {
     classic_attempt: AttemptId,
     #[serde(default)]
     ten_trays_attempt: AttemptId,
+    #[serde(default)]
+    puzzles: SavedPuzzleBook,
 }
 
 #[derive(Deserialize, Serialize)]
 struct SavedRound {
     seed: u64,
-    turns: Vec<(usize, usize, usize)>,
-    can_undo: bool,
+    #[serde(flatten)]
+    journal: SavedJournal,
     #[serde(default)]
     best: u64,
 }
 
-struct Round {
-    game: Game,
-    seed: u64,
-    attempt: AttemptId,
+#[derive(Deserialize, Serialize)]
+struct SavedJournal {
     turns: Vec<(usize, usize, usize)>,
-    undo: Option<Game>,
+    can_undo: bool,
+}
+
+struct SeededRound {
+    seed: u64,
+    round: Round,
     best: u64,
 }
 
-impl Round {
-    fn new(mode: Mode, seed: u64) -> Self {
+impl SeededRound {
+    fn new(deal: fn(u64) -> Game, seed: u64) -> Self {
         Self {
-            game: mode.game(seed),
             seed,
-            attempt: AttemptId::default(),
-            turns: Vec::new(),
-            undo: None,
+            round: Round::new(deal(seed)),
             best: 0,
         }
     }
 
-    fn restore(mode: Mode, saved: SavedRound, attempt: AttemptId) -> Option<Self> {
-        let mut round = Self::new(mode, saved.seed);
-        for (index, &(slot, column, row)) in saved.turns.iter().enumerate() {
-            if saved.can_undo && index + 1 == saved.turns.len() {
-                round.undo = Some(round.game.clone());
-            }
-            round.game.place(Move { slot, column, row })?;
+    fn restore(deal: fn(u64) -> Game, saved: SavedRound, attempt: AttemptId) -> Option<Self> {
+        let mut state = Self::new(deal, saved.seed);
+        state.round = state.round.replay(saved.journal, attempt)?;
+        state.best = saved.best.max(state.round.game.score());
+        Some(state)
+    }
+
+    fn restart(&mut self, deal: fn(u64) -> Game, new_board: bool) {
+        if new_board {
+            self.seed = self.seed.wrapping_add(1);
         }
-        round.attempt = attempt;
-        round.turns = saved.turns;
-        round.best = saved.best.max(round.game.score());
-        Some(round)
+        self.round = Round::new(deal(self.seed));
     }
 
     fn saved(&self) -> SavedRound {
         SavedRound {
             seed: self.seed,
-            turns: self.turns.clone(),
-            can_undo: self.undo.is_some(),
+            journal: self.round.journal(),
             best: self.best,
         }
     }
 
     fn outcome(&self) -> Option<Outcome> {
-        match self.game.placements_left() {
+        let game = &self.round.game;
+        match game.placements_left() {
             Some(0) => Some(Outcome::Won),
-            _ if self.game.has_moves() => None,
+            _ if game.has_moves() => None,
             Some(_) => Some(Outcome::Lost),
             None => Some(Outcome::Finished),
+        }
+    }
+
+    fn update_best(&mut self) {
+        self.best = self.best.max(self.round.game.score());
+    }
+}
+
+struct Round {
+    game: Game,
+    attempt: AttemptId,
+    turns: Vec<(usize, usize, usize)>,
+    undo: Option<Game>,
+}
+
+impl Round {
+    fn new(game: Game) -> Self {
+        Self {
+            game,
+            attempt: AttemptId::default(),
+            turns: Vec::new(),
+            undo: None,
+        }
+    }
+
+    fn replay(mut self, journal: SavedJournal, attempt: AttemptId) -> Option<Self> {
+        for (index, &(slot, column, row)) in journal.turns.iter().enumerate() {
+            if journal.can_undo && index + 1 == journal.turns.len() {
+                self.undo = Some(self.game.clone());
+            }
+            self.game.place(Move { slot, column, row })?;
+        }
+        self.attempt = attempt;
+        self.turns = journal.turns;
+        Some(self)
+    }
+
+    fn journal(&self) -> SavedJournal {
+        SavedJournal {
+            turns: self.turns.clone(),
+            can_undo: self.undo.is_some(),
         }
     }
 }
@@ -363,8 +407,9 @@ impl Clear {
 pub struct GameView {
     session: Session,
     mode: Mode,
-    classic: Round,
-    ten_trays: Round,
+    classic: SeededRound,
+    ten_trays: SeededRound,
+    puzzles: PuzzleBook,
     focus: FocusHandle,
     focus_on_mount: bool,
     selection: Option<usize>,
@@ -385,19 +430,23 @@ impl GameView {
         let session = Session::new(launch);
         let saved = session.load::<SavedSession>();
         let mode = saved.as_ref().map_or(Mode::Classic, |saved| saved.mode);
-        let (classic, ten_trays) = saved.map_or((None, None), |saved| {
-            (
-                Round::restore(Mode::Classic, saved.classic, saved.classic_attempt),
-                saved.ten_trays.and_then(|round| {
-                    Round::restore(Mode::TenTrays, round, saved.ten_trays_attempt)
-                }),
-            )
-        });
+        let (classic, ten_trays, puzzles) =
+            saved.map_or((None, None, SavedPuzzleBook::default()), |saved| {
+                (
+                    SeededRound::restore(Game::new, saved.classic, saved.classic_attempt),
+                    saved.ten_trays.and_then(|round| {
+                        SeededRound::restore(Game::ten_trays, round, saved.ten_trays_attempt)
+                    }),
+                    saved.puzzles,
+                )
+            });
         Self {
             session,
             mode,
-            classic: classic.unwrap_or_else(|| Round::new(Mode::Classic, seed)),
-            ten_trays: ten_trays.unwrap_or_else(|| Round::new(Mode::TenTrays, CHALLENGE_SEED)),
+            classic: classic.unwrap_or_else(|| SeededRound::new(Game::new, seed)),
+            ten_trays: ten_trays
+                .unwrap_or_else(|| SeededRound::new(Game::ten_trays, CHALLENGE_SEED)),
+            puzzles: PuzzleBook::restore(puzzles),
             focus: cx.focus_handle().tab_stop(true),
             focus_on_mount: true,
             selection: None,
@@ -415,15 +464,17 @@ impl GameView {
 
     fn round(&self) -> &Round {
         match self.mode {
-            Mode::Classic => &self.classic,
-            Mode::TenTrays => &self.ten_trays,
+            Mode::Classic => &self.classic.round,
+            Mode::TenTrays => &self.ten_trays.round,
+            Mode::PuzzleBoards => &self.puzzles.current().round,
         }
     }
 
     fn round_mut(&mut self) -> &mut Round {
         match self.mode {
-            Mode::Classic => &mut self.classic,
-            Mode::TenTrays => &mut self.ten_trays,
+            Mode::Classic => &mut self.classic.round,
+            Mode::TenTrays => &mut self.ten_trays.round,
+            Mode::PuzzleBoards => &mut self.puzzles.current_mut().round,
         }
     }
 
@@ -432,8 +483,9 @@ impl GameView {
             classic: self.classic.saved(),
             mode: self.mode,
             ten_trays: Some(self.ten_trays.saved()),
-            classic_attempt: self.classic.attempt,
-            ten_trays_attempt: self.ten_trays.attempt,
+            classic_attempt: self.classic.round.attempt,
+            ten_trays_attempt: self.ten_trays.round.attempt,
+            puzzles: self.puzzles.saved(),
         });
     }
 
@@ -456,16 +508,23 @@ impl GameView {
         }
     }
 
-    fn restart(&mut self, new_board: bool) {
-        let mode = self.mode;
-        let round = self.round_mut();
-        if new_board {
-            round.seed = round.seed.wrapping_add(1);
+    fn choose_puzzle(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.puzzles.choose(index) {
+            cx.stop_active_drag(window);
+            self.clear_input();
+            self.cursor = Anchor::default();
+            self.save();
+            self.focus.focus(window, cx);
+            cx.notify();
         }
-        round.game = mode.game(round.seed);
-        round.attempt = AttemptId::default();
-        round.turns.clear();
-        round.undo = None;
+    }
+
+    fn restart(&mut self, new_board: bool) {
+        match self.mode {
+            Mode::Classic => self.classic.restart(Game::new, new_board),
+            Mode::TenTrays => self.ten_trays.restart(Game::ten_trays, false),
+            Mode::PuzzleBoards => self.puzzles.current_mut().restart(),
+        }
         self.clear_input();
         self.cursor = Anchor::default();
         self.save();
@@ -484,7 +543,10 @@ impl GameView {
     }
 
     fn select(&mut self, slot: usize, keyboard: bool) {
-        if let Some(piece) = self.round().game.tray()[slot] {
+        let game = &self.round().game;
+        if !game.puzzle_solved()
+            && let Some(piece) = game.tray()[slot]
+        {
             self.selection = (keyboard || self.selection != Some(slot)).then_some(slot);
             self.cursor = self.cursor.step((0, 0), Some(piece));
             self.using_keyboard = keyboard;
@@ -526,20 +588,41 @@ impl GameView {
         let piece = round.game.tray()[turn.slot].expect("validated tray slot");
         let before = round.game.clone();
         let placement = round.game.place(turn).expect("validated placement");
-        round.best = round.best.max(round.game.score());
         round.undo = Some(before);
         round.turns.push((slot, turn.column, turn.row));
-        let outcome = round.outcome();
         let attempt = round.attempt;
         let score = round.game.score();
+        let result = match mode {
+            Mode::Classic => {
+                self.classic.update_best();
+                self.classic.outcome()
+            }
+            Mode::TenTrays => {
+                self.ten_trays.update_best();
+                self.ten_trays.outcome()
+            }
+            Mode::PuzzleBoards => self
+                .puzzles
+                .current_mut()
+                .update_record()
+                .then_some(Outcome::Won),
+        };
         self.revision = self.revision.wrapping_add(1);
         self.cursor = anchor;
         self.selection = None;
         self.feedback = Some(Feedback::Placed(placement));
         self.save();
-        if let Some(outcome) = outcome {
-            self.session
-                .record_result(attempt, mode.label(), outcome, ResultMetric::Points(score));
+        if let Some(outcome) = result {
+            let (label, metric) = if mode == Mode::PuzzleBoards {
+                let puzzle = self.puzzles.current();
+                (
+                    format!("{} · {}", mode.label(), puzzle.definition.title),
+                    ResultMetric::Moves(puzzle.round.turns.len() as u64),
+                )
+            } else {
+                (mode.label().to_owned(), ResultMetric::Points(score))
+            };
+            self.session.record_result(attempt, label, outcome, metric);
         }
         self.clear = self
             .round()
@@ -549,7 +632,7 @@ impl GameView {
             .map(|before| Clear::new(placement, turn, piece, before));
         audio::play(
             cx,
-            match outcome {
+            match result {
                 Some(Outcome::Won) => Effect::Complete,
                 _ if placement.lines > 0 => Effect::Clear,
                 _ => Effect::Move,
@@ -580,7 +663,8 @@ impl GameView {
             }
             "1" | "2" | "3" if self.drag.is_none() => {
                 let slot = usize::from(key.key.as_bytes()[0] - b'1');
-                if self.round().game.tray()[slot].is_some() {
+                let game = &self.round().game;
+                if !game.puzzle_solved() && game.tray()[slot].is_some() {
                     self.select(slot, true);
                     self.focus.focus(window, cx);
                 }
@@ -610,6 +694,7 @@ impl GameView {
         let keyboard = self.using_keyboard && self.focus.is_focused(window) && self.drag.is_none();
         let clear = self.clear.as_ref().map(|clear| (clear, clear.elapsed()));
         let geometry = self.grid.clone();
+        let puzzle = (self.mode == Mode::PuzzleBoards).then(|| self.puzzles.current().definition);
         let label = if keyboard {
             let fit = if let Some(preview) = preview {
                 if preview.fits {
@@ -677,6 +762,7 @@ impl GameView {
                             .flex()
                             .gap(px(CELL_GAP))
                             .children(cells.iter().enumerate().map(|(column, &wood)| {
+                                let marked = puzzle.is_some_and(|puzzle| puzzle.is_marked(column, row));
                                 let ghost = preview.filter(|preview| preview.covers(column, row));
                                 let cursor = keyboard
                                     && column as i32 == self.cursor.column
@@ -709,6 +795,10 @@ impl GameView {
                                             .child(wood_tile(wood, cell))
                                     }))
                                     .children(fading)
+                                    .when(marked, |well| {
+                                        well.aria_description("Marked square")
+                                            .child(marked_square(cell, wood.is_some()))
+                                    })
                                     .when_some(ghost, |well, ghost| {
                                         well.child(placement_ghost(ghost, cell))
                                     })
@@ -801,6 +891,7 @@ impl GameView {
             self.selection == Some(slot) || self.drag.is_some_and(|drag| drag.source.slot == slot);
         let card = div()
             .id(("block-puzzle-piece", slot))
+            .debug_selector(move || format!("block-puzzle-piece-{}", slot + 1))
             .relative()
             .flex_1()
             .min_w_0()
@@ -920,14 +1011,18 @@ impl GameView {
     fn controls(&self, width: f32, cell: f32, cx: &Context<Self>) -> Div {
         let palette = t::colors(cx);
         let round = self.round();
-        let score = round.game.score();
         let compact = width < 230.;
+        let is_puzzle = self.mode == Mode::PuzzleBoards;
+        let solved = round.game.puzzle_solved();
+        let next = self.puzzles.active + 1;
         let round_control = |id, label, enabled| {
             themed_control(cx, id, label, enabled)
+                .debug_selector(|| id.into())
                 .when(compact, |button| button.px_2().text_size(px(12.)))
         };
         let remaining = round.game.placements_left();
         let status = match remaining {
+            _ if is_puzzle => self.puzzle_status(),
             Some(0) => "All ten trays placed.".into(),
             _ if !round.game.has_moves() => "No pieces fit. Undo or restart.".into(),
             _ if self.drag.is_some() => "Drop the piece onto the board.".into(),
@@ -948,16 +1043,22 @@ impl GameView {
             .w(px(width))
             .gap(px(if compact { 9. } else { 12. }))
             .child(
-                div().flex().gap_2().children(
+                div().flex().gap_1().children(
                     [
-                        ("block-puzzle-classic", "Classic", Mode::Classic),
-                        ("block-puzzle-ten-trays", "Ten Trays", Mode::TenTrays),
+                        ("block-puzzle-classic", Mode::Classic),
+                        ("block-puzzle-ten-trays", Mode::TenTrays),
+                        ("block-puzzle-boards", Mode::PuzzleBoards),
                     ]
                     .into_iter()
-                    .map(|(id, label, mode)| {
+                    .map(|(id, mode)| {
                         let active = self.mode == mode;
-                        themed_control(cx, id, label, true)
-                            .flex_1()
+                        themed_control(cx, id, mode.label(), true)
+                            .debug_selector(|| id.into())
+                            .flex_auto()
+                            .min_w_0()
+                            .px(px(3.))
+                            .text_size(px(12.))
+                            .whitespace_nowrap()
                             .justify_center()
                             .aria_toggled(active.into())
                             .when(active, |button| {
@@ -966,6 +1067,7 @@ impl GameView {
                                     .border_color(rgb(palette.gold_text))
                             })
                             .on_click(cx.listener(move |view, _, window, cx| {
+                                cx.stop_active_drag(window);
                                 view.switch(mode);
                                 view.focus.focus(window, cx);
                                 cx.notify();
@@ -973,58 +1075,79 @@ impl GameView {
                     }),
                 ),
             )
-            .child(
-                div()
-                    .id("block-puzzle-score")
-                    .role(Role::Label)
-                    .aria_label(format!("{score} points, personal best {}", round.best))
-                    .flex()
-                    .justify_between()
-                    .items_baseline()
-                    .flex_wrap()
-                    .gap_x_2()
-                    .child(t::display_type(
-                        format!("{score} points"),
-                        if compact { 21. } else { 25. },
-                    ))
-                    .child(
-                        div()
-                            .text_color(rgb(palette.muted))
-                            .text_size(px(13.))
-                            .child(format!("Best {}", round.best)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .items_baseline()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(14.))
-                                    .child("Tray"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(rgb(palette.muted))
-                                    .child("Drag or click a piece"),
-                            ),
-                    )
-                    .child(self.tray(cell, width, cx)),
-            )
-            .child(self.status(status, palette, compact))
+            .when(is_puzzle, |rail| rail.child(self.puzzle_brief(cx)))
+            .when(!is_puzzle, |rail| {
+                let best = if self.mode == Mode::Classic {
+                    self.classic.best
+                } else {
+                    self.ten_trays.best
+                };
+                let score = round.game.score();
+                rail.child(
+                    div()
+                        .id("block-puzzle-score")
+                        .role(Role::Label)
+                        .aria_label(format!("{score} points, personal best {best}"))
+                        .flex()
+                        .justify_between()
+                        .items_baseline()
+                        .flex_wrap()
+                        .gap_x_2()
+                        .child(t::display_type(
+                            format!("{score} points"),
+                            if compact { 21. } else { 25. },
+                        ))
+                        .child(
+                            div()
+                                .text_color(rgb(palette.muted))
+                                .text_size(px(13.))
+                                .child(format!("Best {best}")),
+                        ),
+                )
+            })
+            .when(!solved, |rail| {
+                rail.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .items_baseline()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_size(px(14.))
+                                        .child("Tray"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(rgb(palette.muted))
+                                        .child("Drag or click a piece"),
+                                ),
+                        )
+                        .child(self.tray(cell, width, cx)),
+                )
+            })
+            .children(self.status(status, palette, compact))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap_2()
+                    .when(solved && next < self.puzzles.boards.len(), |controls| {
+                        controls.child(
+                            round_control("block-puzzle-next", "Next board", true)
+                                .bg(rgb(palette.hover))
+                                .border_color(rgb(palette.gold_text))
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.choose_puzzle(next, window, cx);
+                                })),
+                        )
+                    })
                     .child(
                         round_control("block-puzzle-undo", "Undo", round.undo.is_some())
                             .aria_keyshortcuts(if cx.platform_info().is_mac() {
@@ -1059,33 +1182,50 @@ impl GameView {
                         )
                     }),
             )
-            .child(
-                div()
-                    .text_color(rgb(palette.muted))
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .child("1–3 pick · Arrows move · Enter place"),
-            )
+            .when(!solved, |rail| {
+                rail.child(
+                    div()
+                        .text_color(rgb(palette.muted))
+                        .text_size(px(12.))
+                        .line_height(px(17.))
+                        .child("1–3 pick · Arrows move · Enter place"),
+                )
+            })
     }
 
-    fn status(&self, status: String, palette: t::Palette, compact: bool) -> Stateful<Div> {
+    fn status(&self, status: String, palette: t::Palette, compact: bool) -> Option<Stateful<Div>> {
+        let is_puzzle = self.mode == Mode::PuzzleBoards;
+        let feedback = self.feedback.as_ref().filter(|feedback| {
+            !is_puzzle || !matches!(feedback, Feedback::Placed(placement) if placement.lines == 0)
+        });
+        if status.is_empty() && feedback.is_none() {
+            return None;
+        }
         let mut panel = div()
             .id("block-puzzle-status")
             .role(Role::Status)
             .flex()
             .flex_col()
             .justify_center()
-            .min_h(px(if compact { 46. } else { 59. }))
+            .min_h(px(if is_puzzle {
+                18.
+            } else if compact {
+                46.
+            } else {
+                59.
+            }))
             .text_size(px(13.))
             .line_height(px(18.));
-        if let Some(feedback) = &self.feedback {
+        if let Some(feedback) = feedback {
             let (label, color) = match feedback {
                 Feedback::Placed(placement) => {
                     let points = placement.points;
-                    let label = match placement.lines {
-                        0 => format!("+{points} points"),
-                        1 => format!("+{points} points · 1 line"),
-                        lines => format!("+{points} points · {lines} lines"),
+                    let label = match (is_puzzle, placement.lines) {
+                        (true, 1) => "1 line cleared".into(),
+                        (true, lines) => format!("{lines} lines cleared"),
+                        (false, 0) => format!("+{points} points"),
+                        (false, 1) => format!("+{points} points · 1 line"),
+                        (false, lines) => format!("+{points} points · {lines} lines"),
                     };
                     (
                         label,
@@ -1099,7 +1239,11 @@ impl GameView {
                 Feedback::Invalid => ("The piece needs more space.".to_owned(), palette.danger),
                 Feedback::Undone => ("Placement undone.".to_owned(), palette.ink),
             };
-            let announcement = format!("{}. {status}", label.trim_end_matches('.'));
+            let announcement = if status.is_empty() {
+                label.clone()
+            } else {
+                format!("{}. {status}", label.trim_end_matches('.'))
+            };
             panel = panel.aria_label(announcement).child(
                 div()
                     .relative()
@@ -1123,10 +1267,21 @@ impl GameView {
                     })
                     .child(div().relative().child(label)),
             );
-        } else {
+        } else if !status.is_empty() {
             panel = panel.aria_label(status.clone());
         }
-        panel.child(div().text_color(rgb(palette.muted)).child(status))
+        Some(panel.when(!status.is_empty(), |panel| {
+            panel.child(
+                div()
+                    .text_color(rgb(palette.muted))
+                    .when(self.round().game.puzzle_solved(), |message| {
+                        message
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(palette.success))
+                    })
+                    .child(status),
+            )
+        }))
     }
 }
 
@@ -1305,21 +1460,72 @@ mod tests {
         assert!(saved.mode == Mode::Classic);
         assert!(saved.ten_trays.is_none());
 
-        saved.ten_trays = Some(Round::new(Mode::TenTrays, CHALLENGE_SEED).saved());
+        saved.ten_trays = Some(SeededRound::new(Game::ten_trays, CHALLENGE_SEED).saved());
+        saved.mode = Mode::PuzzleBoards;
         let encoded = serde_json::to_string(&saved).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(payload["seed"], 0);
+        assert_eq!(payload["turns"], serde_json::json!([[0, 0, 0]]));
+        assert_eq!(payload["can_undo"], true);
+        assert_eq!(payload["ten_trays"]["seed"], CHALLENGE_SEED);
         let restored: SavedSession = serde_json::from_str(&encoded).unwrap();
         assert!(restored.classic_attempt == saved.classic_attempt);
         assert!(restored.ten_trays_attempt == saved.ten_trays_attempt);
 
-        let round =
-            Round::restore(Mode::Classic, restored.classic, restored.classic_attempt).unwrap();
+        let seeded =
+            SeededRound::restore(Game::new, restored.classic, restored.classic_attempt).unwrap();
+        let round = seeded.round;
         assert!(round.attempt == saved.classic_attempt);
         assert_eq!(round.game.score(), 3);
         assert_eq!(round.game.board()[0][1], Some(Wood::Plum));
         assert_eq!(round.game.board()[1][0], Some(Wood::Plum));
         assert_eq!(round.game.tray()[0], None);
-        assert_eq!(round.best, 3);
+        assert_eq!(seeded.best, 3);
         assert_eq!(round.undo, Some(Game::new(0)));
+    }
+
+    #[test]
+    fn existing_ten_trays_journal_keeps_its_seed_score_and_undo() {
+        let legacy = serde_json::json!({
+            "seed": 712,
+            "turns": [],
+            "can_undo": false,
+            "mode": "ten-trays",
+            "ten_trays": {
+                "seed": CHALLENGE_SEED,
+                "turns": [[2, 0, 0], [1, 0, 4]],
+                "can_undo": true,
+                "best": 23
+            }
+        });
+        let saved: SavedSession = serde_json::from_value(legacy).unwrap();
+        assert!(saved.mode == Mode::TenTrays);
+        let round = SeededRound::restore(
+            Game::ten_trays,
+            saved.ten_trays.unwrap(),
+            saved.ten_trays_attempt,
+        )
+        .unwrap();
+        let mut expected = Game::ten_trays(CHALLENGE_SEED);
+        expected
+            .place(Move {
+                slot: 2,
+                column: 0,
+                row: 0,
+            })
+            .unwrap();
+        assert_eq!(round.round.undo.as_ref(), Some(&expected));
+        expected
+            .place(Move {
+                slot: 1,
+                column: 0,
+                row: 4,
+            })
+            .unwrap();
+        assert_eq!(round.seed, CHALLENGE_SEED);
+        assert_eq!(round.best, 23);
+        assert_eq!(round.round.game, expected);
+        assert_eq!(round.round.game.placements_left(), Some(28));
     }
 
     #[test]

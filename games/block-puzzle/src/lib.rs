@@ -1,3 +1,8 @@
+mod puzzles;
+
+use puzzles::PuzzleState;
+pub use puzzles::{PUZZLE_BOARDS, Puzzle, PuzzleGoal, PuzzleStatus};
+
 pub const SIDE: usize = 8;
 pub const TRAY_SIZE: usize = 3;
 pub const CHALLENGE_TRAYS: usize = 10;
@@ -125,6 +130,7 @@ pub struct Game {
     score: u64,
     random: u64,
     remaining: Option<usize>,
+    puzzle: Option<PuzzleState>,
 }
 
 impl Game {
@@ -144,6 +150,7 @@ impl Game {
             score: 0,
             random: seed,
             remaining,
+            puzzle: None,
         };
         game.refill();
         game
@@ -166,6 +173,9 @@ impl Game {
     }
 
     pub fn can_place(&self, turn: Move) -> bool {
+        if self.puzzle_solved() {
+            return false;
+        }
         let Some(Some(piece)) = self.tray.get(turn.slot) else {
             return false;
         };
@@ -208,12 +218,16 @@ impl Game {
         if self.remaining != Some(0) && self.tray.iter().all(Option::is_none) {
             self.refill();
         }
-        Some(Placement {
+        let placement = Placement {
             lines,
             points,
             cleared_rows: rows,
             cleared_columns: columns,
-        })
+        };
+        if let Some(puzzle) = &mut self.puzzle {
+            puzzle.update(&self.board, self.remaining, placement);
+        }
+        Some(placement)
     }
 
     pub fn has_moves(&self) -> bool {
