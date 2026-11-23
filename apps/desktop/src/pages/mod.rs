@@ -17,6 +17,9 @@ use crate::{daily, theme as t, widgets};
 pub fn daily_challenge(cx: &Context<Desktop>) -> Div {
     let today = daily::today();
     let palette = t::colors(cx);
+    let completed = daily::completed_days();
+    let streak = daily::current_streak(today.date, &completed);
+    let won_today = completed.contains(&today.date);
     div()
         .flex()
         .flex_col()
@@ -31,8 +34,21 @@ pub fn daily_challenge(cx: &Context<Desktop>) -> Div {
                 .child(t::display_type("Daily Challenge", 36.))
                 .child(
                     div()
-                        .text_color(rgb(palette.muted))
-                        .child(today.date.format("%A, %B %-d").to_string()),
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .when(streak != 0, |details| {
+                            details.child(
+                                div()
+                                    .text_color(rgb(palette.success))
+                                    .child(format!("{streak}-day streak")),
+                            )
+                        })
+                        .child(
+                            div()
+                                .text_color(rgb(palette.muted))
+                                .child(today.date.format("%A, %B %-d").to_string()),
+                        ),
                 ),
         )
         .child(widgets::hero(
@@ -40,13 +56,27 @@ pub fn daily_challenge(cx: &Context<Desktop>) -> Div {
             widgets::challenge_art(today.game),
             widgets::button(
                 "launch-daily",
-                "Play today’s puzzle",
+                if won_today {
+                    "Play again"
+                } else {
+                    "Play today’s puzzle"
+                },
                 Action::Navigate(Page::Game(today.launch())),
                 true,
                 cx,
             ),
         ))
-        .child(div().text_color(rgb(palette.muted)).child(today.objective))
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_3()
+                .child(div().text_color(rgb(palette.muted)).child(today.objective))
+                .when(won_today, |status| {
+                    status.child(div().text_color(rgb(palette.success)).child("Completed"))
+                }),
+        )
         .child(
             t::panel(cx)
                 .p_4()
@@ -56,12 +86,18 @@ pub fn daily_challenge(cx: &Context<Desktop>) -> Div {
                 .child(t::display_type("Previous puzzles", 22.))
                 .children(daily::previous(today.date).map(|puzzle| {
                     let date = puzzle.date.format("%a, %b %-d").to_string();
+                    let won = completed.contains(&puzzle.date);
+                    let status = if won {
+                        format!("{date} · Completed")
+                    } else {
+                        date.clone()
+                    };
                     widgets::clickable(
                         gpui::SharedString::from(format!("daily-archive-{}", puzzle.date)),
                         Action::Navigate(Page::Game(puzzle.launch())),
                         cx,
                     )
-                    .aria_label(format!("Play {} from {date}", puzzle.title))
+                    .aria_label(format!("Play {} from {status}", puzzle.title))
                     .rounded_md()
                     .flex()
                     .items_center()
@@ -74,7 +110,11 @@ pub fn daily_challenge(cx: &Context<Desktop>) -> Div {
                     .hover(|style| style.bg(rgb(palette.hover)))
                     .focus_visible(|style| style.border_color(rgb(palette.ink)))
                     .child(puzzle.title)
-                    .child(div().text_color(rgb(palette.muted)).child(date))
+                    .child(
+                        div()
+                            .text_color(rgb(if won { palette.success } else { palette.muted }))
+                            .child(status),
+                    )
                 })),
         )
 }

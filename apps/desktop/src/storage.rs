@@ -76,6 +76,8 @@ pub enum ResultMetric {
 #[derive(Deserialize, Serialize)]
 pub struct GameResult {
     pub game: GameId,
+    #[serde(default)]
+    pub launch: Option<GameLaunch>,
     pub mode: String,
     pub outcome: Outcome,
     pub metric: ResultMetric,
@@ -132,6 +134,7 @@ impl Session {
                 attempt,
                 GameResult {
                     game: self.launch.game.clone(),
+                    launch: Some(self.launch.clone()),
                     mode: mode.into(),
                     outcome,
                     metric,
@@ -280,6 +283,7 @@ mod tests {
     fn result(game: &str, completed_at_ms: i64) -> GameResult {
         GameResult {
             game: GameId(game.into()),
+            launch: None,
             mode: "Classic".into(),
             outcome: Outcome::Won,
             metric: ResultMetric::Moves(12),

@@ -1,7 +1,10 @@
+use std::collections::HashSet;
+
 use chrono::{Datelike as _, Days, NaiveDate, Utc};
 use corner_table_api::GameId;
 
 use crate::games::{GameEntry, GameLaunch};
+use crate::storage::{self, Outcome};
 
 pub struct DailyPuzzle {
     pub date: NaiveDate,
@@ -75,6 +78,23 @@ pub fn from_launch(launch: &GameLaunch) -> Option<DailyPuzzle> {
     (daily.launch() == *launch).then_some(daily)
 }
 
+pub fn completed_days() -> HashSet<NaiveDate> {
+    storage::recent_results(usize::MAX)
+        .into_iter()
+        .filter(|result| result.outcome == Outcome::Won)
+        .filter_map(|result| from_launch(result.launch.as_ref()?))
+        .map(|puzzle| puzzle.date)
+        .collect()
+}
+
+pub fn current_streak(today: NaiveDate, completed: &HashSet<NaiveDate>) -> usize {
+    let start = if completed.contains(&today) { 0 } else { 1 };
+    (start..)
+        .map_while(|offset| today.checked_sub_days(Days::new(offset)))
+        .take_while(|date| completed.contains(date))
+        .count()
+}
+
 fn puzzle_on(date: NaiveDate) -> DailyPuzzle {
     let (game, title, objective) = ROTATION[date.weekday().num_days_from_monday() as usize];
     DailyPuzzle {
@@ -102,5 +122,19 @@ mod tests {
         let same_game_last_week = puzzle_on(date - Days::new(7));
         assert_eq!(same_game_last_week.game, puzzle_on(date).game);
         assert_ne!(same_game_last_week.launch(), puzzle_on(date).launch());
+    }
+
+    #[test]
+    fn yesterday_keeps_a_streak_alive_until_the_end_of_today() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        let mut completed = HashSet::from([
+            today - Days::new(1),
+            today - Days::new(2),
+            today - Days::new(4),
+        ]);
+        assert_eq!(current_streak(today, &completed), 2);
+        completed.insert(today);
+        assert_eq!(current_streak(today, &completed), 3);
+        assert_eq!(current_streak(today + Days::new(2), &completed), 0);
     }
 }
