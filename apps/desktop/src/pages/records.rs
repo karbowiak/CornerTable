@@ -82,10 +82,17 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         })
         .collect();
     let count = rounds.len();
-    let wins = rounds
-        .iter()
-        .filter(|result| result.outcome == Outcome::Won)
-        .count();
+    let total = |outcome| {
+        rounds
+            .iter()
+            .filter(|result| result.outcome == outcome)
+            .count()
+    };
+    let (wins, losses, draws) = (
+        total(Outcome::Won),
+        total(Outcome::Lost),
+        total(Outcome::Draw),
+    );
     let listed = if state.bests {
         personal_bests(rounds)
     } else {
@@ -109,11 +116,19 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         .aria_label("Records"),
                 )
                 .when(count > 0, |line| {
-                    let summary = format!(
+                    let mut summary = format!(
                         "{count} {} · {wins} {}",
                         if count == 1 { "round" } else { "rounds" },
                         if wins == 1 { "win" } else { "wins" },
                     );
+                    if losses > 0 {
+                        let label = if losses == 1 { "loss" } else { "losses" };
+                        summary.push_str(&format!(" · {losses} {label}"));
+                    }
+                    if draws > 0 {
+                        let label = if draws == 1 { "draw" } else { "draws" };
+                        summary.push_str(&format!(" · {draws} {label}"));
+                    }
                     line.child(
                         div()
                             .id("records-count")
@@ -276,7 +291,7 @@ fn result_row(
     let palette = t::colors(cx);
     let (outcome, outcome_color) = match result.outcome {
         Outcome::Won => ("Won", palette.success),
-        Outcome::Lost => ("Lost", palette.muted),
+        Outcome::Lost => ("Lost", palette.danger),
         Outcome::Draw => ("Draw", palette.muted),
         Outcome::Finished => ("Finished", palette.ink),
     };
