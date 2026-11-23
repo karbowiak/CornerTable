@@ -45,7 +45,7 @@ git config --local core.hooksPath .githooks
 bash scripts/check.sh
 ```
 
-On Windows, run the shell commands in Git Bash. The commit hook checks formatting and Clippy against staged Rust changes. The push hook runs those checks plus workspace tests against the commits being sent. GitHub Actions runs the same checks and builds the installers and portable archives. A `v` tag matching the workspace version publishes both sets with `SHA256SUMS` and that version’s changelog entry.
+On Windows, run the shell commands in Git Bash. The commit hook checks formatting and Clippy against staged Rust changes. The push hook runs those checks plus workspace tests against the commits being sent. GitHub Actions runs the same checks on main and pull requests. Pushing a `v` tag matching the workspace version also builds and publishes the installers and portable archives with `SHA256SUMS` and that version’s changelog entry.
 
 Game rules live in `games/`, GPUI views and assets in `apps/desktop/`, and the offline catalog in `crates/api/fixtures/`. Release archives include third-party notices. [Audio sources and attribution](apps/desktop/local-audio/README.md)
 
