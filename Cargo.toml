@@ -1,5 +1,13 @@
 [workspace]
-members = ["apps/desktop", "crates/api"]
+members = [
+    "apps/desktop",
+    "crates/api",
+    "games/jigsaw",
+    "games/mahjong",
+    "games/minesweeper",
+    "games/solitaire",
+    "games/sudoku",
+]
 default-members = ["apps/desktop"]
 resolver = "3"
 

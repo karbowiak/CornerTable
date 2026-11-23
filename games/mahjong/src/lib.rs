@@ -189,13 +189,12 @@ impl Board {
 
     pub fn hint(&self) -> Option<[usize; 2]> {
         let free = self.free_tiles();
-        if let Some(first) = self.selected {
-            if let Some(&second) = free
+        if let Some(first) = self.selected
+            && let Some(&second) = free
                 .iter()
                 .find(|&&id| id != first && self.tiles[id].face == self.tiles[first].face)
-            {
-                return Some([first, second]);
-            }
+        {
+            return Some([first, second]);
         }
         for (index, &first) in free.iter().enumerate() {
             if let Some(&second) = free[index + 1..]

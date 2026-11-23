@@ -6,5 +6,10 @@ edition.workspace = true
 [dependencies]
 anyhow = "1"
 corner-table-api = { path = "../../crates/api" }
+corner-table-jigsaw = { path = "../../games/jigsaw" }
+corner-table-mahjong = { path = "../../games/mahjong" }
+corner-table-minesweeper = { path = "../../games/minesweeper" }
+corner-table-solitaire = { path = "../../games/solitaire" }
+corner-table-sudoku = { path = "../../games/sudoku" }
 gpui = "=0.2.2"
 include_dir = "0.7"

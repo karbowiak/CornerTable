@@ -1061,6 +1061,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "corner-table-api",
+ "corner-table-jigsaw",
+ "corner-table-mahjong",
+ "corner-table-minesweeper",
+ "corner-table-solitaire",
+ "corner-table-sudoku",
  "gpui",
  "include_dir",
 ]
@@ -1072,6 +1077,26 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "corner-table-jigsaw"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-mahjong"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-minesweeper"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-solitaire"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-sudoku"
+version = "0.1.0"
 
 [[package]]
 name = "cosmic-text"

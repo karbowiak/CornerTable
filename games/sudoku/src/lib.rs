@@ -157,9 +157,9 @@ impl Game {
         self.board.values[index] = digit;
         self.board.notes[index] = 0;
         if digit != 0 && !self.has_conflict(index) {
-            for other in 0..CELLS {
+            for (other, notes) in self.board.notes.iter_mut().enumerate() {
                 if Self::related(index, other) {
-                    self.board.notes[other] &= !(1 << digit);
+                    *notes &= !(1 << digit);
                 }
             }
         }
