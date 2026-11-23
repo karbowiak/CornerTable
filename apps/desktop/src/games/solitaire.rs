@@ -1217,13 +1217,19 @@ fn card_surface(face: CardFace, size: CardSize, selected: bool, palette: &TableP
                 (0xfff9e9, 0xe6d8bb)
             };
             let index_offset = px((width * 0.04).max(2.));
-            let court = super::card_art::court_portrait(suit_mark(value.suit), value.rank);
+            let suit = suit_mark(value.suit);
+            let ace = value.rank == 1;
+            let picture = if ace {
+                super::card_art::ace_emblem(suit)
+            } else {
+                super::card_art::court_portrait(suit, value.rank)
+            };
             floating(card)
                 .bg(rgb(paper))
                 .border_color(rgb(edge))
                 .text_color(rgb(ink))
-                .child(match court {
-                    Some(art) => court_panel(art, size, covered),
+                .child(match picture {
+                    Some(art) => picture_panel(art, size, covered, !ace),
                     None => pip_panel(value, size),
                 })
                 .child(
@@ -1242,8 +1248,8 @@ fn card_surface(face: CardFace, size: CardSize, selected: bool, palette: &TableP
     }
 }
 
-fn court_panel(art: &'static str, size: CardSize, covered: bool) -> Div {
-    let width = size.width * 0.58;
+fn picture_panel(art: &'static str, size: CardSize, covered: bool, framed: bool) -> Div {
+    let width = size.width * if framed { 0.58 } else { 0.75 };
     let height = width * 1.5;
     div()
         .absolute()
@@ -1253,8 +1259,7 @@ fn court_panel(art: &'static str, size: CardSize, covered: bool) -> Div {
         .h(px(height))
         .overflow_hidden()
         .rounded(px(2.))
-        .border_1()
-        .border_color(rgb(0xa88758))
+        .when(framed, |panel| panel.border_1().border_color(rgb(0xa88758)))
         .child(
             img(art)
                 .size_full()

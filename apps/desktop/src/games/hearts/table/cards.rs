@@ -63,7 +63,13 @@ pub(super) fn face(card: Card, width: f32, kind: Face) -> Div {
     };
     let size = (width * 0.31).clamp(13., 19.);
     let height = width * DECK_RATIO;
-    let art = card_art::court_portrait(suit_mark(card.suit()), card.rank());
+    let ace = card.rank() == 14;
+    let suit = suit_mark(card.suit());
+    let art = if ace {
+        card_art::ace_emblem(suit)
+    } else {
+        card_art::court_portrait(suit, card.rank())
+    };
     let index = || {
         div()
             .flex()
@@ -81,15 +87,14 @@ pub(super) fn face(card: Card, width: f32, kind: Face) -> Div {
     };
     let top = if width < 46. { 3. } else { 4. };
     let center = if let Some(path) = art {
-        let picture_width = width * 0.58;
+        let picture_width = width * if ace { 0.72 } else { 0.58 };
         let picture_height = height * 0.59;
         div()
             .w(px(picture_width))
             .h(px(picture_height))
             .rounded(px(2.))
             .overflow_hidden()
-            .border_1()
-            .border_color(rgb(0x9c7753))
+            .when(!ace, |panel| panel.border_1().border_color(rgb(0x9c7753)))
             .child(img(path).size_full().object_fit(ObjectFit::Cover).opacity(
                 if matches!(kind, Face::Dimmed) {
                     0.54
@@ -134,7 +139,7 @@ pub(super) fn face(card: Card, width: f32, kind: Face) -> Div {
                 .child(center),
         )
         .child(index().absolute().top(px(top)).left(px(top)))
-        .when(width >= 61. && art.is_none(), |face| {
+        .when(width >= 61. && (art.is_none() || ace), |face| {
             face.child(index().absolute().bottom(px(top)).right(px(top)))
         })
 }
