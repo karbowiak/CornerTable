@@ -1094,12 +1094,7 @@ fn card_surface(face: CardFace, size: CardSize, selected: bool, palette: &TableP
                 (0xfff9e9, 0xe6d8bb)
             };
             let index_offset = px((width * 0.04).max(2.));
-            let court = match value.rank {
-                11 => Some("games/solitaire/court-jack.webp"),
-                12 => Some("games/solitaire/court-queen.webp"),
-                13 => Some("games/solitaire/court-king.webp"),
-                _ => None,
-            };
+            let court = super::card_art::court_portrait(suit_mark(value.suit), value.rank);
             floating(card)
                 .bg(rgb(paper))
                 .border_color(rgb(edge))

@@ -2,6 +2,7 @@
 
 mod block_puzzle;
 mod bubble_shooter;
+mod card_art;
 mod checkers;
 pub(crate) mod chess;
 mod dominoes;

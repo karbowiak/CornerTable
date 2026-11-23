@@ -1,7 +1,7 @@
 use corner_table_hearts::{Card, Suit};
 use gpui::{BoxShadow, Div, FontWeight, ObjectFit, div, img, prelude::*, px, rgb, rgba};
 
-use crate::theme;
+use crate::{games::card_art, theme};
 
 use super::{BRASS, DECK_RATIO, RIM_SOFT};
 
@@ -63,12 +63,7 @@ pub(super) fn face(card: Card, width: f32, kind: Face) -> Div {
     };
     let size = (width * 0.31).clamp(13., 19.);
     let height = width * DECK_RATIO;
-    let art = match card.rank() {
-        11 => Some("games/solitaire/court-jack.webp"),
-        12 => Some("games/solitaire/court-queen.webp"),
-        13 => Some("games/solitaire/court-king.webp"),
-        _ => None,
-    };
+    let art = card_art::court_portrait(suit_mark(card.suit()), card.rank());
     let index = || {
         div()
             .flex()
