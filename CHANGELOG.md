@@ -5,6 +5,8 @@ All notable changes to Corner Table are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-23
+
 ### Added
 
 - **After Dark** adds six painted Jigsaws, five Picture Logic prints, and four Word Search
@@ -114,5 +116,6 @@ layouts. They now match the shared panel widths and spacing and use the extra sp
   into Jigsaw and export your game progress as JSON.
 - Downloads for Windows x64, Linux x86-64, and Apple silicon macOS.
 
-[Unreleased]: https://github.com/karbowiak/CornerTable/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/karbowiak/CornerTable/compare/v0.1.1...main
+[0.1.1]: https://github.com/karbowiak/CornerTable/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/karbowiak/CornerTable/releases/tag/v0.1.0

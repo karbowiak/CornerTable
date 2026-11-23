@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "corner-table"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -1299,7 +1299,7 @@ dependencies = [
 
 [[package]]
 name = "corner-table-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "corner-table-block-puzzle"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "corner-table-bubble-shooter"
@@ -1319,14 +1319,14 @@ version = "0.1.0"
 
 [[package]]
 name = "corner-table-chess"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cozy-chess",
 ]
 
 [[package]]
 name = "corner-table-dev"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "corner-table",
@@ -1335,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "corner-table-dominoes"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "corner-table-gem-cascade"
@@ -1351,7 +1351,7 @@ version = "0.1.0"
 
 [[package]]
 name = "corner-table-kakuro"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "corner-table-mahjong"
@@ -1363,11 +1363,11 @@ version = "0.1.0"
 
 [[package]]
 name = "corner-table-match-three"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "corner-table-memory-match"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
@@ -1382,15 +1382,15 @@ version = "0.1.0"
 
 [[package]]
 name = "corner-table-peg-solitaire"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "corner-table-picture-logic"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "corner-table-reversi"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "corner-table-solitaire"
@@ -7937,7 +7937,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
