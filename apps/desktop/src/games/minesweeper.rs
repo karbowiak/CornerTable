@@ -1,3 +1,5 @@
+mod session;
+
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use corner_table_minesweeper::{Board, Difficulty, Status, Tile};
@@ -8,13 +10,18 @@ use gpui::{
 
 use crate::{
     games::{GameEntry, GameLaunch, themed_control},
+    storage::Session,
     theme as t,
 };
+
+use self::session::{Bests, Mode, Round, SavedGame};
 
 const CELL_GAP: f32 = 2.;
 const FIELD_INSET: f32 = 10.;
 const FIELD_RULE: u32 = 0x426257;
 const FIELD_CAPTION: u32 = 0xbdd2bf;
+const CHORD_HIGHLIGHT: u32 = 0xfde8b2;
+const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 enum Move {
@@ -22,9 +29,10 @@ enum Move {
     Flag,
 }
 
+#[derive(Clone, Copy)]
 enum Clock {
     Ready,
-    Running(Instant),
+    Running { started: Instant, carried: Duration },
     Finished(Duration),
 }
 
@@ -32,21 +40,22 @@ impl Clock {
     fn elapsed(&self) -> Duration {
         match *self {
             Self::Ready => Duration::ZERO,
-            Self::Running(started) => started.elapsed(),
+            Self::Running { started, carried } => carried.saturating_add(started.elapsed()),
             Self::Finished(elapsed) => elapsed,
         }
     }
 }
 
 pub struct GameView {
-    board: Board,
+    storage: Session,
+    round: Round,
+    bests: Bests,
     challenge_seed: Option<u64>,
-    flag_mode: bool,
-    time_trial: bool,
     clock: Clock,
     clock_task: Option<Task<()>>,
+    generation_task: Option<Task<()>>,
+    generation_failed: bool,
     focus: FocusHandle,
-    selected: (usize, usize),
 }
 
 impl GameView {
@@ -55,52 +64,96 @@ impl GameView {
             GameEntry::Challenge(id) => Some(stable_seed(id)),
             _ => None,
         };
-        Self {
-            board: Board::new(
-                Difficulty::Meadow,
-                challenge_seed.unwrap_or_else(fresh_seed),
-            ),
+        let storage = Session::new(launch);
+        let (round, elapsed, bests) = storage
+            .load::<SavedGame>()
+            .and_then(|saved| saved.restore(challenge_seed))
+            .unwrap_or_else(|| {
+                (
+                    Round::new(
+                        Difficulty::Meadow,
+                        Mode::Classic,
+                        challenge_seed.unwrap_or_else(fresh_seed),
+                    ),
+                    Duration::ZERO,
+                    Bests::default(),
+                )
+            });
+        let mut view = Self {
+            storage,
+            round,
+            bests,
             challenge_seed,
-            flag_mode: false,
-            time_trial: false,
             clock: Clock::Ready,
             clock_task: None,
+            generation_task: None,
+            generation_failed: false,
             focus: cx.focus_handle().tab_stop(true),
-            selected: (0, 0),
+        };
+        match view.round.board.status() {
+            Status::Ready => {}
+            Status::Playing => view.start_clock(Instant::now(), elapsed, cx),
+            Status::Won | Status::Lost => view.clock = Clock::Finished(elapsed),
         }
+        // A native window close on macOS can release its views before app quit.
+        cx.on_release(|view, _| view.save()).detach();
+        cx.on_app_quit(|view, _| {
+            view.save();
+            async {}
+        })
+        .detach();
+        view
     }
 
-    fn reset(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
-        self.board = Board::new(difficulty, self.challenge_seed.unwrap_or_else(fresh_seed));
-        self.flag_mode = false;
+    fn save(&self) {
+        self.storage.save(&SavedGame::capture(
+            &self.round,
+            self.clock.elapsed(),
+            &self.bests,
+        ));
+    }
+
+    fn reset(&mut self, difficulty: Difficulty, mode: Mode, cx: &mut Context<Self>) {
+        self.replace_round(
+            Round::new(
+                difficulty,
+                mode,
+                self.challenge_seed.unwrap_or_else(fresh_seed),
+            ),
+            cx,
+        );
+    }
+
+    fn replace_round(&mut self, round: Round, cx: &mut Context<Self>) {
+        self.round = round;
         self.clock = Clock::Ready;
         self.clock_task = None;
-        self.selected = (0, 0);
+        self.generation_task = None;
+        self.generation_failed = false;
+        self.save();
         cx.notify();
     }
 
-    fn trial_limit(&self) -> Option<Duration> {
-        self.time_trial.then(|| {
-            Duration::from_secs(match self.board.difficulty() {
-                Difficulty::Meadow => 3 * 60,
-                Difficulty::Highlands => 6 * 60,
-                Difficulty::Summit => 10 * 60,
-            })
-        })
-    }
-
-    fn start_clock(&mut self, cx: &Context<Self>) {
-        let started = Instant::now();
-        self.clock = Clock::Running(started);
+    fn start_clock(&mut self, started: Instant, carried: Duration, cx: &Context<Self>) {
+        let clock = Clock::Running { started, carried };
+        self.clock = clock;
         let executor = cx.background_executor().clone();
-        let limit = self.trial_limit();
         self.clock_task = Some(cx.spawn(async move |view, cx| {
+            let mut last_saved = carried;
             loop {
                 let until_next_second =
-                    Duration::new(0, 1_000_000_000 - started.elapsed().subsec_nanos());
+                    Duration::from_nanos(1_000_000_000 - u64::from(clock.elapsed().subsec_nanos()));
                 executor.timer(until_next_second).await;
-                if view.update(cx, |_, cx| cx.notify()).is_err()
-                    || limit.is_some_and(|limit| started.elapsed() >= limit)
+                if view
+                    .update(cx, |view, cx| {
+                        let elapsed = clock.elapsed();
+                        if elapsed.saturating_sub(last_saved) >= CHECKPOINT_INTERVAL {
+                            view.save();
+                            last_saved = elapsed;
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
                 {
                     break;
                 }
@@ -108,26 +161,79 @@ impl GameView {
         }));
     }
 
-    fn apply_move(&mut self, (x, y): (usize, usize), action: Move, cx: &mut Context<Self>) {
-        let previous = self.board.status();
+    fn apply_move(&mut self, position: (usize, usize), action: Move, cx: &mut Context<Self>) {
+        if self.generation_task.is_some() {
+            return;
+        }
+        if self.round.mode == Mode::LogicOnly
+            && self.round.board.status() == Status::Ready
+            && !self.round.replay
+            && matches!(action, Move::Reveal)
+            && self.round.board.tile(position.0, position.1) == Some(Tile::Covered)
+        {
+            self.prepare_logical_field(position, cx);
+            return;
+        }
+        self.play(position, action, cx);
+    }
+
+    fn prepare_logical_field(&mut self, (x, y): (usize, usize), cx: &mut Context<Self>) {
+        let difficulty = self.round.board.difficulty();
+        let seed = self.round.board.seed();
+        let search = cx
+            .background_executor()
+            .spawn(async move { Board::logical(difficulty, seed, x, y) });
+        self.generation_failed = false;
+        self.generation_task = Some(cx.spawn(async move |view, cx| {
+            let generated = search.await;
+            let _ = view.update(cx, |view, cx| {
+                view.generation_task = None;
+                if let Some(mut board) = generated {
+                    let (width, _) = difficulty.dimensions();
+                    for index in view.round.board.checkpoint().flags {
+                        board.toggle_flag(index % width, index / width);
+                    }
+                    view.round.board = board;
+                    view.play((x, y), Move::Reveal, cx);
+                } else {
+                    view.generation_failed = true;
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn play(&mut self, (x, y): (usize, usize), action: Move, cx: &mut Context<Self>) {
+        let started = Instant::now();
+        let board = &mut self.round.board;
+        let previous = board.status();
         let changed = match action {
-            Move::Flag => self.board.toggle_flag(x, y),
-            Move::Reveal if matches!(self.board.tile(x, y), Some(Tile::Open(_))) => {
-                self.board.chord(x, y)
-            }
-            Move::Reveal => self.board.reveal(x, y),
+            Move::Flag => board.toggle_flag(x, y),
+            Move::Reveal if matches!(board.tile(x, y), Some(Tile::Open(_))) => board.chord(x, y),
+            Move::Reveal => board.reveal(x, y),
         };
         if !changed {
             return;
         }
-        match self.board.status() {
-            Status::Playing if previous == Status::Ready => self.start_clock(cx),
+        match board.status() {
+            Status::Playing if previous == Status::Ready => {
+                self.start_clock(started, Duration::ZERO, cx)
+            }
             Status::Won | Status::Lost => {
-                self.clock = Clock::Finished(self.clock.elapsed());
+                let elapsed = if previous == Status::Ready {
+                    started.elapsed()
+                } else {
+                    self.clock.elapsed()
+                };
+                self.clock = Clock::Finished(elapsed);
                 self.clock_task = None;
+                if self.challenge_seed.is_none() {
+                    self.bests.record(&self.round, elapsed);
+                }
             }
             _ => {}
         }
+        self.save();
     }
 
     fn select_and_play(
@@ -137,7 +243,7 @@ impl GameView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.selected = position;
+        self.round.selected = position;
         self.focus.focus(window, cx);
         self.apply_move(position, action, cx);
         cx.notify();
@@ -148,15 +254,15 @@ impl GameView {
         if key.modifiers.control || key.modifiers.platform || key.modifiers.alt {
             return;
         }
-        let (width, height) = self.board.difficulty().dimensions();
-        let (x, y) = self.selected;
+        let (width, height) = self.round.board.difficulty().dimensions();
+        let (x, y) = self.round.selected;
         match key.key.as_str() {
-            "up" => self.selected = (x, y.saturating_sub(1)),
-            "down" => self.selected = (x, (y + 1).min(height - 1)),
-            "left" => self.selected = (x.saturating_sub(1), y),
-            "right" => self.selected = ((x + 1).min(width - 1), y),
-            "enter" | "space" if !event.is_held => self.apply_move(self.selected, Move::Reveal, cx),
-            "f" if !event.is_held => self.apply_move(self.selected, Move::Flag, cx),
+            "up" => self.round.selected = (x, y.saturating_sub(1)),
+            "down" => self.round.selected = (x, (y + 1).min(height - 1)),
+            "left" => self.round.selected = (x.saturating_sub(1), y),
+            "right" => self.round.selected = ((x + 1).min(width - 1), y),
+            "enter" | "space" if !event.is_held => self.apply_move((x, y), Move::Reveal, cx),
+            "f" if !event.is_held => self.apply_move((x, y), Move::Flag, cx),
             "enter" | "space" | "f" => {}
             _ => return,
         }
@@ -165,8 +271,18 @@ impl GameView {
     }
 
     fn cell(&self, x: usize, y: usize, clue_size: f32, cx: &Context<Self>) -> Stateful<Div> {
-        let tile = self.board.tile(x, y).expect("cell within field");
+        let board = &self.round.board;
+        let tile = board.tile(x, y).expect("cell within field");
         let covered = matches!(tile, Tile::Covered | Tile::Flagged);
+        let required_opening = board.required_opening();
+        let opening = required_opening == Some((x, y));
+        let chordable = board.can_chord(x, y);
+        let active = self.can_play();
+        let primary = match tile {
+            Tile::Covered => opening || self.round.flag_mode || required_opening.is_none(),
+            Tile::Flagged => self.round.flag_mode,
+            _ => chordable,
+        };
         let (background, border, ink) = match tile {
             Tile::Covered | Tile::Flagged => (
                 if (x + y).is_multiple_of(2) {
@@ -178,17 +294,24 @@ impl GameView {
                 t::GOLD,
             ),
             Tile::Open(0) => (0xcbd8c1, 0xcbd8c1, t::INK),
+            Tile::Open(count) if chordable => (CHORD_HIGHLIGHT, 0xdaaa58, clue_color(count)),
             Tile::Open(count) => (0xf1ecdd, 0xf1ecdd, clue_color(count)),
             Tile::Mine => (0xe6c1ae, 0xe6c1ae, 0x713a2d),
             Tile::Detonated => (0xa34335, 0xc56a55, 0xfff2df),
             Tile::Misflagged => (0xf3d9cc, 0xf3d9cc, 0x922e26),
         };
-        let active = matches!(self.board.status(), Status::Ready | Status::Playing);
         let mut cell = div()
             .id(("minesweeper-cell", x))
             .role(Role::GridCell)
             .aria_column_index(x)
-            .aria_label(tile_label(tile))
+            .aria_label(if opening {
+                "Replay opening".into()
+            } else {
+                tile_label(tile)
+            })
+            .when(chordable, |cell| {
+                cell.aria_description("Matching flags. Activate to open unmarked neighbors.")
+            })
             .w_full()
             .aspect_square()
             .flex()
@@ -196,31 +319,33 @@ impl GameView {
             .justify_center()
             .rounded_sm()
             .border_2()
-            .border_color(rgb(border))
+            .border_color(rgb(if opening { t::GOLD } else { border }))
             .bg(rgb(background))
             .text_color(rgb(ink))
             .text_size(px(clue_size))
             .line_height(px(clue_size))
             .font_weight(FontWeight::BOLD)
-            .when(self.selected == (x, y), |cell| {
+            .when(self.round.selected == (x, y), |cell| {
                 cell.track_focus(&self.focus)
                     .focus(|style| style.border_color(rgb(if covered { t::GOLD } else { t::RAIL })))
             });
 
-        if active && !matches!(tile, Tile::Open(0)) {
+        if active {
             cell = cell
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(if covered { 0x537d64 } else { 0xfff7dc })))
-                .active(|style| style.bg(rgb(if covered { 0x426c55 } else { 0xe2e5cf })))
+                .when(primary, |cell| {
+                    cell.cursor_pointer()
+                        .hover(|style| style.bg(rgb(if covered { 0x537d64 } else { 0xfff4d3 })))
+                        .active(|style| style.bg(rgb(if covered { 0x426c55 } else { 0xf4d898 })))
+                })
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    let action = if covered && view.flag_mode {
+                    let action = if covered && view.round.flag_mode && !opening {
                         Move::Flag
                     } else {
                         Move::Reveal
                     };
                     view.select_and_play((x, y), action, window, cx);
                 }));
-            if covered {
+            if covered && !opening {
                 cell = cell.on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |view, _, window, cx| {
@@ -230,6 +355,12 @@ impl GameView {
             }
         }
         match tile {
+            Tile::Covered if opening => cell.child(
+                div()
+                    .size(px(clue_size * 0.36))
+                    .rounded_full()
+                    .bg(rgb(t::GOLD)),
+            ),
             Tile::Open(count) if count > 0 => cell.child(count.to_string()),
             Tile::Flagged | Tile::Mine | Tile::Detonated | Tile::Misflagged => {
                 cell.child(mark(tile, ink))
@@ -238,54 +369,63 @@ impl GameView {
         }
     }
 
+    fn can_play(&self) -> bool {
+        self.generation_task.is_none()
+            && matches!(self.round.board.status(), Status::Ready | Status::Playing)
+    }
+
     fn toolbar(&self, cx: &Context<Self>) -> Div {
         let palette = t::colors(cx);
-        let difficulty = self.board.difficulty();
-        let active = matches!(self.board.status(), Status::Ready | Status::Playing);
+        let difficulty = self.round.board.difficulty();
+        let mode = self.round.mode;
         let reset_label = if self.challenge_seed.is_some() {
             "Restart"
         } else {
             "New field"
         };
-        let mut actions = div().flex().flex_wrap().items_center().gap_1();
-        if self.challenge_seed.is_none() {
-            actions = actions.child(
-                toggle(
-                    palette,
-                    "minesweeper-time-trial",
-                    "Time trial",
-                    self.time_trial,
-                )
-                .aria_description("Start a new field with or without a countdown.")
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.time_trial = !view.time_trial;
-                    view.reset(view.board.difficulty(), cx);
-                })),
-            );
-        }
-        actions = actions
-            .child(if active {
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .child(if self.can_play() {
                 toggle(
                     palette,
                     "minesweeper-flag-mode",
                     "Flag mode",
-                    self.flag_mode,
+                    self.round.flag_mode,
                 )
+                .aria_description("Click covered squares to place or remove a flag.")
                 .on_click(cx.listener(|view, _, _, cx| {
-                    view.flag_mode = !view.flag_mode;
+                    view.round.flag_mode = !view.round.flag_mode;
+                    view.save();
                     cx.notify();
                 }))
             } else {
                 themed_control(cx, "minesweeper-flag-mode", "Flag mode", false)
             })
+            .when(
+                matches!(self.round.board.status(), Status::Won | Status::Lost),
+                |actions| {
+                    actions.child(
+                        themed_control(cx, "minesweeper-replay", "Replay field", true)
+                            .aria_description("Play the same mines and opening again as practice.")
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                if let Some(round) = view.round.replay() {
+                                    view.replace_round(round, cx);
+                                    view.focus.focus(window, cx);
+                                }
+                            })),
+                    )
+                },
+            )
             .child(
-                themed_control(cx, "minesweeper-reset", reset_label, true)
-                    .role(Role::Button)
-                    .aria_label(reset_label)
-                    .on_click(cx.listener(|view, _, window, cx| {
-                        view.reset(view.board.difficulty(), cx);
+                themed_control(cx, "minesweeper-reset", reset_label, true).on_click(cx.listener(
+                    |view, _, window, cx| {
+                        view.reset(view.round.board.difficulty(), view.round.mode, cx);
                         view.focus.focus(window, cx);
-                    })),
+                    },
+                )),
             );
 
         div()
@@ -295,27 +435,43 @@ impl GameView {
             .gap_x_4()
             .gap_y_2()
             .when(self.challenge_seed.is_none(), |toolbar| {
-                toolbar.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_1()
-                        .children(Difficulty::ALL.map(|option| {
-                            toggle(
-                                palette,
-                                option.label(),
-                                option.label(),
-                                difficulty == option,
-                            )
-                            .on_click(cx.listener(
-                                move |view, _, _, cx| {
-                                    if view.board.difficulty() != option {
-                                        view.reset(option, cx);
-                                    }
-                                },
-                            ))
-                        })),
-                )
+                toolbar
+                    .child(
+                        div()
+                            .id("minesweeper-sizes")
+                            .role(Role::Group)
+                            .aria_label("Field size")
+                            .flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(Difficulty::ALL.map(|option| {
+                                toggle(palette, option.id(), option.label(), difficulty == option)
+                                    .aria_description("Changing the size starts a new field.")
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        if view.round.board.difficulty() != option {
+                                            view.reset(option, view.round.mode, cx);
+                                        }
+                                    }))
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("minesweeper-modes")
+                            .role(Role::Group)
+                            .aria_label("Field mode")
+                            .flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(Mode::ALL.map(|option| {
+                                toggle(palette, option.id(), option.label(), mode == option)
+                                    .aria_description("Changing the mode starts a new field.")
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        if view.round.mode != option {
+                                            view.reset(view.round.board.difficulty(), option, cx);
+                                        }
+                                    }))
+                            })),
+                    )
             })
             .child(actions)
     }
@@ -326,23 +482,44 @@ impl GameView {
         limit: Option<Duration>,
         palette: t::Palette,
     ) -> Stateful<Div> {
-        let difficulty = self.board.difficulty();
+        let difficulty = self.round.board.difficulty();
         let (width, height) = difficulty.dimensions();
         let field = format!(
             "{} · {width} × {height} · {} mines",
             difficulty.label(),
             difficulty.mines()
         );
-        let elapsed_label = format_time(elapsed.as_secs());
+        let elapsed_label = format_result(elapsed);
         let flag_hint = "Flag mode is on. Click a covered square to mark it.";
-        let (title, detail, ink) = match (self.board.status(), limit) {
-            (Status::Ready, _) if self.flag_mode => (field, flag_hint.into(), palette.ink),
+        let (title, detail, ink) = match (self.round.board.status(), limit) {
+            (Status::Ready, _) if self.generation_task.is_some() => (
+                "Finding a logic field".into(),
+                "Checking for a path you can solve by deduction.".into(),
+                palette.ink,
+            ),
+            (Status::Ready, _) if self.generation_failed => (
+                "Try a different opening".into(),
+                "No deduction path was found here. Choose another square or start a new field."
+                    .into(),
+                palette.gold_text,
+            ),
+            (Status::Ready, _) if self.round.replay => (
+                "Replay field".into(),
+                "Open the marked square to practice the same field.".into(),
+                palette.ink,
+            ),
+            (Status::Ready, _) if self.round.flag_mode => (field, flag_hint.into(), palette.ink),
             (Status::Ready, Some(limit)) => (
                 field,
                 format!(
                     "Clear the field in {}. The clock starts on your first reveal.",
                     format_time(limit.as_secs())
                 ),
+                palette.ink,
+            ),
+            (Status::Ready, None) if self.round.mode == Mode::LogicOnly => (
+                field,
+                "Choose any square to generate a field you can solve by deduction.".into(),
                 palette.ink,
             ),
             (Status::Ready, None) => (
@@ -357,13 +534,20 @@ impl GameView {
             ),
             (Status::Playing, _) => (
                 field,
-                if self.flag_mode {
+                if self.round.flag_mode {
                     flag_hint
+                } else if self.round.replay {
+                    "Practice with the same field."
                 } else {
                     "Uncover every safe square."
                 }
                 .into(),
                 palette.ink,
+            ),
+            (Status::Won, _) if self.round.replay => (
+                "Replay cleared".into(),
+                format!("You cleared the field in {elapsed_label}."),
+                palette.success,
             ),
             (Status::Won, Some(limit)) if elapsed < limit => (
                 "Time trial cleared".into(),
@@ -385,7 +569,8 @@ impl GameView {
             ),
             (Status::Lost, _) => (
                 "Mine hit".into(),
-                "Mines and misplaced flags are marked. Start a new field to try again.".into(),
+                "Mines and misplaced flags are marked. Replay this field or start a new one."
+                    .into(),
                 palette.danger,
             ),
         };
@@ -420,7 +605,8 @@ impl GameView {
         limit: Option<Duration>,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        let difficulty = self.board.difficulty();
+        let board = &self.round.board;
+        let difficulty = board.difficulty();
         let (width, height) = difficulty.dimensions();
         let comfortable_tile = match difficulty {
             Difficulty::Meadow => 46.,
@@ -428,26 +614,43 @@ impl GameView {
             Difficulty::Summit => 34.,
         };
         let viewport_height = f32::from(window.viewport_size().height);
-        // Leave space for the game header, controls, meters, and keyboard help.
-        let tile = ((viewport_height - 240.) / height as f32 - CELL_GAP)
+        let available_width = super::board_space(window);
+        let terminal = matches!(board.status(), Status::Lost | Status::Won);
+        // The control groups take a second row when the rail leaves less room.
+        let controls_width = if terminal { 820. } else { 720. };
+        let header_room = if self.challenge_seed.is_none() && available_width < controls_width {
+            284.
+        } else {
+            240.
+        };
+        let tile = ((viewport_height - header_room) / height as f32 - CELL_GAP)
             .clamp(22., comfortable_tile)
             .floor();
         let field_width = width as f32 * (tile + CELL_GAP) - CELL_GAP + 2. * FIELD_INSET;
-        let viewport_width = f32::from(window.viewport_size().width);
-        let clue_size = ((super::board_space(window).min(field_width) - 2. * FIELD_INSET)
-            / width as f32
-            * 0.56)
-            .clamp(13., 22.);
-        let compact = viewport_width < 900.;
-        let mines_left = difficulty.mines() as isize - self.board.flags() as isize;
-        let seconds = limit.map_or(elapsed.as_secs(), |limit| {
-            limit.as_secs().saturating_sub(elapsed.as_secs())
-        });
-        let low_time = limit.is_some() && seconds < 30 && self.board.status() == Status::Playing;
-        let clock_label = if limit.is_some() {
-            "TIME LEFT"
+        let usable_width = available_width.min(field_width);
+        let clue_size = ((usable_width - 2. * FIELD_INSET) / width as f32 * 0.56).clamp(13., 22.);
+        let compact = usable_width < 370.;
+        let (mine_label, mines) = if board.status() == Status::Lost {
+            ("MINES", difficulty.mines() as isize)
         } else {
-            "ELAPSED"
+            (
+                if compact { "MINES" } else { "MINES LEFT" },
+                difficulty.mines() as isize - board.flags() as isize,
+            )
+        };
+        let remaining = limit.filter(|&limit| elapsed < limit && !terminal);
+        let (clock_label, clock_value, low_time) = if let Some(limit) = remaining {
+            let left = limit - elapsed;
+            let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+            (
+                "TIME LEFT",
+                format_time(seconds),
+                left <= Duration::from_secs(30),
+            )
+        } else if terminal {
+            ("ELAPSED", format_result(elapsed), false)
+        } else {
+            ("ELAPSED", format_time(elapsed.as_secs()), false)
         };
 
         div()
@@ -465,16 +668,11 @@ impl GameView {
                     .border_b_1()
                     .border_color(rgb(FIELD_RULE))
                     .pb_2()
-                    .child(meter(
-                        "MINES LEFT",
-                        mines_left.to_string(),
-                        mines_left < 0,
-                        compact,
-                    ))
+                    .child(meter(mine_label, mines.to_string(), mines < 0, compact))
                     .child(
                         meter(
-                            "SAFE LEFT",
-                            self.board.safe_remaining().to_string(),
+                            if compact { "SAFE" } else { "SAFE LEFT" },
+                            board.safe_remaining().to_string(),
                             false,
                             compact,
                         )
@@ -482,10 +680,27 @@ impl GameView {
                         .border_color(rgb(FIELD_RULE)),
                     )
                     .child(
-                        meter(clock_label, format_time(seconds), low_time, compact)
+                        meter(clock_label, clock_value, low_time, compact)
                             .border_l_1()
                             .border_color(rgb(FIELD_RULE)),
-                    ),
+                    )
+                    .when(self.challenge_seed.is_none(), |meters| {
+                        let best = self.bests.time(&self.round);
+                        meters.child(
+                            meter(
+                                "BEST",
+                                best.map_or_else(|| "—".into(), format_result),
+                                false,
+                                compact,
+                            )
+                            .aria_label(best.map_or_else(
+                                || "No personal best for this size and mode".into(),
+                                |time| format!("Personal best: {}", format_result(time)),
+                            ))
+                            .border_l_1()
+                            .border_color(rgb(FIELD_RULE)),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -494,9 +709,11 @@ impl GameView {
                     .aria_label("Minefield")
                     .aria_row_count(height)
                     .aria_column_count(width)
-                    .aria_description(
-                        "Arrow keys move, Enter reveals or chords, and F flags a square.",
-                    )
+                    .aria_description(if terminal {
+                        "Use the arrow keys to inspect the final field."
+                    } else {
+                        "Arrow keys move, Enter reveals or chords, and F flags a square."
+                    })
                     // Handle Enter and Space before a focused cell can synthesize a click.
                     .capture_key_down(cx.listener(Self::key_down))
                     .flex()
@@ -521,7 +738,7 @@ impl GameView {
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let elapsed = self.clock.elapsed();
-        let limit = self.trial_limit();
+        let limit = self.round.limit();
         let palette = t::colors(cx);
         div()
             .w_full()
@@ -533,16 +750,18 @@ impl Render for GameView {
             .child(self.toolbar(cx))
             .child(self.status(elapsed, limit, palette))
             .child(self.field(window, elapsed, limit, cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .text_size(px(13.))
-                    .line_height(px(19.))
-                    .text_color(rgb(palette.muted))
-                    .child("Click to reveal · Right-click to flag · Click a clue when its neighboring flags match the number")
-                    .child("Arrow keys to move · Enter or Space to reveal or chord · F to flag"),
-            )
+            .when(matches!(self.round.board.status(), Status::Ready | Status::Playing), |game| {
+                game.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .text_size(px(13.))
+                        .line_height(px(19.))
+                        .text_color(rgb(palette.muted))
+                        .child("Right-click to flag · Highlighted clues open unmarked neighbors")
+                        .child("Tab to the field · Arrow keys move · Enter or Space opens · F flags"),
+                )
+            })
     }
 }
 
@@ -582,6 +801,7 @@ fn toggle(
 }
 
 fn meter(label: &'static str, value: String, warning: bool, compact: bool) -> Stateful<Div> {
+    let value_size = if compact || value.len() > 7 { 17. } else { 22. };
     div()
         .id(label)
         .role(Role::Label)
@@ -601,7 +821,7 @@ fn meter(label: &'static str, value: String, warning: bool, compact: bool) -> St
         )
         .child(
             div()
-                .text_size(px(22.))
+                .text_size(px(value_size))
                 .line_height(px(27.))
                 .text_color(rgb(if warning { t::GOLD } else { t::PAPER }))
                 .font_weight(FontWeight::BOLD)
@@ -693,7 +913,24 @@ fn mark(tile: Tile, ink: u32) -> impl IntoElement {
 }
 
 fn format_time(seconds: u64) -> String {
-    format!("{}:{:02}", seconds / 60, seconds % 60)
+    if seconds >= 3600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            (seconds / 60) % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
+fn format_result(elapsed: Duration) -> String {
+    format!(
+        "{}.{}",
+        format_time(elapsed.as_secs()),
+        elapsed.subsec_millis() / 100
+    )
 }
 
 fn stable_seed(id: &str) -> u64 {
