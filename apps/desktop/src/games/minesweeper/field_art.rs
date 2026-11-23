@@ -7,6 +7,8 @@ use gpui::{
 
 use crate::theme;
 
+use super::field_motion::Cue;
+
 #[derive(Clone, Copy)]
 pub(super) struct Face {
     top: u32,
@@ -160,7 +162,7 @@ impl FieldArt {
         tile: Tile,
         opening: bool,
         chordable: bool,
-        impact: Option<f32>,
+        cue: Option<Cue>,
     ) -> AnyElement {
         // Most cells share one cached inlay, including during a detonation redraw.
         if tile == Tile::Covered && !opening {
@@ -183,7 +185,12 @@ impl FieldArt {
                     }
                     Tile::Flagged => {
                         face.bevel(window);
-                        mark.flag(window);
+                        if let Some(Cue::Flag(progress)) = cue {
+                            let scale = 1. + 0.23 * (1. - progress).powi(2);
+                            Stamp::new(bounds, edge * 0.75 * scale).flag(window);
+                        } else {
+                            mark.flag(window);
+                        }
                     }
                     Tile::Open(_) if chordable => face.stroke(
                         window,
@@ -197,7 +204,7 @@ impl FieldArt {
                     Tile::Mine => mark.mine(window, self.mine_rim),
                     Tile::Detonated => {
                         face.burst(window, 1., rgb(0xde7448));
-                        if let Some(progress) = impact {
+                        if let Some(Cue::Impact(progress)) = cue {
                             let light = (190. * (1. - progress).powi(2)) as u32;
                             face.burst(window, 0.74 + 0.36 * progress, rgba(0xffda9c00 | light));
                         }

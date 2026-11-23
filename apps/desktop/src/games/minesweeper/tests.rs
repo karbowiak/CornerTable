@@ -87,7 +87,7 @@ fn compact_summit_routes_pointer_and_keyboard_to_the_same_cells(cx: &mut TestApp
         .read_with(cx, |view, _| {
             assert_eq!(view.round.board.tile(2, 0), Some(Tile::Detonated));
             assert_eq!(view.round.board.status(), Status::Lost);
-            assert!(view.impact.is_none());
+            assert!(view.field_motion.is_none());
         })
         .unwrap();
     assert!(visual.debug_bounds("minesweeper-result").is_some());

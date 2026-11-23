@@ -1,4 +1,5 @@
 mod field_art;
+mod field_motion;
 mod session;
 #[cfg(all(test, debug_assertions))]
 mod tests;
@@ -11,7 +12,7 @@ use std::{
 use corner_table_minesweeper::{Board, Clue, Difficulty, Hint, HintReason, Status, Tile};
 use gpui::{
     AnyElement, Context, Div, FocusHandle, FontFeatures, FontWeight, KeyDownEvent, MouseButton,
-    Render, Role, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
+    Render, Role, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb, rgba,
 };
 
 use crate::{
@@ -25,6 +26,7 @@ use crate::{
 
 use self::{
     field_art::{FieldArt, OPENING_EDGE, fastener},
+    field_motion::{Cue, FieldMotion},
     session::{Bests, Mode, Round, SavedGame, milliseconds},
 };
 
@@ -33,7 +35,6 @@ const FRAME_PADDING: f32 = 7.;
 const WELL_PADDING: f32 = 3.;
 const FIELD_INSET: f32 = FRAME_PADDING + WELL_PADDING + 2.; // Includes both borders.
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(5);
-const IMPACT_DURATION: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy)]
 enum Move {
@@ -136,7 +137,7 @@ pub struct GameView {
     generation_task: Option<Task<()>>,
     generation_failed: bool,
     hint: HintState,
-    impact: Option<Instant>,
+    field_motion: Option<FieldMotion>,
     focus: FocusHandle,
 }
 
@@ -178,7 +179,7 @@ impl GameView {
             generation_task: None,
             generation_failed: false,
             hint: HintState::default(),
-            impact: None,
+            field_motion: None,
             focus: cx.focus_handle().tab_stop(true),
         };
         match view.round.board.status() {
@@ -222,7 +223,7 @@ impl GameView {
         self.generation_task = None;
         self.generation_failed = false;
         self.hint = HintState::Hidden;
-        self.impact = None;
+        self.field_motion = None;
         self.save();
         cx.notify();
     }
@@ -302,6 +303,8 @@ impl GameView {
         let board = &mut self.round.board;
         let previous = board.status();
         let tile = board.tile(x, y);
+        let animate = motion::enabled(cx);
+        let before = (animate && matches!(action, Move::Reveal)).then(|| board.clone());
         let changed = match action {
             Move::Flag => board.toggle_flag(x, y),
             Move::Reveal if matches!(tile, Some(Tile::Open(_))) => board.chord(x, y),
@@ -318,12 +321,23 @@ impl GameView {
             return;
         }
         self.hint = HintState::Hidden;
+        self.field_motion = if animate {
+            if board.status() == Status::Lost {
+                Some(FieldMotion::impact())
+            } else if let Some(before) = before {
+                Some(FieldMotion::reveal(&before, board, (x, y)))
+            } else {
+                Some(FieldMotion::flag((x, y)))
+            }
+        } else {
+            None
+        };
         let mut result = None;
         match board.status() {
             Status::Playing if previous == Status::Ready => {
                 self.start_clock(started, Duration::ZERO, cx)
             }
-            status @ (Status::Won | Status::Lost) => {
+            Status::Won | Status::Lost => {
                 let elapsed = if previous == Status::Ready {
                     started.elapsed()
                 } else {
@@ -331,9 +345,6 @@ impl GameView {
                 };
                 self.clock = Clock::Finished(elapsed);
                 self.clock_task = None;
-                if status == Status::Lost && motion::enabled(cx) {
-                    self.impact = Some(Instant::now());
-                }
                 if self.challenge_seed.is_none() {
                     self.bests.record(&self.round, elapsed);
                 }
@@ -431,7 +442,7 @@ impl GameView {
         (x, y): (usize, usize),
         cell_size: f32,
         art: &'static FieldArt,
-        impact: Option<f32>,
+        now: Instant,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let board = &self.round.board;
@@ -448,6 +459,11 @@ impl GameView {
         };
         let variant = (x + y * 3) % 5 < 2;
         let face = art.face(tile, chordable, variant);
+        let radius = px((cell_size * 0.15).clamp(3., 5.));
+        let cue = self
+            .field_motion
+            .as_ref()
+            .and_then(|motion| motion.cue((x, y), now));
         let hint = self.hint.target(x, y);
         let focus_ink = if hint.is_some() {
             t::GOLD
@@ -479,7 +495,7 @@ impl GameView {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px((cell_size * 0.15).clamp(3., 5.)))
+            .rounded(radius)
             .border_1()
             .border_color(rgb(if opening { OPENING_EDGE } else { face.edge }))
             .when(hint.is_some(), |cell| {
@@ -532,7 +548,7 @@ impl GameView {
                 div()
                     .absolute()
                     .inset_0()
-                    .child(art.detail(tile, opening, chordable, impact)),
+                    .child(art.detail(tile, opening, chordable, cue)),
             );
         }
         cell.when_some(
@@ -549,6 +565,28 @@ impl GameView {
                     .child(count.to_string())
             },
         )
+        .when_some(cue, |cell, cue| match cue {
+            Cue::Reveal(progress) => cell.child(
+                div()
+                    .absolute()
+                    .inset(px(progress * 2.5))
+                    .rounded(radius)
+                    .bg(art.face(Tile::Covered, false, variant).finish())
+                    .opacity((1. - progress).powi(2))
+                    .child(art.detail(Tile::Covered, false, false, None)),
+            ),
+            Cue::Flag(progress) => cell.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(radius)
+                    .border_2()
+                    .border_color(rgba(
+                        (OPENING_EDGE << 8) | (181. * (1. - progress).powi(2)) as u32,
+                    )),
+            ),
+            Cue::Impact(_) => cell,
+        })
     }
 
     fn can_play(&self) -> bool {
@@ -798,7 +836,7 @@ impl GameView {
         elapsed: Duration,
         limit: Option<Duration>,
         art: &'static FieldArt,
-        impact: Option<f32>,
+        now: Instant,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let board = &self.round.board;
@@ -927,7 +965,7 @@ impl GameView {
                     .grid_cols(width as u16)
                     .items_start()
                     .gap(px(CELL_GAP))
-                    .children((0..width).map(|x| self.cell((x, y), tile, art, impact, cx)))
+                    .children((0..width).map(|x| self.cell((x, y), tile, art, now, cx)))
             }));
 
         div()
@@ -965,15 +1003,15 @@ impl Render for GameView {
         let limit = self.round.limit();
         let palette = t::colors(cx);
         let art = FieldArt::for_palette(palette);
-        let impact = self
-            .impact
-            .map(|started| started.elapsed())
-            .filter(|&elapsed| elapsed < IMPACT_DURATION && motion::enabled(cx))
-            .map(|elapsed| elapsed.as_secs_f32() / IMPACT_DURATION.as_secs_f32());
-        if impact.is_some() {
+        let now = Instant::now();
+        if self
+            .field_motion
+            .as_ref()
+            .is_some_and(|motion| motion.playing(now) && motion::enabled(cx))
+        {
             window.request_animation_frame();
         } else {
-            self.impact = None;
+            self.field_motion = None;
         }
         div()
             .w_full()
@@ -984,7 +1022,7 @@ impl Render for GameView {
             .gap_3()
             .child(self.toolbar(cx))
             .child(self.status(elapsed, limit, cx))
-            .child(self.field(window, elapsed, limit, art, impact, cx))
+            .child(self.field(window, elapsed, limit, art, now, cx))
             .when(matches!(self.round.board.status(), Status::Ready | Status::Playing), |game| {
                 game.child(
                     div()
