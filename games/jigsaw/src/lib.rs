@@ -62,6 +62,23 @@ impl Puzzle {
         }
     }
 
+    pub fn restore(size: Size, pieces: Vec<usize>, moves: usize) -> Option<Self> {
+        if pieces.len() != size.piece_count() {
+            return None;
+        }
+        let mut seen = vec![false; pieces.len()];
+        for &piece in &pieces {
+            if piece >= pieces.len() || std::mem::replace(&mut seen[piece], true) {
+                return None;
+            }
+        }
+        Some(Self {
+            pieces,
+            selected: None,
+            moves,
+        })
+    }
+
     pub fn pieces(&self) -> &[usize] {
         &self.pieces
     }
@@ -117,7 +134,7 @@ impl Puzzle {
         }
 
         self.pieces.swap(first, second);
-        self.moves += 1;
+        self.moves = self.moves.saturating_add(1);
         self.selected = None;
         if self.is_complete() {
             Selection::Completed

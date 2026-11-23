@@ -15,8 +15,6 @@ use super::{
 };
 
 const BOARD: u32 = 0x203b34;
-const TRAY: u32 = 0xece8dc;
-const SLOT: u32 = 0xe2dfd2;
 const CELL_GAP: f32 = 5.;
 const TRAY_PADDING: f32 = 6.;
 
@@ -93,11 +91,11 @@ impl gpui::Render for DragPreview {
 
 impl GameView {
     fn tray_page(&self, capacity: usize) -> TrayPage {
-        let session = self.session();
-        let mut pieces: Vec<_> = session.assembly.tray(session.tray.filter).collect();
+        let round = self.round();
+        let mut pieces: Vec<_> = round.assembly.tray(round.tray.filter).collect();
         let total = pieces.len();
         let pages = total.div_ceil(capacity);
-        let index = session.tray.page.min(pages.saturating_sub(1));
+        let index = round.tray.page.min(pages.saturating_sub(1));
         let first = index * capacity;
         let pieces = pieces.drain(first..(first + capacity).min(total)).collect();
         TrayPage {
@@ -110,15 +108,15 @@ impl GameView {
     }
 
     pub(super) fn undo_placement(&mut self, capacity: usize) {
-        let session = self.session_mut();
-        let Some(piece) = session.assembly.undo() else {
+        let round = self.round_mut();
+        let Some(piece) = round.assembly.undo() else {
             return;
         };
-        let tray = &mut session.tray;
-        if !session.assembly.tray(tray.filter).any(|item| item == piece) {
+        let tray = &mut round.tray;
+        if !round.assembly.tray(tray.filter).any(|item| item == piece) {
             tray.filter = TrayFilter::All;
         }
-        tray.page = session
+        tray.page = round
             .assembly
             .tray(tray.filter)
             .position(|item| item == piece)
@@ -128,35 +126,40 @@ impl GameView {
         tray.cursor = piece;
         tray.hint = None;
         tray.missed = None;
+        self.save();
     }
 
     fn select_piece(&mut self, piece: usize) {
-        let session = self.session_mut();
-        let tray = &mut session.tray;
+        let round = self.round_mut();
+        let tray = &mut round.tray;
         tray.selected = (tray.selected != Some(piece)).then_some(piece);
         tray.hint = None;
         tray.missed = None;
-        if session.assembly.is_placed(tray.cursor) {
-            tray.cursor = session.assembly.tray(TrayFilter::All).min().unwrap_or(0);
+        if round.assembly.is_placed(tray.cursor) {
+            tray.cursor = round.assembly.tray(TrayFilter::All).min().unwrap_or(0);
         }
     }
 
     fn use_hint(&mut self, fallback: usize) {
-        let tray = &mut self.session_mut().tray;
+        let tray = &mut self.round_mut().tray;
         let piece = tray.selected.unwrap_or(fallback);
-        if tray.hint != Some(piece) {
-            tray.hints_used += 1;
+        let new_hint = tray.hint != Some(piece);
+        if new_hint {
+            tray.hints_used = tray.hints_used.saturating_add(1);
         }
         tray.selected = Some(piece);
         tray.hint = Some(piece);
         tray.cursor = piece;
         tray.missed = None;
+        if new_hint {
+            self.save();
+        }
     }
 
     fn try_place(&mut self, piece: usize, target: usize) -> Placement {
-        let session = self.session_mut();
-        let tray = &mut session.tray;
-        let result = session.assembly.place(piece, target);
+        let round = self.round_mut();
+        let tray = &mut round.tray;
+        let result = round.assembly.place(piece, target);
         match result {
             Placement::Missed => {
                 if tray.hint != Some(piece) {
@@ -171,6 +174,7 @@ impl GameView {
                 tray.hint = None;
                 tray.missed = None;
                 tray.cursor = target;
+                self.save();
             }
             Placement::Ignored => {}
         }
@@ -184,11 +188,11 @@ impl GameView {
         cx: &mut Context<Self>,
         capacity: usize,
     ) {
-        let Some(piece) = self.session().tray.selected else {
+        let Some(piece) = self.round().tray.selected else {
             return;
         };
         let (columns, rows) = self.key.size.dimensions();
-        let cursor = self.session().tray.cursor;
+        let cursor = self.round().tray.cursor;
         let (column, row) = (cursor % columns, cursor / columns);
         let target = match event.keystroke.key.as_str() {
             "left" => row * columns + column.saturating_sub(1),
@@ -215,7 +219,7 @@ impl GameView {
             }
             _ => return,
         };
-        let tray = &mut self.session_mut().tray;
+        let tray = &mut self.round_mut().tray;
         tray.cursor = target;
         tray.missed = None;
         cx.notify();
@@ -241,10 +245,10 @@ impl GameView {
         cx: &Context<Self>,
     ) -> Div {
         let (width, height) = dimensions;
-        let session = self.session();
+        let round = self.round();
         let board = div().relative().w(px(width)).h(px(height)).bg(rgb(BOARD));
 
-        if session.assembly.is_complete() {
+        if round.assembly.is_complete() {
             return framed_board(
                 board.child(
                     img(self.painting().asset)
@@ -270,31 +274,33 @@ impl GameView {
                         "Preparing the pieces…"
                     })
                     .when(failed, |board| {
-                        board.child(action_button("jigsaw-retry", "Try again", true).on_click(
-                            cx.listener(|view, _, _, cx| {
-                                view.prepare_artwork(cx);
-                                cx.notify();
-                            }),
-                        ))
+                        board.child(
+                            action_button("jigsaw-retry", "Try again", true, cx).on_click(
+                                cx.listener(|view, _, _, cx| {
+                                    view.prepare_artwork(cx);
+                                    cx.notify();
+                                }),
+                            ),
+                        )
                     }),
             );
         };
 
         let (columns, rows) = self.key.size.dimensions();
         let (cell_width, cell_height) = (width / columns as f32, height / rows as f32);
-        let selected = session.tray.selected.is_some();
+        let selected = round.tray.selected.is_some();
         let capacity = tray_layout.capacity();
         let has_cursor = selected && self.board_focus.is_focused(window);
         let outlines: Vec<_> = art
             .iter()
             .enumerate()
             .map(|(piece, artwork)| {
-                let placed = session.assembly.is_placed(piece);
-                let mark = if Some(piece) == session.tray.missed {
+                let placed = round.assembly.is_placed(piece);
+                let mark = if Some(piece) == round.tray.missed {
                     Outline::Miss
-                } else if Some(piece) == session.tray.hint {
+                } else if Some(piece) == round.tray.hint {
                     Outline::Hint
-                } else if has_cursor && piece == session.tray.cursor {
+                } else if has_cursor && piece == round.tray.cursor {
                     Outline::Focus
                 } else if placed {
                     Outline::Placed
@@ -330,7 +336,7 @@ impl GameView {
                 })
                 .children(
                     art.iter().enumerate()
-                        .filter(|(piece, _)| session.assembly.is_placed(*piece))
+                        .filter(|(piece, _)| round.assembly.is_placed(*piece))
                         .map(|(_, piece)| {
                             img(piece.image.clone())
                                 .absolute()
@@ -361,7 +367,7 @@ impl GameView {
                                     .cursor_pointer()
                                 .hover(|style| style.bg(rgba(0xfffcf514)))
                                 .on_click(cx.listener(move |view, _, _, cx| {
-                                    if let Some(piece) = view.session().tray.selected {
+                                    if let Some(piece) = view.round().tray.selected {
                                         view.try_place(piece, target);
                                         cx.notify();
                                     }
@@ -371,7 +377,7 @@ impl GameView {
                         .on_drop(cx.listener(move |view, drag: &DraggedPiece, _, cx| {
                             if view.mode == Mode::Assemble
                                 && view.key == drag.key
-                                && view.session().assembly_deal == drag.deal
+                                && view.round().assembly_deal == drag.deal
                             {
                                 view.try_place(drag.piece, target);
                                 cx.notify();
@@ -388,10 +394,11 @@ impl GameView {
         art: &[PieceArt],
         cx: &Context<Self>,
     ) -> Div {
-        let session = self.session();
+        let round = self.round();
         let page = self.tray_page(layout.capacity());
         let first_piece = page.pieces.first().copied();
-        let remaining = self.key.size.piece_count() - session.assembly.placed_count();
+        let remaining = self.key.size.piece_count() - round.assembly.placed_count();
+        let palette = t::colors(cx);
         div()
             .w(px(layout.width))
             .flex_none()
@@ -404,7 +411,7 @@ impl GameView {
                     .items_center()
                     .justify_between()
                     .child(t::display_type("Piece tray", 17.))
-                    .child(small_text(format!("{remaining} left"))),
+                    .child(small_text(format!("{remaining} left"), cx)),
             )
             .child(
                 div()
@@ -414,7 +421,7 @@ impl GameView {
                     .justify_between()
                     .gap_2()
                     .child(
-                        segments().children(
+                        segments(cx).children(
                             [
                                 (TrayFilter::All, "jigsaw-tray-all", "All"),
                                 (TrayFilter::Edges, "jigsaw-tray-edges", "Edges"),
@@ -422,12 +429,12 @@ impl GameView {
                             ]
                             .into_iter()
                             .map(|(filter, id, label)| {
-                                segment(id, label, session.tray.filter == filter)
+                                segment(id, label, round.tray.filter == filter, cx)
                                     .when(filter == TrayFilter::All, |button| {
                                         button.track_focus(&self.all_pieces_focus)
                                     })
                                     .on_click(cx.listener(move |view, _, _, cx| {
-                                        let tray = &mut view.session_mut().tray;
+                                        let tray = &mut view.round_mut().tray;
                                         tray.filter = filter;
                                         tray.page = 0;
                                         tray.selected = None;
@@ -439,7 +446,7 @@ impl GameView {
                         ),
                     )
                     .child(
-                        action_button("jigsaw-hint", "Hint", first_piece.is_some())
+                        action_button("jigsaw-hint", "Hint", first_piece.is_some(), cx)
                             .aria_label("Show where a tray piece fits")
                             .when_some(first_piece, |button, fallback| {
                                 button.on_click(cx.listener(
@@ -459,10 +466,10 @@ impl GameView {
                     .p(px(TRAY_PADDING))
                     .rounded_md()
                     .border_1()
-                    .border_color(rgb(t::BORDER))
-                    .bg(rgb(TRAY))
+                    .border_color(rgb(palette.border))
+                    .bg(rgb(palette.paper))
                     .when(page.pieces.is_empty(), |tray| {
-                        let message = match session.tray.filter {
+                        let message = match round.tray.filter {
                             TrayFilter::Edges => "All edge pieces are placed.",
                             TrayFilter::Interior => "All interior pieces are placed.",
                             TrayFilter::All => "All pieces are placed.",
@@ -471,7 +478,7 @@ impl GameView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(small_text(message))
+                            .child(small_text(message, cx))
                     })
                     .when(!page.pieces.is_empty(), |tray| {
                         tray.flex().flex_col().gap(px(CELL_GAP)).children(
@@ -507,7 +514,7 @@ impl GameView {
                         .items_center()
                         .gap_1()
                         .child(
-                            action_button("jigsaw-tray-previous", "Previous", previous)
+                            action_button("jigsaw-tray-previous", "Previous", previous, cx)
                                 .min_h(px(30.))
                                 .aria_label("Previous page of pieces")
                                 .when(previous, |button| {
@@ -517,14 +524,17 @@ impl GameView {
                                     }))
                                 }),
                         )
-                        .child(small_text(format!(
-                            "{}–{} of {}",
-                            page.first + 1,
-                            page.first + page.pieces.len(),
-                            page.total
-                        )))
+                        .child(small_text(
+                            format!(
+                                "{}–{} of {}",
+                                page.first + 1,
+                                page.first + page.pieces.len(),
+                                page.total
+                            ),
+                            cx,
+                        ))
                         .child(
-                            action_button("jigsaw-tray-next", "Next", next)
+                            action_button("jigsaw-tray-next", "Next", next, cx)
                                 .min_h(px(30.))
                                 .aria_label("Next page of pieces")
                                 .when(next, |button| {
@@ -539,7 +549,7 @@ impl GameView {
     }
 
     fn goto_tray_page(&mut self, page: usize) {
-        let tray = &mut self.session_mut().tray;
+        let tray = &mut self.round_mut().tray;
         tray.page = page;
         tray.selected = None;
         tray.hint = None;
@@ -555,9 +565,10 @@ impl GameView {
         board: (f32, f32),
         cx: &Context<Self>,
     ) -> Stateful<Div> {
-        let session = self.session();
-        let selected = session.tray.selected == Some(piece);
-        let description = if session.assembly.is_edge(piece) {
+        let round = self.round();
+        let selected = round.tray.selected == Some(piece);
+        let palette = t::colors(cx);
+        let description = if round.assembly.is_edge(piece) {
             "Edge piece"
         } else {
             "Interior piece"
@@ -581,13 +592,21 @@ impl GameView {
             .justify_center()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(if selected { t::RAIL_ACTIVE } else { SLOT }))
-            .bg(rgb(if selected { t::GOLD_HOVER } else { SLOT }))
+            .border_color(rgb(if selected {
+                palette.gold_text
+            } else {
+                palette.border
+            }))
+            .bg(rgb(if selected {
+                t::GOLD_HOVER
+            } else {
+                palette.surface
+            }))
             .cursor_pointer()
             .when(!selected, |tile| {
-                tile.hover(|style| style.bg(rgb(t::PAPER)))
+                tile.hover(move |style| style.bg(rgb(palette.hover)))
             })
-            .focus_visible(|style| style.border_color(rgb(t::INK)).bg(rgb(t::GOLD_HOVER)))
+            .focus_visible(move |style| style.border_color(rgb(palette.ink)).bg(rgb(palette.hover)))
             .child(
                 img(art.image.clone())
                     .w(px(width))
@@ -597,7 +616,7 @@ impl GameView {
             .on_drag(
                 DraggedPiece {
                     key: self.key,
-                    deal: session.assembly_deal,
+                    deal: round.assembly_deal,
                     piece,
                     image: art.image.clone(),
                     size: (art.width * board.0, art.height * board.1),
@@ -619,7 +638,7 @@ impl GameView {
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                     view.select_piece(piece);
-                    if event.is_keyboard() && view.session().tray.selected.is_some() {
+                    if event.is_keyboard() && view.round().tray.selected.is_some() {
                         view.board_focus.focus(window, cx);
                     }
                     cx.notify();

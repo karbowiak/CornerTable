@@ -58,6 +58,10 @@ impl Assembly {
         self.placements.len()
     }
 
+    pub fn placements(&self) -> &[usize] {
+        &self.placements
+    }
+
     pub fn is_complete(&self) -> bool {
         self.placed_count() == self.placed.len()
     }

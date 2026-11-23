@@ -1,5 +1,7 @@
 use corner_table_jigsaw::{Selection, Size};
-use gpui::{Context, Div, ObjectFit, Render, Stateful, Window, div, img, prelude::*, px, rgb};
+use gpui::{
+    Context, Div, ObjectFit, Render, Role, Stateful, Window, div, img, prelude::*, px, rgb,
+};
 
 use crate::theme as t;
 
@@ -57,7 +59,7 @@ impl Render for DraggedTile {
 
 impl GameView {
     fn tile(&self, position: usize, width: f32, height: f32, cx: &Context<Self>) -> Stateful<Div> {
-        let puzzle = &self.session().swap;
+        let puzzle = &self.round().swap;
         let piece = puzzle.pieces()[position];
         let selected = puzzle.selected() == Some(position);
         let placed = piece == position;
@@ -89,7 +91,9 @@ impl GameView {
             return face;
         }
         face.tab_index(0)
+            .role(Role::Button)
             .aria_label(format!("Square tile {}", position + 1))
+            .aria_selected(selected)
             .cursor_pointer()
             .hover(|style| style.opacity(0.85))
             .focus(|style| style.opacity(0.70))
@@ -97,7 +101,7 @@ impl GameView {
             .on_drag(
                 DraggedTile {
                     key: self.key,
-                    deal: self.session().swap_deal,
+                    deal: self.round().swap_deal,
                     position,
                     tile,
                 },
@@ -106,20 +110,24 @@ impl GameView {
             .on_drop(cx.listener(move |view, dragged: &DraggedTile, _, cx| {
                 if view.mode == Mode::Swap
                     && view.key == dragged.key
-                    && view.session().swap_deal == dragged.deal
-                    && view.session().swap.pieces().get(dragged.position)
-                        == Some(&dragged.tile.piece)
-                    && view.session_mut().swap.swap(dragged.position, position)
-                        != Selection::Ignored
+                    && view.round().swap_deal == dragged.deal
+                    && view.round().swap.pieces().get(dragged.position) == Some(&dragged.tile.piece)
+                    && view.round_mut().swap.swap(dragged.position, position) != Selection::Ignored
                 {
+                    view.save();
                     cx.notify();
                 }
             }))
-            .on_click(cx.listener(move |view, _, _, cx| {
-                if view.session_mut().swap.select(position) != Selection::Ignored {
-                    cx.notify();
-                }
-            }))
+            .on_click(cx.listener(
+                move |view, _, _, cx| match view.round_mut().swap.select(position) {
+                    Selection::Swapped | Selection::Completed => {
+                        view.save();
+                        cx.notify();
+                    }
+                    Selection::Selected | Selection::Cleared => cx.notify(),
+                    Selection::Ignored => {}
+                },
+            ))
     }
 
     pub(super) fn swap_board(&self, width: f32, cx: &Context<Self>) -> Div {
@@ -128,7 +136,7 @@ impl GameView {
         let image_height = piece_width * columns as f32 / self.painting().aspect;
         let piece_height = image_height / rows as f32;
         let height = image_height + GAP * (rows - 1) as f32;
-        let board = if self.session().swap.is_complete() {
+        let board = if self.round().swap.is_complete() {
             div()
                 .w(px(width))
                 .h(px(width / self.painting().aspect))
