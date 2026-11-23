@@ -119,15 +119,6 @@ pub fn display_type(text: impl Into<SharedString>, size: f32) -> Div {
         .child(text.into())
 }
 
-pub fn surface() -> Div {
-    div()
-        .bg(rgb(SURFACE))
-        .border_1()
-        .border_color(rgb(BORDER))
-        .text_color(rgb(INK))
-        .rounded_xl()
-}
-
 pub fn panel(cx: &App) -> Div {
     let palette = colors(cx);
     div()
