@@ -2,6 +2,7 @@ mod app;
 mod assets;
 mod games;
 mod pages;
+mod storage;
 mod theme;
 mod widgets;
 
@@ -16,6 +17,8 @@ pub fn run() -> anyhow::Result<()> {
     gpui_platform::application()
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
+            let appearance = storage::appearance();
+            cx.set_window_appearance(appearance.native());
             if let Err(error) = assets::register_fonts(cx) {
                 eprintln!("Could not load bundled fonts: {error:#}");
             }
@@ -42,7 +45,7 @@ pub fn run() -> anyhow::Result<()> {
             };
             match cx.open_window(options, move |window, cx| {
                 cx.new(|cx| {
-                    let desktop = app::Desktop::new(fixtures, cx);
+                    let desktop = app::Desktop::new(fixtures, appearance, window, cx);
                     desktop.focus.focus(window, cx);
                     desktop
                 })

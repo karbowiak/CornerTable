@@ -1037,9 +1037,13 @@ dependencies = [
  "corner-table-solitaire",
  "corner-table-sudoku",
  "corner-table-word-games",
+ "dirs",
  "gpui-pre",
  "gpui-pre-platform",
  "include_dir",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -6,18 +6,18 @@ use crate::games::{GameEntry, GameLaunch};
 use crate::{theme as t, widgets};
 
 pub fn solitaire(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
+    let palette = t::colors(cx);
     div()
         .flex()
         .flex_col()
-        .gap_5()
-        .child(t::heading("Solitaire"))
+        .gap_4()
+        .child(t::display_type("Solitaire", 36.))
         .child(widgets::hero(
-            "Classic Solitaire",
             "Klondike",
             "solitaire-feature",
             widgets::button(
                 "featured-klondike",
-                "View Klondike",
+                "Play Klondike",
                 open_mode("klondike"),
                 true,
                 cx,
@@ -34,7 +34,7 @@ pub fn solitaire(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
             12.,
         ))
         .child(
-            t::surface()
+            t::panel(cx)
                 .p_5()
                 .flex()
                 .items_center()
@@ -44,7 +44,7 @@ pub fn solitaire(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 .child(
                     div().child(t::display_type("Daily challenges", 21.)).child(
                         div()
-                            .text_color(rgb(t::MUTED))
+                            .text_color(rgb(palette.muted))
                             .child("See the featured puzzle and guest rankings."),
                     ),
                 )

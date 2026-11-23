@@ -1,6 +1,6 @@
 use gpui::{
     Context, Div, ElementId, FontWeight, NavigationDirection, ObjectFit, Role, SharedString,
-    Stateful, div, img, prelude::*, px, relative, rgb,
+    Stateful, Toggled, div, img, prelude::*, px, relative, rgb,
 };
 
 use crate::app::{Action, Desktop, Page};
@@ -24,8 +24,13 @@ pub fn button(
     primary: bool,
     cx: &Context<Desktop>,
 ) -> Stateful<Div> {
-    let bg = if primary { t::GOLD } else { t::SURFACE };
-    let hover = if primary { t::GOLD_HOVER } else { t::SAGE };
+    let palette = t::colors(cx);
+    let bg = if primary { t::GOLD } else { palette.surface };
+    let hover = if primary {
+        t::GOLD_HOVER
+    } else {
+        palette.hover
+    };
     clickable(id, action, cx)
         .min_h(px(42.))
         .px_4()
@@ -34,16 +39,17 @@ pub fn button(
         .justify_center()
         .rounded_md()
         .border_1()
-        .border_color(rgb(if primary { t::GOLD } else { t::BORDER }))
+        .border_color(rgb(if primary { t::GOLD } else { palette.border }))
         .bg(rgb(bg))
-        .text_color(rgb(t::INK))
+        .text_color(rgb(if primary { t::INK } else { palette.ink }))
         .font_weight(FontWeight::SEMIBOLD)
         .hover(|style| style.bg(rgb(hover)))
-        .focus(|style| style.border_color(rgb(t::MUTED)))
+        .focus_visible(|style| style.border_color(rgb(palette.ink)))
         .child(label.into())
 }
 
 pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
+    let palette = t::colors(cx);
     let current = match &app.page {
         Page::Game(launch) => match launch.entry {
             GameEntry::Mode(_) if launch.game.0 == "solitaire" => Page::Solitaire,
@@ -72,7 +78,7 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
     div()
         .w(px(if narrow { 174. } else { 220. }))
         .flex_shrink_0()
-        .bg(rgb(t::RAIL))
+        .bg(rgb(palette.rail))
         .text_color(rgb(t::PAPER))
         .flex()
         .flex_col()
@@ -119,9 +125,13 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                             .px_2()
                             .rounded_md()
                             .border_l_4()
-                            .border_color(rgb(if active { t::GOLD } else { t::RAIL }))
-                            .bg(rgb(if active { t::RAIL_ACTIVE } else { t::RAIL }))
-                            .hover(|style| style.bg(rgb(t::RAIL_ACTIVE)))
+                            .border_color(rgb(if active { t::GOLD } else { palette.rail }))
+                            .bg(rgb(if active {
+                                palette.rail_active
+                            } else {
+                                palette.rail
+                            }))
+                            .hover(|style| style.bg(rgb(palette.rail_active)))
                             .focus(|style| style.border_color(rgb(t::GOLD)))
                             .child(symbol(icon, t::PAPER, 21.))
                             .child(
@@ -131,30 +141,146 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                                     .child(label),
                             )
                     },
-                ))),
+                )))
+                .children(app.recent.as_ref().and_then(|launch| {
+                    let game = app.api.game(&launch.game)?;
+                    let title = match &launch.entry {
+                        GameEntry::Mode(id) if launch.game.0 == "solitaire" => app
+                            .api
+                            .library
+                            .solitaire_modes
+                            .iter()
+                            .find(|mode| &mode.id == id)
+                            .map_or(game.title.as_str(), |mode| mode.title.as_str()),
+                        _ => game.title.as_str(),
+                    };
+                    let active = matches!(&app.page, Page::Game(current) if current == launch);
+                    let content = div()
+                        .id("nav-recent")
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .px_2()
+                        .py_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(if active { 0x567265 } else { 0x36564a }))
+                        .bg(rgb(0x1b3b32))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(rgb(0xd5dfd6))
+                                .child("Last played"),
+                        )
+                        .child(
+                            div()
+                                .font_weight(FontWeight::BOLD)
+                                .truncate()
+                                .child(title.to_owned()),
+                        )
+                        .when(!active, |button| {
+                            let launch = launch.clone();
+                            button
+                                .role(Role::Button)
+                                .tab_index(0)
+                                .cursor_pointer()
+                                .hover(|style| style.bg(rgb(palette.rail_active)))
+                                .focus_visible(|style| style.border_color(rgb(t::GOLD)))
+                                .on_click(cx.listener(move |desktop, _, window, cx| {
+                                    desktop.dispatch(
+                                        Action::Navigate(Page::Game(launch.clone())),
+                                        window,
+                                        cx,
+                                    );
+                                }))
+                        });
+                    Some(content)
+                })),
         )
         .child(
             div()
                 .flex()
-                .items_center()
-                .gap_3()
-                .px_2()
-                .child(avatar(&guest.initials, t::PAPER, t::INK))
+                .flex_col()
+                .gap_4()
+                .child(appearance_control(app, cx))
                 .child(
                     div()
-                        .line_height(px(20.))
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .px_2()
+                        .child(avatar(&guest.initials, t::PAPER, t::INK))
                         .child(
                             div()
-                                .font_weight(FontWeight::BOLD)
-                                .child(guest.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .text_color(rgb(0xcad6cc))
-                                .child("Guest"),
+                                .line_height(px(20.))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(guest.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .text_color(rgb(0xcad6cc))
+                                        .child("Guest"),
+                                ),
                         ),
                 ),
+        )
+}
+
+fn appearance_control(app: &Desktop, cx: &Context<Desktop>) -> Div {
+    let palette = t::colors(cx);
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .px_1()
+                .text_size(px(12.))
+                .text_color(rgb(0xd5dfd6))
+                .child("Appearance"),
+        )
+        .child(
+            div()
+                .flex()
+                .gap_1()
+                .children(t::Appearance::ALL.map(|appearance| {
+                    let active = appearance == app.appearance;
+                    clickable(
+                        SharedString::from(format!("appearance-{}", appearance.label())),
+                        Action::SetAppearance(appearance),
+                        cx,
+                    )
+                    .aria_label(format!("{} appearance", appearance.label()))
+                    .aria_toggled(if active {
+                        Toggled::True
+                    } else {
+                        Toggled::False
+                    })
+                    .flex_1()
+                    .h(px(32.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(rgb(if active { t::GOLD } else { 0x587669 }))
+                    .bg(rgb(if active { t::GOLD } else { palette.rail }))
+                    .text_color(rgb(if active { t::INK } else { t::PAPER }))
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .hover(|style| {
+                        style.bg(rgb(if active {
+                            t::GOLD_HOVER
+                        } else {
+                            palette.rail_active
+                        }))
+                    })
+                    .focus_visible(|style| style.border_color(rgb(t::PAPER)))
+                    .child(appearance.label())
+                })),
         )
 }
 
@@ -166,6 +292,7 @@ fn history_button(
     cx: &Context<Desktop>,
 ) -> Stateful<Div> {
     let enabled = app.can_step_history(direction);
+    let palette = t::colors(cx);
     div()
         .id(id)
         .flex_1()
@@ -185,7 +312,7 @@ fn history_button(
                 .role(Role::Button)
                 .tab_index(0)
                 .cursor_pointer()
-                .hover(|style| style.bg(rgb(t::RAIL_ACTIVE)))
+                .hover(|style| style.bg(rgb(palette.rail_active)))
                 .focus_visible(|style| style.border_color(rgb(t::GOLD)))
                 .on_click(cx.listener(move |desktop, _, window, cx| {
                     desktop.dispatch(Action::History(direction), window, cx);
@@ -230,10 +357,10 @@ pub fn challenge_art(game_id: &str) -> &str {
     }
 }
 
-pub fn hero(eyebrow: &str, title: &str, image: &str, action: Stateful<Div>) -> Div {
+pub fn hero(title: &str, image: &str, action: Stateful<Div>) -> Div {
     div()
         .w_full()
-        .h(px(191.))
+        .h(px(147.))
         .flex()
         .rounded_xl()
         .overflow_hidden()
@@ -249,13 +376,7 @@ pub fn hero(eyebrow: &str, title: &str, image: &str, action: Stateful<Div>) -> D
                 .justify_center()
                 .items_start()
                 .gap_2()
-                .child(
-                    div()
-                        .text_size(px(16.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(eyebrow.to_owned()),
-                )
-                .child(t::display_type(title.to_owned(), 40.))
+                .child(t::display_type(title.to_owned(), 29.))
                 .child(div().mt_1().child(action)),
         )
         .child(
@@ -285,6 +406,7 @@ pub fn tile(
     action: Action,
     cx: &Context<Desktop>,
 ) -> Stateful<Div> {
+    let palette = t::colors(cx);
     clickable(SharedString::from(format!("tile-{id}")), action, cx)
         .w_full()
         .min_w_0()
@@ -293,11 +415,15 @@ pub fn tile(
         .flex_col()
         .rounded_lg()
         .overflow_hidden()
-        .bg(rgb(t::SURFACE))
+        .bg(rgb(palette.surface))
         .border_1()
-        .border_color(rgb(t::BORDER))
-        .hover(|style| style.bg(rgb(t::SAGE)).border_color(rgb(t::MUTED)))
-        .focus(|style| style.border_color(rgb(t::MUTED)))
+        .border_color(rgb(palette.border))
+        .hover(|style| {
+            style
+                .bg(rgb(palette.hover))
+                .border_color(rgb(palette.muted))
+        })
+        .focus_visible(|style| style.border_color(rgb(palette.ink)))
         .child(
             div()
                 .w_full()

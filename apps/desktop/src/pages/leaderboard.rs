@@ -5,7 +5,7 @@ use crate::app::{Action, Desktop, Page};
 use crate::{theme as t, widgets};
 
 pub fn leaderboard(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
-    let daily = &app.api.home.challenge;
+    let palette = t::colors(cx);
     let board = app.api.leaderboard(&app.board_game, app.board_period);
     let guest = &app.api.home.guest;
     let headings = row(
@@ -14,10 +14,10 @@ pub fn leaderboard(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         "Score".into(),
         "Time".into(),
     )
-    .bg(rgb(0xefe9dd))
-    .text_color(rgb(t::MUTED))
+    .bg(rgb(palette.hover))
+    .text_color(rgb(palette.muted))
     .font_weight(FontWeight::BOLD);
-    let table = t::surface()
+    let table = t::panel(cx)
         .overflow_hidden()
         .child(headings)
         .map(|table| match board {
@@ -30,15 +30,16 @@ pub fn leaderboard(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         } else {
                             None
                         },
+                        palette,
                     )
                     .border_t_1()
-                    .border_color(rgb(t::BORDER))
+                    .border_color(rgb(palette.border))
                 }))
             }
             _ => table.child(
                 div()
                     .p_6()
-                    .text_color(rgb(t::MUTED))
+                    .text_color(rgb(palette.muted))
                     .child("No sample scores for this game and period."),
             ),
         });
@@ -55,35 +56,41 @@ pub fn leaderboard(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         .flex()
         .flex_col()
         .gap_4()
-        .child(t::heading("Leaderboard"))
-        .child(widgets::hero(
-            "Today’s Challenge",
-            &daily.title,
-            widgets::challenge_art(&daily.game_id.0),
-            widgets::button(
-                "board-daily",
-                "View challenge",
-                Action::Navigate(Page::DailyChallenge),
-                true,
-                cx,
-            ),
-        ))
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(t::display_type("Leaderboard", 36.))
+                .child(widgets::button(
+                    "board-daily",
+                    "View daily challenge",
+                    Action::Navigate(Page::DailyChallenge),
+                    false,
+                    cx,
+                )),
+        )
         .child(filters(app, narrow, cx))
         .child(table)
         .children(guest_row.map(|entry| {
-            t::surface()
-                .overflow_hidden()
-                .child(standing_row(entry, Some(&guest.initials)))
+            t::panel(cx).overflow_hidden().child(standing_row(
+                entry,
+                Some(&guest.initials),
+                palette,
+            ))
         }))
         .child(
             div()
                 .text_size(px(13.))
-                .text_color(rgb(t::MUTED))
+                .text_color(rgb(palette.muted))
                 .child("Preview rankings · Sample data"),
         )
 }
 
 fn filters(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
+    let palette = t::colors(cx);
     let games_per_row = if narrow { 2 } else { 4 };
     let title = app
         .api
@@ -134,7 +141,7 @@ fn filters(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 ),
         )
         .when(app.game_picker_open, |filters| {
-            filters.child(t::surface().p_3().child(widgets::columns(
+            filters.child(t::panel(cx).p_3().child(widgets::columns(
                 app.api.library.games.iter().map(|game| {
                     widgets::clickable(
                         gpui::SharedString::from(format!("board-filter-{}", game.id.0)),
@@ -146,12 +153,12 @@ fn filters(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                     .py_2()
                     .truncate()
                     .bg(rgb(if game.id == app.board_game {
-                        t::SAGE
+                        palette.hover
                     } else {
-                        t::SURFACE
+                        palette.surface
                     }))
-                    .hover(|style| style.bg(rgb(t::SAGE)))
-                    .focus(|style| style.bg(rgb(t::SAGE)))
+                    .hover(|style| style.bg(rgb(palette.hover)))
+                    .focus(|style| style.bg(rgb(palette.hover)))
                     .child(game.title.clone())
                 }),
                 games_per_row,
@@ -160,7 +167,7 @@ fn filters(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         })
 }
 
-fn standing_row(entry: &Standing, guest: Option<&str>) -> Div {
+fn standing_row(entry: &Standing, guest: Option<&str>, palette: t::Palette) -> Div {
     let initials = guest.map(str::to_owned).unwrap_or_else(|| {
         entry
             .name
@@ -182,7 +189,11 @@ fn standing_row(entry: &Standing, guest: Option<&str>) -> Div {
     };
     let rank = div()
         .font_weight(FontWeight::BOLD)
-        .text_color(rgb(if entry.rank == 1 { 0x855713 } else { t::INK }))
+        .text_color(rgb(if entry.rank == 1 {
+            palette.gold_text
+        } else {
+            palette.ink
+        }))
         .child(entry.rank.to_string());
     let player = div()
         .flex()
@@ -197,7 +208,7 @@ fn standing_row(entry: &Standing, guest: Option<&str>) -> Div {
         entry.elapsed_seconds % 60
     );
     row(rank, player, format_score(entry.score), elapsed).when(guest.is_some(), |row| {
-        row.bg(rgb(t::SAGE)).font_weight(FontWeight::BOLD)
+        row.bg(rgb(palette.hover)).font_weight(FontWeight::BOLD)
     })
 }
 

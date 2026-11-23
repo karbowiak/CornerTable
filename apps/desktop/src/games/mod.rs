@@ -18,18 +18,20 @@ use gpui::{
     AnyView, AppContext as _, Context, Div, FontWeight, SharedString, Stateful, Window, div,
     prelude::*, px, rgb,
 };
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{app::Desktop, theme};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "kind", content = "id")]
 pub enum GameEntry {
     Classic,
     Mode(String),
     Challenge(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct GameLaunch {
     pub game: GameId,
     pub entry: GameEntry,

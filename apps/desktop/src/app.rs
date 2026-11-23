@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use crate::games::{GameEntry, GameLaunch};
-use crate::{pages, theme, widgets};
+use crate::{pages, storage, theme, widgets};
 
 gpui::actions!(
     corner_table,
@@ -33,6 +33,7 @@ pub enum Action {
     SelectGame(GameId),
     SelectPeriod(Period),
     ClearSearch,
+    SetAppearance(theme::Appearance),
 }
 
 struct Visit {
@@ -49,6 +50,8 @@ pub struct Desktop {
     pub search: String,
     pub search_focus: FocusHandle,
     pub search_select_all: bool,
+    pub recent: Option<GameLaunch>,
+    pub appearance: theme::Appearance,
     scroll: ScrollHandle,
     back: Vec<Visit>,
     forward: Vec<Visit>,
@@ -57,8 +60,19 @@ pub struct Desktop {
 }
 
 impl Desktop {
-    pub fn new(api: FixtureApi, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        api: FixtureApi,
+        appearance: theme::Appearance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let board_game = api.home.challenge.game_id.clone();
+        let recent = storage::recent_game().filter(|launch| api.game(&launch.game).is_some());
+        theme::apply(appearance, window, cx);
+        cx.observe_window_appearance(window, |desktop, window, cx| {
+            theme::apply(desktop.appearance, window, cx);
+        })
+        .detach();
         Self {
             api,
             page: Page::Library,
@@ -68,6 +82,8 @@ impl Desktop {
             search: String::new(),
             search_focus: cx.focus_handle().tab_stop(true),
             search_select_all: false,
+            recent,
+            appearance,
             scroll: ScrollHandle::new(),
             back: Vec::new(),
             forward: Vec::new(),
@@ -100,6 +116,14 @@ impl Desktop {
             Action::ClearSearch => {
                 self.search.clear();
                 self.search_select_all = false;
+            }
+            Action::SetAppearance(appearance) => {
+                if self.appearance != appearance {
+                    self.appearance = appearance;
+                    storage::set_appearance(appearance);
+                    cx.set_window_appearance(appearance.native());
+                    theme::apply(appearance, window, cx);
+                }
             }
         }
         if self.page != previous {
@@ -149,6 +173,12 @@ impl Desktop {
 
     fn show_visit(&mut self, visit: Visit) {
         self.page = visit.page;
+        if let Page::Game(launch) = &self.page
+            && self.recent.as_ref() != Some(launch)
+        {
+            storage::remember_game(launch);
+            self.recent = Some(launch.clone());
+        }
         self.game_picker_open = false;
         self.search_select_all = false;
         self.scroll.set_offset(visit.scroll);
@@ -159,6 +189,7 @@ impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let narrow = window.viewport_size().width < px(1080.);
         let playing = matches!(self.page, Page::Game(_));
+        let palette = theme::colors(cx);
         let content = match &self.page {
             Page::Library => pages::library(self, narrow, cx),
             Page::Solitaire => pages::solitaire(self, narrow, cx),
@@ -170,7 +201,7 @@ impl Render for Desktop {
                 {
                     self.games.insert(launch.clone(), view);
                 }
-                pages::game(self, launch, self.games.get(launch).cloned())
+                pages::game(self, launch, self.games.get(launch).cloned(), cx)
             }
         };
 
@@ -199,8 +230,8 @@ impl Render for Desktop {
             .font_family(theme::BODY)
             .text_size(px(15.))
             .line_height(px(23.))
-            .text_color(rgb(theme::INK))
-            .bg(rgb(theme::PAPER))
+            .text_color(rgb(palette.ink))
+            .bg(rgb(palette.paper))
             .child(widgets::sidebar(self, narrow, cx))
             .child(
                 div()

@@ -5,6 +5,7 @@ use crate::{theme as t, widgets};
 
 pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
     let daily = &app.api.home.challenge;
+    let palette = t::colors(cx);
     let query = app.search.trim().to_lowercase();
     let games = app
         .api
@@ -26,9 +27,9 @@ pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         })
         .collect::<Vec<_>>();
     let catalog = if games.is_empty() {
-        t::surface()
+        t::panel(cx)
             .p_6()
-            .text_color(rgb(t::MUTED))
+            .text_color(rgb(palette.muted))
             .child("No games found. Try a different search.")
     } else {
         widgets::columns(games, if narrow { 2 } else { 4 }, 16.)
@@ -37,7 +38,7 @@ pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap_5()
+        .gap_4()
         .child(
             div()
                 .flex()
@@ -45,12 +46,11 @@ pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 .justify_between()
                 .gap_3()
                 .flex_wrap()
-                .child(t::heading("Game Library"))
+                .child(t::display_type("Game Library", 36.))
                 .child(search_field(app, narrow, cx)),
         )
         .child(widgets::hero(
-            "Today’s Challenge",
-            &daily.title,
+            &format!("Daily challenge · {}", daily.title),
             widgets::challenge_art(&daily.game_id.0),
             widgets::button(
                 "daily-feature",
@@ -64,12 +64,13 @@ pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
 }
 
 fn search_field(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
+    let palette = t::colors(cx);
     let value = if app.search.is_empty() {
         "Search games"
     } else {
         &app.search
     };
-    t::surface()
+    t::panel(cx)
         .w(px(if narrow { 214. } else { 300. }))
         .h(px(44.))
         .rounded_md()
@@ -77,7 +78,7 @@ fn search_field(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
         .items_center()
         .gap_2()
         .px_3()
-        .child(widgets::symbol("search", t::MUTED, 17.))
+        .child(widgets::symbol("search", palette.muted, 17.))
         .child(
             div()
                 .id("game-search")
@@ -89,7 +90,7 @@ fn search_field(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 .cursor_text()
                 .tab_index(0)
                 .track_focus(&app.search_focus)
-                .focus(|style| style.text_color(rgb(t::INK)))
+                .focus_visible(|style| style.text_color(rgb(palette.ink)))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|app, _, window, cx| {
@@ -103,14 +104,14 @@ fn search_field(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                     div()
                         .truncate()
                         .bg(rgb(if app.search_select_all {
-                            t::SAGE
+                            palette.hover
                         } else {
-                            t::SURFACE
+                            palette.surface
                         }))
                         .text_color(rgb(if app.search.is_empty() {
-                            t::MUTED
+                            palette.muted
                         } else {
-                            t::INK
+                            palette.ink
                         }))
                         .child(value.to_owned()),
                 ),
@@ -124,8 +125,8 @@ fn search_field(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                     .items_center()
                     .justify_center()
                     .font_weight(FontWeight::BOLD)
-                    .hover(|style| style.bg(rgb(t::SAGE)))
-                    .focus(|style| style.bg(rgb(t::SAGE)))
+                    .hover(|style| style.bg(rgb(palette.hover)))
+                    .focus(|style| style.bg(rgb(palette.hover)))
                     .child("×"),
             )
         })

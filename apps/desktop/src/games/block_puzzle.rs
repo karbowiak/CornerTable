@@ -1,6 +1,8 @@
 use corner_table_block_puzzle::{Game, Move, Piece, SIDE, Wood};
 use gpui::{Context, Div, FontWeight, Window, div, prelude::*, px, rgb};
+use serde::{Deserialize, Serialize};
 
+use crate::storage::Session;
 use crate::theme as t;
 
 use super::{GameLaunch, board_space, control};
@@ -8,6 +10,13 @@ use super::{GameLaunch, board_space, control};
 const BOARD: u32 = 0x49382e;
 const WELL: u32 = 0x625043;
 const BLOCKED: u32 = 0xc94e4e;
+
+#[derive(Deserialize, Serialize)]
+struct SavedRound {
+    seed: u64,
+    turns: Vec<(usize, usize, usize)>,
+    can_undo: bool,
+}
 
 #[derive(Clone, Copy)]
 struct Preview {
@@ -26,8 +35,10 @@ impl Preview {
 }
 
 pub struct GameView {
+    session: Session,
     game: Game,
     seed: u64,
+    turns: Vec<(usize, usize, usize)>,
     undo: Option<Game>,
     selected: Option<usize>,
     hovered: Option<(usize, usize)>,
@@ -37,22 +48,56 @@ pub struct GameView {
 impl GameView {
     pub fn new(launch: &GameLaunch, _cx: &mut Context<Self>) -> Self {
         let seed = launch.seed();
-        Self {
+        let session = Session::new(launch);
+        let mut view = Self {
+            session,
             game: Game::new(seed),
             seed,
+            turns: Vec::new(),
             undo: None,
             selected: None,
             hovered: None,
             feedback: String::new(),
+        };
+        if let Some(saved) = view.session.load::<SavedRound>() {
+            view.restore(saved);
         }
+        view
+    }
+
+    fn restore(&mut self, saved: SavedRound) {
+        let mut game = Game::new(saved.seed);
+        let mut undo = None;
+        for (index, &(slot, column, row)) in saved.turns.iter().enumerate() {
+            if saved.can_undo && index + 1 == saved.turns.len() {
+                undo = Some(game.clone());
+            }
+            if game.place(Move { slot, column, row }).is_none() {
+                return;
+            }
+        }
+        self.game = game;
+        self.seed = saved.seed;
+        self.turns = saved.turns;
+        self.undo = undo;
+    }
+
+    fn save(&self) {
+        self.session.save(&SavedRound {
+            seed: self.seed,
+            turns: self.turns.clone(),
+            can_undo: self.undo.is_some(),
+        });
     }
 
     fn reset(&mut self) {
         self.game = Game::new(self.seed);
+        self.turns.clear();
         self.undo = None;
         self.selected = None;
         self.hovered = None;
         self.feedback.clear();
+        self.save();
     }
 
     fn preview(&self) -> Option<Preview> {
@@ -79,12 +124,14 @@ impl GameView {
         let before = self.game.clone();
         if let Some(placement) = self.game.place(turn) {
             self.undo = Some(before);
+            self.turns.push((slot, column, row));
             self.selected = None;
             self.feedback = match placement.lines {
                 0 => format!("+{} points", placement.points),
                 1 => format!("Cleared 1 line for +{} points", placement.points),
                 n => format!("Cleared {n} lines for +{} points", placement.points),
             };
+            self.save();
         }
     }
 
@@ -236,8 +283,10 @@ impl Render for GameView {
                                     cx.listener(|view, _, _, cx| {
                                         if let Some(game) = view.undo.take() {
                                             view.game = game;
+                                            view.turns.pop();
                                             view.selected = None;
                                             view.feedback = "Placement undone.".into();
+                                            view.save();
                                             cx.notify();
                                         }
                                     }),
