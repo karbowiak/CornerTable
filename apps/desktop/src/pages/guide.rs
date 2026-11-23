@@ -468,6 +468,23 @@ impl Guide {
                     ),
                 ],
             },
+            "peg-solitaire" => Self {
+                title: "Peg Solitaire",
+                sections: &[
+                    (
+                        "Jump and remove a peg",
+                        "Choose a peg and jump over an adjacent peg into an empty hole. Jumps go up, down, left, or right. The jumped peg comes off the board.",
+                    ),
+                    (
+                        "Leave a single peg",
+                        "Make jumps until one peg remains. For a center finish, leave it in the brass ring. If no jumps remain, undo a move or replay the board.",
+                    ),
+                    (
+                        "Choose a move",
+                        "Click a peg and a highlighted landing hole, or move the focus with the arrows and press Enter or Space at each end. Press H for a legal jump or U to undo.",
+                    ),
+                ],
+            },
             "picture-logic" => Self {
                 title: "Picture Logic",
                 sections: &[

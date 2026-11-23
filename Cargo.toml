@@ -18,6 +18,7 @@ members = [
     "games/memory-match",
     "games/mine-trails",
     "games/minesweeper",
+    "games/peg-solitaire",
     "games/picture-logic",
     "games/reversi",
     "games/solitaire",

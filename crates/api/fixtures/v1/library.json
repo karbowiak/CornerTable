@@ -19,7 +19,8 @@
     {"id": "memory-match", "title": "Memory Match", "description": "Turn over illustrated tidepool cards and find each matching pair.", "category": "cards", "search_terms": ["concentration", "pairs", "matching", "tidepool"]},
     {"id": "kakuro", "title": "Kakuro", "description": "Fill crossing runs of digits so they add up to the clues.", "category": "puzzles", "search_terms": ["cross sums", "numbers", "logic"]},
     {"id": "dominoes", "title": "Dominoes", "description": "Match pips at either end of the chain and empty your hand.", "category": "board", "search_terms": ["double six", "draw dominoes", "boneyard", "hot seat"]},
-    {"id": "chess", "title": "Chess", "description": "Play a match against a friend or an offline computer opponent.", "category": "board", "search_terms": ["checkmate", "strategy", "hot seat", "two players"]}
+    {"id": "chess", "title": "Chess", "description": "Play a match against a friend or an offline computer opponent.", "category": "board", "search_terms": ["checkmate", "strategy", "hot seat", "two players"]},
+    {"id": "peg-solitaire", "title": "Peg Solitaire", "description": "Jump pegs on an enamel cross board and aim to leave one in the brass center.", "category": "puzzles", "search_terms": ["marble solitaire", "peg board", "jump", "english cross"]}
   ],
   "solitaire_modes": [
     {"id": "klondike", "title": "Klondike", "description": "Build four foundations, starting with the aces."},

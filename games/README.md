@@ -24,6 +24,7 @@ Each game family has a stable catalog ID and its own Rust rules crate. Keep seed
 | `kakuro` | `games/kakuro/` | `games::kakuro` |
 | `dominoes` | `games/dominoes/` | `games::dominoes` |
 | `chess` | `games/chess/` | `games::chess` |
+| `peg-solitaire` | `games/peg-solitaire/` | `games::peg_solitaire` |
 
 Keep Solitaire variants in separate modules within the Solitaire crate so they can share the card model. The current launch values are `klondike`, `spider`, `freecell`, `pyramid`, and `tripeaks`.
 

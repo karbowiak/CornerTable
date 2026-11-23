@@ -1,6 +1,6 @@
 # Corner Table development handoff
 
-Corner Table is an offline desktop games collection built in Rust and GPUI. The current app launches twenty game families from the illustrated library. It supports category filters, native search, Surprise me, System, Light, and Dark appearances, favorites, Last Played, and Back and Forward navigation with mouse buttons and keyboard shortcuts. The Daily Challenge calendar marks completed puzzles, and Records shows local results and personal bests and can open the recorded game or dated challenge.
+Corner Table is an offline desktop games collection built in Rust and GPUI. The current app launches twenty-one game families from the illustrated library. It supports category filters, native search, Surprise me, System, Light, and Dark appearances, favorites, Last Played, and Back and Forward navigation with mouse buttons and keyboard shortcuts. The Daily Challenge calendar marks completed puzzles, and Records shows local results and personal bests and can open the recorded game or dated challenge.
 
 The games present a result when a round ends. Results include the actual score or completion statistics and actions that fit the rules, such as replay, undo, a new deal, or the next stage. The app follows macOS Reduce Motion for gameplay effects, and View → Always Reduce Motion can reduce effects in Corner Table at any time.
 
@@ -28,6 +28,7 @@ The games present a result when a round ends. Results include the actual score o
 | Kakuro | Ninety-six unique cross-sums puzzles at two sizes. Pencil marks, clue highlighting, hints, undo, and per-board progress. |
 | Dominoes | Double-six Draw Dominoes with a wrapping chain, offline opponents, covered hot-seat handoffs, and saved match scores. |
 | Chess | Offline and hot-seat play, original pieces, drag and keyboard moves, promotion, draw claims, and undo with saved replays. |
+| Peg Solitaire | Classic 33-hole cross with copper pegs and teal enamel, pointer and keyboard play, center finishes, hints, undo, replay, and saved rounds. |
 
 ## Development
 

@@ -17,6 +17,7 @@ mod match_three;
 mod memory_match;
 mod mine_trails;
 mod minesweeper;
+mod peg_solitaire;
 mod picture_logic;
 mod reversi;
 mod round_result;
@@ -86,6 +87,7 @@ pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
         "memory-match" => cx.new(|cx| memory_match::GameView::new(launch, cx)).into(),
         "mine-trails" => cx.new(|cx| mine_trails::GameView::new(launch, cx)).into(),
         "minesweeper" => cx.new(|cx| minesweeper::GameView::new(launch, cx)).into(),
+        "peg-solitaire" => cx.new(|cx| peg_solitaire::GameView::new(launch, cx)).into(),
         "picture-logic" => cx.new(|cx| picture_logic::GameView::new(launch, cx)).into(),
         "reversi" => cx.new(|cx| reversi::GameView::new(launch, cx)).into(),
         "solitaire" => cx.new(|cx| solitaire::GameView::new(launch, cx)).into(),

@@ -1,6 +1,6 @@
 # Corner Table
 
-Corner Table is a native Rust and GPUI collection of twenty tabletop, puzzle, and arcade game families. Play offline, find a game or variant with search, star favorites, or pick Surprise me. Open a daily challenge from the calendar and track your streak, recent rounds, and personal bests. The app embeds its fonts, original artwork, and puzzle data.
+Corner Table is a native Rust and GPUI collection of twenty-one tabletop, puzzle, and arcade game families. Play offline, find a game or variant with search, star favorites, or pick Surprise me. Open a daily challenge from the calendar and track your streak, recent rounds, and personal bests. The app embeds its fonts, original artwork, and puzzle data.
 
 [Game directory](games/README.md) · [Development handoff](HANDOFF.md)
 
