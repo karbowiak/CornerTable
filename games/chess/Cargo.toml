@@ -1,0 +1,7 @@
+[package]
+name = "corner-table-chess"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cozy-chess = "0.3.4"

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="160" height="160">
+  <defs>
+    <linearGradient id="enamel" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#415c6d"/>
+      <stop offset="1" stop-color="#192d3a"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="32" cy="57" rx="21" ry="3" fill="#15252b" fill-opacity=".22"/>
+  <path d="M18 46 Q19 37 28 32 L23 32 L17 36 L12 31 L17 24 L24 17 L26 9 L33 14 C42 15 49 23 49 33 L47 46 Z" fill="url(#enamel)" stroke="#112732" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M19 45 H45 L50 50 L50 54 L46 57 H18 L14 54 L14 50 Z"
+        fill="#101d2a" stroke="#112732" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M19 46 H45 L49 50 H15 Z" fill="#536d78"/>
+  <path d="M31 17 Q42 20 44 30 L43 43 M17 29 L21 27" fill="none" stroke="#8aabb4" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M27 24 l3 -1 M24 33 Q31 30 35 25" fill="none" stroke="#bc9461" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M20 53 H44" stroke="#bc9461" stroke-opacity=".92" stroke-width="1.1" stroke-linecap="round"/>
+  <path d="M18 46 Q19 37 28 32 L23 32 L17 36 L12 31 L17 24 L24 17 L26 9 L33 14 C42 15 49 23 49 33 L47 46 Z M19 45 H45 L50 50 L50 54 L46 57 H18 L14 54 L14 50 Z" fill="none" stroke="#dfc79a" stroke-width=".85" stroke-linejoin="round" opacity=".9"/>
+</svg>

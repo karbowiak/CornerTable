@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="160" height="160">
+  <defs>
+    <linearGradient id="enamel" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#415c6d"/>
+      <stop offset="1" stop-color="#192d3a"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="32" cy="57" rx="21" ry="3" fill="#15252b" fill-opacity=".22"/>
+  <path d="M19 46 L23 39 L23 32 L16 24 L20 17 L27 20 L28 17 L25 17 L25 12 L29 12 L29 7 L35 7 L35 12 L39 12 L39 17 L36 17 L37 20 L44 17 L48 24 L41 32 L41 39 L45 46 Z" fill="url(#enamel)" stroke="#112732" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M19 45 H45 L50 50 L50 54 L46 57 H18 L14 54 L14 50 Z"
+        fill="#101d2a" stroke="#112732" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M19 46 H45 L49 50 H15 Z" fill="#536d78"/>
+  <path d="M21 24 L27 30 V37 M25 43 H39" fill="none" stroke="#8aabb4" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M24 32 H40 M32 22 L35 26 L32 30 L29 26 Z" fill="none" stroke="#bc9461" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M20 53 H44" stroke="#bc9461" stroke-opacity=".92" stroke-width="1.1" stroke-linecap="round"/>
+  <path d="M19 46 L23 39 L23 32 L16 24 L20 17 L27 20 L28 17 L25 17 L25 12 L29 12 L29 7 L35 7 L35 12 L39 12 L39 17 L36 17 L37 20 L44 17 L48 24 L41 32 L41 39 L45 46 Z M19 45 H45 L50 50 L50 54 L46 57 H18 L14 54 L14 50 Z" fill="none" stroke="#dfc79a" stroke-width=".85" stroke-linejoin="round" opacity=".9"/>
+</svg>
