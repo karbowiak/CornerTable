@@ -42,6 +42,7 @@ pub enum Action {
     History(NavigationDirection),
     ReturnToDailyCalendar,
     OpenGame(GameId),
+    SurpriseGame,
     Record(pages::RecordAction),
     ToggleFavorite(GameId),
     FilterLibrary(pages::LibraryFilter),
@@ -237,6 +238,11 @@ impl Desktop {
                 game,
                 entry: GameEntry::Classic,
             })),
+            Action::SurpriseGame => {
+                if let Some(launch) = self.surprise_game() {
+                    self.navigate(Page::Game(launch));
+                }
+            }
             Action::Record(action) => self.records.apply(action),
             Action::ToggleFavorite(game) => {
                 if let Some(index) = self.favorites.iter().position(|id| id == &game) {
@@ -299,6 +305,27 @@ impl Desktop {
             page,
             scroll: point(px(0.), px(0.)),
         });
+    }
+
+    fn surprise_game(&self) -> Option<GameLaunch> {
+        let library = &self.api.library;
+        let last_game = self.recent.as_ref().map(|launch| &launch.game);
+        let choices: Vec<_> = library
+            .games
+            .iter()
+            .filter(|game| Some(&game.id) != last_game)
+            .collect();
+        let game = fastrand::choice(choices).or_else(|| library.games.first())?;
+        let entry = if game.id.0 == "solitaire" {
+            fastrand::choice(&library.solitaire_modes)
+                .map_or(GameEntry::Classic, |mode| GameEntry::Mode(mode.id.clone()))
+        } else {
+            GameEntry::Classic
+        };
+        Some(GameLaunch {
+            game: game.id.clone(),
+            entry,
+        })
     }
 
     pub fn can_step_history(&self, direction: NavigationDirection) -> bool {
@@ -527,6 +554,57 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[gpui::test]
+    fn surprise_game_opens_a_different_game_and_can_play_a_solitaire_variant(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.open_window(size(px(900.), px(540.)), |window, cx| {
+            Desktop::new(
+                FixtureApi::load().unwrap(),
+                theme::Appearance::Light,
+                window,
+                cx,
+            )
+        });
+        window
+            .update(cx, |desktop, window, cx| {
+                let previous = GameLaunch {
+                    game: GameId("solitaire".into()),
+                    entry: GameEntry::Mode("klondike".into()),
+                };
+                desktop.recent = Some(previous.clone());
+                desktop.dispatch(Action::SurpriseGame, window, cx);
+                let Page::Game(launch) = &desktop.page else {
+                    panic!("expected a playable game");
+                };
+                assert_ne!(launch.game, previous.game);
+
+                desktop
+                    .api
+                    .library
+                    .games
+                    .retain(|game| game.id == previous.game);
+                desktop.dispatch(Action::SurpriseGame, window, cx);
+                let Page::Game(GameLaunch {
+                    game,
+                    entry: GameEntry::Mode(id),
+                }) = &desktop.page
+                else {
+                    panic!("expected a Solitaire variant");
+                };
+                assert_eq!(game, &previous.game);
+                assert!(
+                    desktop
+                        .api
+                        .library
+                        .solitaire_modes
+                        .iter()
+                        .any(|mode| &mode.id == id)
+                );
+            })
+            .unwrap();
     }
 
     #[gpui::test]

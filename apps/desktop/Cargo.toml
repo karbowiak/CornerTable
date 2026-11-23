@@ -33,6 +33,7 @@ corner-table-solitaire = { path = "../../games/solitaire" }
 corner-table-sudoku = { path = "../../games/sudoku" }
 corner-table-word-games = { path = "../../games/word-games" }
 dirs = "7"
+fastrand = "2"
 gpui = { package = "gpui-pre", version = "=0.3.14", default-features = false }
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

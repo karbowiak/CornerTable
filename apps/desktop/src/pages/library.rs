@@ -156,7 +156,7 @@ pub fn library(app: &Desktop, content_width: f32, cx: &Context<Desktop>) -> Div 
                 .text_size(px(13.))
                 .aria_toggled(active.into())
         }));
-    let wide = content_width >= 1002.;
+    let wide = content_width >= 1092.;
     let (header_filters, second_row_filters) = if wide {
         (Some(filters), None)
     } else {
@@ -177,8 +177,28 @@ pub fn library(app: &Desktop, content_width: f32, cx: &Context<Desktop>) -> Div 
         .children(header_filters)
         .child(
             div()
-                .w(px(246_f32.min(content_width / 3.)))
-                .child(app.search.clone()),
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(246_f32.min(content_width / 3.)))
+                        .child(app.search.clone()),
+                )
+                .child(
+                    widgets::button(
+                        "library-surprise",
+                        "Surprise me",
+                        Action::SurpriseGame,
+                        false,
+                        cx,
+                    )
+                    .aria_description("Open a random game from the library.")
+                    .min_h(px(36.))
+                    .px_3()
+                    .text_size(px(13.))
+                    .whitespace_nowrap(),
+                ),
         );
 
     div()

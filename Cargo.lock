@@ -1233,6 +1233,7 @@ dependencies = [
  "corner-table-sudoku",
  "corner-table-word-games",
  "dirs 7.0.0",
+ "fastrand",
  "gpui-pre",
  "gpui-pre-platform",
  "image",
