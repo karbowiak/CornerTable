@@ -11,6 +11,7 @@ mod mahjong_cubes;
 mod match_three;
 mod mine_trails;
 mod minesweeper;
+mod picture_logic;
 mod reversi;
 mod solitaire;
 mod sudoku;
@@ -68,6 +69,7 @@ pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
         "match-three" => cx.new(|cx| match_three::GameView::new(launch, cx)).into(),
         "mine-trails" => cx.new(|cx| mine_trails::GameView::new(launch, cx)).into(),
         "minesweeper" => cx.new(|cx| minesweeper::GameView::new(launch, cx)).into(),
+        "picture-logic" => cx.new(|cx| picture_logic::GameView::new(launch, cx)).into(),
         "reversi" => cx.new(|cx| reversi::GameView::new(launch, cx)).into(),
         "solitaire" => cx.new(|cx| solitaire::GameView::new(launch, cx)).into(),
         "sudoku" => cx.new(|cx| sudoku::GameView::new(launch, cx)).into(),

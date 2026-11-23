@@ -22,6 +22,7 @@ corner-table-mahjong-cubes = { path = "../../games/mahjong-cubes" }
 corner-table-match-three = { path = "../../games/match-three" }
 corner-table-mine-trails = { path = "../../games/mine-trails" }
 corner-table-minesweeper = { path = "../../games/minesweeper" }
+corner-table-picture-logic = { path = "../../games/picture-logic" }
 corner-table-reversi = { path = "../../games/reversi" }
 corner-table-solitaire = { path = "../../games/solitaire" }
 corner-table-sudoku = { path = "../../games/sudoku" }

@@ -1192,6 +1192,7 @@ dependencies = [
  "corner-table-match-three",
  "corner-table-mine-trails",
  "corner-table-minesweeper",
+ "corner-table-picture-logic",
  "corner-table-reversi",
  "corner-table-solitaire",
  "corner-table-sudoku",
@@ -1269,6 +1270,10 @@ version = "0.1.0"
 
 [[package]]
 name = "corner-table-minesweeper"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-picture-logic"
 version = "0.1.0"
 
 [[package]]

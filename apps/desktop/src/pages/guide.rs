@@ -405,6 +405,23 @@ impl Guide {
                     ),
                 ],
             },
+            "picture-logic" => Self {
+                title: "Picture Logic",
+                sections: &[
+                    (
+                        "Read the runs",
+                        "Each clue describes an unbroken run of filled squares, in order from left to right or top to bottom. Leave at least one empty square between runs. Use the clues from crossing lines to work out where the runs fit.",
+                    ),
+                    (
+                        "Paint the grid",
+                        "Choose Fill, Mark, or Erase and click or drag over the squares. On the keyboard, move with the arrows and press F, X, or E to pick a tool. Space applies the tool. Mark squares you know are empty.",
+                    ),
+                    (
+                        "Finish the picture",
+                        "Press Z to undo, C to check, or H for a deduction. Find another print in the gallery with G. The gallery keeps your progress for each picture.",
+                    ),
+                ],
+            },
             "reversi" => Self {
                 title: "Reversi",
                 sections: &[
@@ -486,8 +503,8 @@ impl Guide {
                     "Send every card to its suit’s foundation, from ace through king. Arrange the table columns in descending order with alternating colors. An empty column starts with a king.",
                 ),
                 (
-                    "Draw 1 or Draw 3",
-                    "Click Stock to draw. Play only the top card of the waste, even when three cards are drawn. When the stock runs out, click it again to recycle the waste.",
+                    "Choose a deal",
+                    "Draw 1 and Draw 3 shuffle the deck. Verified Draw 1 starts from a shuffle with a proven route to a win. Play only the top card of the waste. When the stock runs out, click it again to recycle the waste.",
                 ),
                 MOVE_CARDS,
                 TRY_AGAIN,
