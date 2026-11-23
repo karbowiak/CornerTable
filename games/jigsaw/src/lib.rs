@@ -1,4 +1,10 @@
-//! Rules for the picture-tile puzzle.
+//! Rules for the picture-tile and interlocking jigsaw puzzles.
+
+mod assembly;
+mod outline;
+
+pub use assembly::{Assembly, Placement, TrayFilter};
+pub use outline::{OutlinePoint, piece_outline};
 
 pub const COLUMNS: usize = 4;
 pub const ROWS: usize = 3;
@@ -49,20 +55,8 @@ impl Puzzle {
     }
 
     pub fn with_size(size: Size, seed: u64) -> Self {
-        let mut pieces: Vec<_> = (0..size.piece_count()).collect();
-        let mut state = seed;
-
-        // Swapping with strictly earlier positions makes a single cycle with no fixed pieces.
-        for position in (1..pieces.len()).rev() {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            let other = ((state >> 32) % position as u64) as usize;
-            pieces.swap(position, other);
-        }
-
         Self {
-            pieces,
+            pieces: shuffled_order(size, seed),
             selected: None,
             moves: 0,
         }
@@ -131,6 +125,19 @@ impl Puzzle {
             Selection::Swapped
         }
     }
+}
+
+fn shuffled_order(size: Size, mut state: u64) -> Vec<usize> {
+    let mut pieces: Vec<_> = (0..size.piece_count()).collect();
+    // Swapping with strictly earlier positions makes a single cycle with no fixed pieces.
+    for position in (1..pieces.len()).rev() {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let other = ((state >> 32) % position as u64) as usize;
+        pieces.swap(position, other);
+    }
+    pieces
 }
 
 #[cfg(test)]

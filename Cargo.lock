@@ -1040,6 +1040,7 @@ dependencies = [
  "dirs",
  "gpui-pre",
  "gpui-pre-platform",
+ "image",
  "include_dir",
  "serde",
  "serde_json",
