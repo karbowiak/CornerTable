@@ -1,7 +1,13 @@
 use corner_table_hearts::{HandResult, MATCH_LIMIT, Phase, Seat, TRICKS_PER_HAND};
-use gpui::{Context, Div, FontWeight, Role, Stateful, Toggled, div, prelude::*, px, rgb, rgba};
+use gpui::{
+    AnyElement, Context, Div, FontWeight, Role, Stateful, Toggled, div, prelude::*, px, rgb, rgba,
+};
 
-use crate::{games::themed_control, theme};
+use crate::{
+    games::{round_result, themed_control},
+    storage::Outcome,
+    theme,
+};
 
 use super::{
     BRASS, BRASS_HOVER, CARD_BAY, CHIP, GameView, INK, Layout, MUTED, RIM, RIM_SOFT,
@@ -12,6 +18,8 @@ impl GameView {
     pub(super) fn toolbar(&self, cx: &Context<Self>) -> Div {
         let game = self.session.game();
         let palette = theme::colors(cx);
+        let finished =
+            matches!(game.phase(), Phase::HandComplete(result) if result.winner.is_some());
         let playing = matches!(game.phase(), Phase::Playing(_) | Phase::TrickComplete(_))
             && !self.session.ready_to_open();
         let hearts = if game.hearts_broken() {
@@ -96,21 +104,23 @@ impl GameView {
                             cx.notify();
                         })),
                     )
-                    .child(
-                        themed_control(cx, "hearts-new-match", "New match", !self.confirm_new)
-                            .when(!self.confirm_new, |button| {
-                                button.on_click(cx.listener(|view, _, window, cx| {
-                                    view.confirm_new = true;
-                                    view.timer = None;
-                                    cx.on_next_frame(window, |view, window, cx| {
-                                        if view.confirm_new {
-                                            view.cancel_focus.focus(window, cx);
-                                        }
-                                    });
-                                    cx.notify();
-                                }))
-                            }),
-                    ),
+                    .when(!finished, |row| {
+                        row.child(
+                            themed_control(cx, "hearts-new-match", "New match", !self.confirm_new)
+                                .when(!self.confirm_new, |button| {
+                                    button.on_click(cx.listener(|view, _, window, cx| {
+                                        view.confirm_new = true;
+                                        view.timer = None;
+                                        cx.on_next_frame(window, |view, window, cx| {
+                                            if view.confirm_new {
+                                                view.cancel_focus.focus(window, cx);
+                                            }
+                                        });
+                                        cx.notify();
+                                    }))
+                                }),
+                        )
+                    }),
             )
     }
 
@@ -214,10 +224,7 @@ impl GameView {
                     Some(("Score hand", true))
                 }
                 Phase::TrickComplete(_) => Some(("Next trick", true)),
-                Phase::HandComplete(result) if result.winner.is_some() => {
-                    Some(("Play again", true))
-                }
-                Phase::HandComplete(_) => Some(("Deal next hand", true)),
+                Phase::HandComplete(_) => None,
             }
         };
         div()
@@ -268,6 +275,30 @@ impl GameView {
             }))
     }
 
+    pub(super) fn hand_result(&self, result: HandResult, cx: &Context<Self>) -> AnyElement {
+        let (outcome, label) = match result.winner {
+            Some(Seat::You) => (Outcome::Won, "Play again"),
+            Some(_) => (Outcome::Lost, "Play again"),
+            None => (Outcome::Finished, "Deal next hand"),
+        };
+        let copy = PhaseCopy::score(self.session.game(), result);
+        let enabled = !self.confirm_new;
+        let action = primary_button("hearts-advance", label, enabled).when(enabled, |button| {
+            button.on_click(cx.listener(|view, _, window, cx| {
+                view.advance(cx);
+                view.focus.focus(window, cx);
+            }))
+        });
+        round_result(
+            cx,
+            "hearts-result",
+            outcome,
+            copy.title,
+            copy.detail,
+            div().flex().child(action),
+        )
+    }
+
     pub(super) fn score_sheet(&self, result: HandResult, layout: Layout) -> Div {
         let scores = self.session.game().scores();
         let mut rows = [Seat::You, Seat::West, Seat::North, Seat::East];
@@ -293,7 +324,13 @@ impl GameView {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .child(theme::display_type("Scorecard", 24.))
+                    .child(
+                        theme::display_type("Scorecard", 24.)
+                            .id("hearts-scorecard-title")
+                            .role(Role::Heading)
+                            .aria_level(2)
+                            .aria_label("Scorecard"),
+                    )
                     .child(
                         div()
                             .text_size(px(12.))
@@ -379,4 +416,100 @@ fn primary_button(id: &'static str, label: &'static str, enabled: bool) -> State
                 .focus_visible(|style| style.border_color(rgb(INK)).bg(rgb(BRASS_HOVER)))
         })
         .child(label)
+}
+
+#[cfg(test)]
+mod tests {
+    use corner_table_api::GameId;
+    use gpui::{KeyUpEvent, Keystroke, PlatformInput, TestAppContext, size};
+
+    use super::*;
+    use crate::games::{GameEntry, GameLaunch, hearts::session::Turn};
+
+    fn finish_hand(view: &mut GameView) -> HandResult {
+        loop {
+            let game = view.session.game();
+            let turn = if view.session.ready_to_open() {
+                Turn::Begin
+            } else {
+                match game.phase() {
+                    Phase::Passing => {
+                        let hand = game.hand(Seat::You);
+                        Turn::Pass {
+                            cards: [hand[0].id(), hand[1].id(), hand[2].id()],
+                        }
+                    }
+                    Phase::Playing(_) => Turn::Play {
+                        card: game.suggested_play().unwrap().id(),
+                    },
+                    Phase::TrickComplete(_) => Turn::Collect,
+                    Phase::HandComplete(result) => return result,
+                }
+            };
+            assert!(view.session.apply(turn));
+        }
+    }
+
+    #[gpui::test]
+    fn scored_hand_continues_and_match_result_can_start_over(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId("hearts-result-test".into()),
+            entry: GameEntry::Classic,
+        };
+        let window = cx.open_window(size(px(812.), px(575.)), |window, cx| {
+            cx.set_reduce_motion(true);
+            let mut view = GameView::new(&launch, cx);
+            view.session.restart(1);
+            let result = finish_hand(&mut view);
+            assert_eq!(result.winner, None);
+            let copy = PhaseCopy::score(view.session.game(), result);
+            assert!(copy.detail.contains(&points(result.points[0].into())));
+            view.focus.focus(window, cx);
+            view
+        });
+        let use_result_action = |cx: &mut TestAppContext, tab_stops| {
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                for _ in 0..tab_stops {
+                    window.focus_next(cx);
+                }
+            })
+            .unwrap();
+            let enter = Keystroke::parse("enter").unwrap();
+            cx.dispatch_keystroke(window.into(), enter.clone());
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke: enter }), cx);
+            })
+            .unwrap();
+        };
+        use_result_action(cx, 3);
+        window
+            .update(cx, |view, _, cx| {
+                assert_eq!(view.session.game().hand_number(), 2);
+                let winner = loop {
+                    let result = finish_hand(view);
+                    if let Some(winner) = result.winner {
+                        let copy = PhaseCopy::score(view.session.game(), result);
+                        let scores = view.session.game().scores();
+                        assert_eq!(copy.title, "You lose the match");
+                        assert!(copy.detail.contains(player(winner)));
+                        assert!(copy.detail.contains(&points(scores[winner.index()])));
+                        assert!(copy.detail.contains("107 points"));
+                        break winner;
+                    }
+                    view.advance(cx);
+                };
+                assert_ne!(winner, Seat::You);
+                cx.notify();
+            })
+            .unwrap();
+        use_result_action(cx, 2);
+        window
+            .update(cx, |view, window, _| {
+                assert_eq!(view.session.game().hand_number(), 1);
+                assert_eq!(view.session.game().scores(), [0; 4]);
+                assert!(view.focus.is_focused(window));
+            })
+            .unwrap();
+    }
 }

@@ -1,10 +1,12 @@
 use std::time::Duration;
 
-use corner_table_reversi::{Disc, Square, Squares};
+use corner_table_reversi::{Disc, Square, Squares, Turn};
 use gpui::{
     Animation, AnimationExt, BoxShadow, Context, Div, FontWeight, Role, Stateful, Window, div,
-    linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
+    ease_out_quint, linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
 };
+
+use crate::motion;
 
 use super::GameView;
 
@@ -20,13 +22,18 @@ impl GameView {
             Squares::default()
         };
         let focused = self.board_focus.is_focused(window);
+        let animate = self.animate && motion::enabled(cx);
         div()
             .id("reversi-board")
             .role(Role::Grid)
             .aria_label("Reversi board")
             .aria_row_count(8)
             .aria_column_count(8)
-            .aria_description("Arrow keys select a square. Enter or Space places a disc.")
+            .aria_description(if matches!(self.position().turn(), Turn::Finished(_)) {
+                "Arrow keys review the final board."
+            } else {
+                "Arrow keys select a square. Enter or Space places a disc."
+            })
             .track_focus(&self.board_focus)
             .tab_index(0)
             .capture_key_down(cx.listener(Self::key_down))
@@ -54,7 +61,7 @@ impl GameView {
                     .child(axis_label(FRAME, size, number))
                     .children((0..8).map(|column| {
                         let square = Square::new(row, column).unwrap();
-                        self.cell(square, size, legal.contains(square), focused, cx)
+                        self.cell(square, size, legal.contains(square), (focused, animate), cx)
                     }))
                     .child(axis_label(FRAME, size, number))
             }))
@@ -66,7 +73,7 @@ impl GameView {
         square: Square,
         size: f32,
         playable: bool,
-        focused: bool,
+        (focused, animate): (bool, bool),
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let color = self.position().disc(square);
@@ -96,6 +103,7 @@ impl GameView {
             .aria_column_index(usize::from(square.column()))
             .aria_label(label)
             .aria_selected(selected)
+            .when(selected, |cell| cell.aria_active_descendant())
             .size(px(size))
             .flex()
             .flex_none()
@@ -136,7 +144,7 @@ impl GameView {
 
         if let Some(color) = color {
             let diameter = (size * 0.75).floor();
-            cell = if self.animate && flipped {
+            cell = if animate && flipped {
                 cell.child(div().with_animation(
                     ("reversi-flip", self.revision),
                     Animation::new(Duration::from_millis(270)),
@@ -148,6 +156,15 @@ impl GameView {
                             (color, 1. - (1. - open).powi(2))
                         };
                         slot.child(disc(face, diameter * (0.12 + amount * 0.88), diameter))
+                    },
+                ))
+            } else if animate && placed {
+                cell.child(disc(color, diameter, diameter).with_animation(
+                    ("reversi-placement", self.revision),
+                    Animation::new(Duration::from_millis(165)).with_easing(ease_out_quint()),
+                    |disc, progress| {
+                        let rest = 1. - progress;
+                        disc.top(px(-5. * rest)).opacity(1. - 0.24 * rest)
                     },
                 ))
             } else {

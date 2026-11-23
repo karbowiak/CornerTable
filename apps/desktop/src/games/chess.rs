@@ -70,6 +70,7 @@ pub struct GameView {
     selected: Option<Square>,
     cursor: Square,
     revision: usize,
+    arrival: Option<Move>,
     computer: Option<Computer>,
     board_focus: FocusHandle,
     promotion_focus: FocusHandle,
@@ -90,6 +91,7 @@ impl GameView {
             selected: None,
             cursor: Square::E2,
             revision: 0,
+            arrival: None,
             computer: None,
             board_focus: cx.focus_handle().tab_stop(true),
             promotion_focus: cx.focus_handle().tab_stop(true),
@@ -191,6 +193,7 @@ impl GameView {
     fn refresh(&mut self, notice: Option<String>, cx: &mut Context<Self>) {
         self.computer = None;
         self.revision = self.revision.wrapping_add(1);
+        self.arrival = None;
         self.selected = None;
         self.promotion = None;
         self.confirmation = None;
@@ -207,6 +210,7 @@ impl GameView {
             return;
         }
         self.refresh(None, cx);
+        self.arrival = Some(movement);
         let effect = if self.game().ending().is_some() {
             Effect::Complete
         } else {
@@ -255,6 +259,7 @@ impl GameView {
         self.confirmation = Some(confirmation);
         self.computer = None;
         self.revision = self.revision.wrapping_add(1);
+        self.arrival = None;
         self.notice = None;
         self.confirmation_focus.focus(window, cx);
         cx.notify();
@@ -262,6 +267,7 @@ impl GameView {
 
     fn flip(&mut self, cx: &mut Context<Self>) {
         self.table.flipped = !self.table.flipped;
+        self.arrival = None;
         self.table.save();
         cx.notify();
     }
@@ -548,7 +554,7 @@ fn piece_name(piece: Piece) -> &'static str {
 #[cfg(test)]
 mod tests {
     use corner_table_api::GameId;
-    use gpui::{TestAppContext, size};
+    use gpui::{KeyUpEvent, Keystroke, PlatformInput, TestAppContext, size};
 
     use super::*;
     use crate::games::GameEntry;
@@ -577,5 +583,56 @@ mod tests {
                 assert_eq!(view.cursor, Square::E3);
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn checkmate_result_actions_undo_and_start_a_new_match(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId("chess-result-test".into()),
+            entry: GameEntry::Classic,
+        };
+        let window = cx.open_window(size(px(1360.), px(760.)), |window, cx| {
+            cx.set_reduce_motion(true);
+            let mut view = GameView::new(&launch, cx);
+            for movement in ["f2f3", "e7e5", "g2g4", "d8h4"] {
+                view.play(movement.parse().unwrap(), cx);
+            }
+            assert_eq!(
+                view.game().ending(),
+                Some(corner_table_chess::Ending::Checkmate {
+                    winner: Color::Black,
+                })
+            );
+            view.board_focus.focus(window, cx);
+            view
+        });
+        let use_result_action = |cx: &mut TestAppContext, tab_stops| {
+            cx.run_until_parked();
+            window
+                .update(cx, |_, window, cx| {
+                    for _ in 0..tab_stops {
+                        window.focus_next(cx);
+                    }
+                })
+                .unwrap();
+            let keystroke = Keystroke::parse("enter").unwrap();
+            cx.dispatch_keystroke(window.into(), keystroke.clone());
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke }), cx);
+            })
+            .unwrap();
+            window
+                .update(cx, |view, window, _| {
+                    assert!(view.board_focus.is_focused(window));
+                    assert_eq!(view.game().ending(), None);
+                    view.game().moves().len()
+                })
+                .unwrap()
+        };
+        assert_eq!(use_result_action(cx, 2), 3);
+        window
+            .update(cx, |view, _, cx| view.play("d8h4".parse().unwrap(), cx))
+            .unwrap();
+        assert_eq!(use_result_action(cx, 1), 0);
     }
 }

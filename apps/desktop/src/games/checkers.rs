@@ -5,15 +5,15 @@ use std::time::Duration;
 
 use corner_table_checkers::{Difficulty, Draw, Game, Outcome, Piece, Side, Square, Step};
 use gpui::{
-    Context, Div, FocusHandle, FontWeight, KeyDownEvent, Role, SharedString, Stateful, Task,
-    Window, div, prelude::*, px, rgb,
+    AnyElement, Context, Div, FocusHandle, FontWeight, KeyDownEvent, Role, SharedString, Stateful,
+    Task, Window, div, prelude::*, px, rgb,
 };
 
 use self::{
     board::{checker, side_name, square_name},
     table::{DIFFICULTIES, Mode, Table},
 };
-use crate::{audio, theme as t};
+use crate::{audio, games::round_result, storage::Outcome as RecordOutcome, theme as t};
 
 use super::GameLaunch;
 
@@ -22,6 +22,7 @@ pub struct GameView {
     board_focus: FocusHandle,
     cursor: Square,
     selected: Option<Square>,
+    arrival: Option<Step>,
     notice: Option<&'static str>,
     confirm_restart: bool,
     cancel_restart_focus: FocusHandle,
@@ -36,6 +37,7 @@ impl GameView {
             table,
             board_focus: cx.focus_handle().tab_stop(true),
             selected: None,
+            arrival: None,
             notice: None,
             confirm_restart: false,
             cancel_restart_focus: cx.focus_handle().tab_stop(true),
@@ -65,6 +67,7 @@ impl GameView {
             .find(|step| Some(step.from) == selected && step.to == square)
         {
             let effect = self.table.play(step).expect("a highlighted move is legal");
+            self.arrival = Some(step);
             let game = self.table.game();
             self.selected = None;
             self.cursor = if keyboard { first_focus(game) } else { step.to };
@@ -119,8 +122,13 @@ impl GameView {
             pace.await;
             let _ = view.update(cx, |view, cx| {
                 view.computer = None;
+                view.arrival = turn.last().copied();
                 view.table.play_computer(turn, difficulty);
-                view.cursor = first_focus(view.table.game());
+                let game = view.table.game();
+                view.cursor = first_focus(game);
+                if game.outcome() != Outcome::Playing {
+                    view.confirm_restart = false;
+                }
                 cx.notify();
             });
         }));
@@ -172,6 +180,7 @@ impl GameView {
     fn reset_selection(&mut self) {
         self.cursor = first_focus(self.table.game());
         self.selected = None;
+        self.arrival = None;
         self.notice = None;
         self.confirm_restart = false;
     }
@@ -205,11 +214,20 @@ impl GameView {
         }
     }
 
-    fn status(&self, width: f32, legal: &[Step], cx: &Context<Self>) -> Stateful<Div> {
-        let colors = t::colors(cx);
+    fn status(&self, width: f32, legal: &[Step], cx: &Context<Self>) -> AnyElement {
         let game = self.table.game();
+        if let Some((outcome, title, detail)) = result_copy(game, self.table.mode) {
+            return round_result(
+                cx,
+                "checkers-result",
+                outcome,
+                title,
+                detail,
+                self.actions(cx),
+            );
+        }
+        let colors = t::colors(cx);
         let (title, detail) = self.status_copy(legal);
-        let active = (game.outcome() == Outcome::Playing).then_some(game.side());
         t::panel(cx)
             .id("checkers-status")
             .role(Role::Status)
@@ -241,40 +259,14 @@ impl GameView {
                     .gap_1()
                     .children([Side::Red, Side::Light].map(|side| {
                         let (pieces, kings) = game.material(side);
-                        side_count(side, pieces, kings, active == Some(side), colors)
+                        side_count(side, pieces, kings, game.side() == side, colors)
                     })),
             )
+            .into_any_element()
     }
 
     fn status_copy(&self, legal: &[Step]) -> (&'static str, &'static str) {
         let game = self.table.game();
-        match game.outcome() {
-            Outcome::Won(side) => {
-                let title = match (self.table.mode, side) {
-                    (Mode::Computer, Side::Red) => "You win",
-                    (Mode::Computer, Side::Light) => "Computer wins",
-                    (Mode::Local, Side::Red) => "Red wins",
-                    (Mode::Local, Side::Light) => "Maple wins",
-                };
-                let detail = if game.material(side.other()).0 == 0 {
-                    "Every opposing piece was captured."
-                } else {
-                    "The opposing pieces have no legal move."
-                };
-                return (title, detail);
-            }
-            Outcome::Draw(Draw::Repetition) => {
-                return ("Draw", "The same position occurred three times.");
-            }
-            Outcome::Draw(Draw::NoProgress) => {
-                return (
-                    "Draw",
-                    "40 turns per side passed without a capture or a regular piece advancing.",
-                );
-            }
-            Outcome::Playing => (),
-        }
-
         let title = match (self.table.mode, game.side()) {
             (Mode::Computer, Side::Red) => "Your turn",
             (Mode::Computer, Side::Light) => {
@@ -357,23 +349,26 @@ impl GameView {
                 }
             }))
         });
-        row.child(undo)
-            .child(restart)
-            .when_some(move_record(game.last_steps()), |row, path| {
-                let lead = if game.continuation().is_some() {
-                    "Jump so far"
-                } else {
-                    "Last move"
-                };
-                row.child(
-                    div()
-                        .id("checkers-move-record")
-                        .ml_auto()
-                        .text_size(px(12.))
-                        .text_color(rgb(colors.muted))
-                        .child(format!("{lead}  {path}")),
-                )
-            })
+        row.children(if ended {
+            [restart, undo]
+        } else {
+            [undo, restart]
+        })
+        .when_some(move_record(game.last_steps()), |row, path| {
+            let lead = if game.continuation().is_some() {
+                "Jump so far"
+            } else {
+                "Last move"
+            };
+            row.child(
+                div()
+                    .id("checkers-move-record")
+                    .ml_auto()
+                    .text_size(px(12.))
+                    .text_color(rgb(colors.muted))
+                    .child(format!("{lead}  {path}")),
+            )
+        })
     }
 
     fn match_panel(&self, cx: &Context<Self>) -> Div {
@@ -472,6 +467,7 @@ impl Render for GameView {
         let wide = side_by_side >= 322.;
         let board_room = if wide { side_by_side } else { available };
         let side = board_room.min((height - 210.).max(322.)).min(630.).floor();
+        let playing = self.table.game().outcome() == Outcome::Playing;
         let legal = if self.player_turn() {
             self.table.game().legal_steps()
         } else {
@@ -494,13 +490,19 @@ impl Render for GameView {
                     .gap_2()
                     .child(self.status(side, &legal, cx))
                     .child(self.board(side, &legal, window, cx))
-                    .child(div().mt_1().child(self.actions(cx)))
+                    .when(playing, |column| {
+                        column.child(div().mt_1().child(self.actions(cx)))
+                    })
                     .child(
                         div()
                             .text_color(rgb(colors.muted))
                             .text_size(px(12.))
                             .line_height(px(17.))
-                            .child("Arrow keys to move · Enter or Space to act · U to undo"),
+                            .child(if playing {
+                                "Arrow keys to move · Enter or Space to act · U to undo"
+                            } else {
+                                "Arrow keys to review · U to undo"
+                            }),
                     ),
             )
             .child(
@@ -510,6 +512,44 @@ impl Render for GameView {
                     .child(self.match_panel(cx)),
             )
     }
+}
+
+fn result_copy(game: &Game, mode: Mode) -> Option<(RecordOutcome, &'static str, String)> {
+    let (outcome, title, reason) = match game.outcome() {
+        Outcome::Playing => return None,
+        Outcome::Won(side) => {
+            let (outcome, title) = match (mode, side) {
+                (Mode::Computer, Side::Red) => (RecordOutcome::Won, "You win"),
+                (Mode::Computer, Side::Light) => (RecordOutcome::Lost, "You lose"),
+                (Mode::Local, Side::Red) => (RecordOutcome::Finished, "Red wins"),
+                (Mode::Local, Side::Light) => (RecordOutcome::Finished, "Maple wins"),
+            };
+            let loser = side_name(side.other());
+            let reason = if game.material(side.other()).0 == 0 {
+                format!("{loser} has no pieces left.")
+            } else {
+                format!("{loser} has no legal move.")
+            };
+            (outcome, title, reason)
+        }
+        Outcome::Draw(Draw::Repetition) => (
+            RecordOutcome::Draw,
+            "Draw",
+            "The same position occurred three times.".into(),
+        ),
+        Outcome::Draw(Draw::NoProgress) => (
+            RecordOutcome::Draw,
+            "Draw",
+            "40 turns per side passed without a capture or a regular piece advancing.".into(),
+        ),
+    };
+    let (red, _) = game.material(Side::Red);
+    let (maple, _) = game.material(Side::Light);
+    Some((
+        outcome,
+        title,
+        format!("{reason} Pieces left — Red {red}, Maple {maple}."),
+    ))
 }
 
 fn capture_required(legal: &[Step]) -> bool {
@@ -661,4 +701,58 @@ fn button(
                 .focus_visible(|style| style.border_color(rgb(colors.ink)))
         })
         .child(label)
+}
+
+#[cfg(test)]
+mod tests {
+    use corner_table_api::GameId;
+    use gpui::{KeyUpEvent, Keystroke, PlatformInput, TestAppContext, size};
+
+    use super::*;
+    use crate::games::GameEntry;
+
+    #[gpui::test]
+    fn local_result_shows_final_material_and_undo_restores_play(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId("checkers-result-test".into()),
+            entry: GameEntry::Mode("local".into()),
+        };
+        let window = cx.open_window(size(px(812.), px(575.)), |window, cx| {
+            cx.set_reduce_motion(true);
+            let mut view = GameView::new(&launch, cx);
+            while let Some(step) = view.table.game().legal_steps().first().copied() {
+                view.table.play(step).unwrap();
+            }
+            let game = view.table.game();
+            let Outcome::Won(winner) = game.outcome() else {
+                panic!("expected the fixture to end by capture or blockade");
+            };
+            let (outcome, title, detail) = result_copy(game, Mode::Local).unwrap();
+            assert_eq!(outcome, RecordOutcome::Finished);
+            assert_eq!(title, format!("{} wins", side_name(winner)));
+            assert!(detail.contains(&format!(
+                "Red {}, Maple {}",
+                game.material(Side::Red).0,
+                game.material(Side::Light).0
+            )));
+            view.board_focus.focus(window, cx);
+            view
+        });
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| window.focus_prev(cx))
+            .unwrap();
+        let enter = Keystroke::parse("enter").unwrap();
+        cx.dispatch_keystroke(window.into(), enter.clone());
+        cx.update_window(window.into(), |_, window, cx| {
+            window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke: enter }), cx);
+        })
+        .unwrap();
+        window
+            .update(cx, |view, window, _| {
+                assert_eq!(view.table.game().outcome(), Outcome::Playing);
+                assert!(view.board_focus.is_focused(window));
+                assert!(result_copy(view.table.game(), Mode::Local).is_none());
+            })
+            .unwrap();
+    }
 }

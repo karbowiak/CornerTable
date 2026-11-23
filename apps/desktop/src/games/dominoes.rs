@@ -5,9 +5,7 @@ mod table;
 
 use std::time::Duration;
 
-use corner_table_dominoes::{
-    Action, End, Event, Finish, Phase, Player, Round, Tile, computer_action,
-};
+use corner_table_dominoes::{Action, End, Event, Phase, Player, Round, Tile, computer_action};
 use gpui::{Context, FocusHandle, KeyDownEvent, Render, Role, Task, Window, div, prelude::*, px};
 
 use crate::{
@@ -24,6 +22,7 @@ pub struct GameView {
     session: Session,
     computer: Option<Task<()>>,
     revision: u64,
+    placement: Option<End>,
     focus: FocusHandle,
     needs_focus: bool,
     cursor: usize,
@@ -31,6 +30,7 @@ pub struct GameView {
     revealed: bool,
     confirm_restart: bool,
     mismatch: Option<End>,
+    review_tiles: bool,
 }
 
 impl GameView {
@@ -58,6 +58,7 @@ impl GameView {
             session,
             computer: None,
             revision: 0,
+            placement: None,
             focus: cx.focus_handle().tab_stop(true),
             needs_focus: true,
             cursor: 0,
@@ -65,6 +66,7 @@ impl GameView {
             revealed: false,
             confirm_restart: false,
             mismatch: None,
+            review_tiles: false,
         };
         view.reset_cursor();
         view.save();
@@ -161,9 +163,13 @@ impl GameView {
     }
 
     fn apply(&mut self, action: Action, cx: &mut Context<Self>) {
-        if self.tables[self.mode.index()].act(action).is_none() {
+        let Some(event) = self.tables[self.mode.index()].act(action) else {
             return;
-        }
+        };
+        self.placement = match event {
+            Event::Played { end, .. } => Some(end),
+            _ => None,
+        };
         self.revision = self.revision.wrapping_add(1);
         if !matches!(action, Action::Draw) {
             self.revealed = false;
@@ -284,10 +290,12 @@ impl GameView {
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.computer = None;
         self.revision = self.revision.wrapping_add(1);
+        self.placement = None;
         self.revealed = false;
         self.selected = None;
         self.mismatch = None;
         self.confirm_restart = false;
+        self.review_tiles = false;
         self.reset_cursor();
         self.focus.focus(window, cx);
         self.save();
@@ -343,12 +351,6 @@ impl GameView {
     }
 
     fn headline(&self) -> String {
-        if let Some(outcome) = self.round().outcome() {
-            return match outcome.winner {
-                Some(player) => format!("{} won the round", self.player_name(player)),
-                None => "Tied round".to_owned(),
-            };
-        }
         let player = self.round().player();
         if self.handoff() {
             format!("Pass the table to {}", self.player_name(player))
@@ -362,20 +364,6 @@ impl GameView {
     }
 
     fn instruction(&self) -> Option<String> {
-        if let Some(outcome) = self.round().outcome() {
-            let reason = match outcome.finish {
-                Finish::WentOut => "Last tile played.",
-                Finish::Blocked => "Both players passed.",
-            };
-            let [first, second] = outcome.pips;
-            let points = outcome.points;
-            let point_label = if points == 1 { "point" } else { "points" };
-            return Some(format!(
-                "{reason} {} {first} pips, {} {second} pips. {points} {point_label} awarded.",
-                self.player_name(Player::One),
-                self.player_name(Player::Two),
-            ));
-        }
         if self.handoff() {
             return Some("Both hands are face down.".to_owned());
         }
@@ -469,6 +457,7 @@ impl Render for GameView {
         let narrow = width < 660.;
         let short = window.viewport_size().height < px(640.);
         let compact = narrow || short;
+        let result = self.round().outcome();
         div()
             .id("dominoes")
             .w_full()
@@ -480,10 +469,18 @@ impl Render for GameView {
             .tab_index(0)
             .role(Role::Group)
             .aria_label("Draw Dominoes table")
-            .aria_description("Arrow keys browse your hand. Enter selects. L and R play at either end. D draws. P passes.")
+            .aria_description(if result.is_some() {
+                "Enter starts the next round. The final chain remains on the table."
+            } else {
+                "Arrow keys browse your hand. Enter selects. L and R play at either end. D draws. P passes."
+            })
             .on_key_down(cx.listener(Self::key_down))
             .child(self.toolbar(cx))
+            .when_some(result, |page, result| page.child(self.round_result(result, cx)))
+            .when(result.is_some() && self.review_tiles, |page| {
+                page.child(self.remaining_tiles(compact, cx))
+            })
             .child(self.table_surface(width, narrow, short, cx))
-            .child(self.rack(compact, window, cx))
+            .when(result.is_none(), |page| page.child(self.rack(compact, window, cx)))
     }
 }

@@ -1,10 +1,12 @@
+use std::time::Duration;
+
 use corner_table_chess::{Color, File, Move, Piece, Rank, Square};
 use gpui::{
-    AppContext as _, BoxShadow, Context, Div, EntityId, FontWeight, Img, ObjectFit, Render, Role,
-    Stateful, Window, div, img, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt, AppContext as _, BoxShadow, Context, Div, EntityId, FontWeight, Img,
+    ObjectFit, Render, Role, Stateful, Window, div, ease_out_quint, img, prelude::*, px, rgb, rgba,
 };
 
-use crate::theme;
+use crate::{motion, theme};
 
 use super::{GameView, PROMOTIONS, Promotion, piece_name, side_name};
 
@@ -27,13 +29,18 @@ impl GameView {
         let keyboard_cursor = focused && window.last_input_was_keyboard();
         let side = 8. * tile + 2. * FRAME;
         let input = self.moves_for_input();
+        let arrival = self.arrival.filter(|_| motion::enabled(cx));
         div()
             .id("chess-board")
             .role(Role::Grid)
             .aria_label(if flipped { "Chess board, Black side" } else { "Chess board, White side" })
             .aria_row_count(8)
             .aria_column_count(8)
-            .aria_description("Arrow keys move the cursor. Enter or Space selects a piece or destination. U undoes. F flips the board.")
+            .aria_description(if self.game().ending().is_some() {
+                "Arrow keys review squares. U undoes. F flips the board."
+            } else {
+                "Arrow keys move the cursor. Enter or Space selects a piece or destination. U undoes. F flips the board."
+            })
             .track_focus(&self.board_focus)
             .when(self.promotion.is_none(), |board| board.tab_index(0))
             .on_key_down(cx.listener(Self::key_down))
@@ -59,8 +66,8 @@ impl GameView {
                     .flex()
                     .flex_none()
                     .child(axis(FRAME, tile, mark.clone()))
-                    .children(files.into_iter().enumerate().map(|(column, file)| {
-                        self.cell(Square::new(file, rank), column, tile, (focused, keyboard_cursor), input, cx)
+                    .children(files.into_iter().map(|file| {
+                        self.cell(Square::new(file, rank), tile, (focused, keyboard_cursor), input, arrival, cx)
                     }))
                     .child(axis(FRAME, tile, mark))
             }))
@@ -71,12 +78,14 @@ impl GameView {
     fn cell(
         &self,
         square: Square,
-        column: usize,
         tile: f32,
         (focused, keyboard_cursor): (bool, bool),
         input: &[Move],
+        arrival: Option<Move>,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
+        let file = usize::from(square.file() as u8);
+        let column = if self.table.flipped { 7 - file } else { file };
         let occupant = self.game().piece(square);
         let selected = self.selected == Some(square);
         let keyed = focused && self.cursor == square;
@@ -158,7 +167,27 @@ impl GameView {
             .justify_center()
             .bg(rgb(surface))
             .when_some(occupant, |cell, (color, piece)| {
-                cell.child(piece_image(color, piece, tile * 0.91))
+                let image = piece_image(color, piece, tile * 0.91);
+                if let Some(movement) = arrival.filter(|movement| movement.to == square) {
+                    let direction = if self.table.flipped { -1. } else { 1. };
+                    let file = movement.from.file() as i8 - square.file() as i8;
+                    let rank = square.rank() as i8 - movement.from.rank() as i8;
+                    let offset = (tile * 0.15).min(9.) * direction;
+                    let dx = f32::from(file.signum()) * offset;
+                    let dy = f32::from(rank.signum()) * offset;
+                    cell.child(image.with_animation(
+                        ("chess-arrival", revision),
+                        Animation::new(Duration::from_millis(185)).with_easing(ease_out_quint()),
+                        move |image, progress| {
+                            image
+                                .relative()
+                                .left(px(dx * (1. - progress)))
+                                .top(px(dy * (1. - progress)))
+                        },
+                    ))
+                } else {
+                    cell.child(image)
+                }
             })
             .when(checked, |cell| cell.child(outline(2., 2., 0x8c332b)))
             .when(last && !checked, |cell| {

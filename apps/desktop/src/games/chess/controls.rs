@@ -1,90 +1,75 @@
 use corner_table_chess::{Color, Decision, DrawClaim, Ending, Piece};
-use gpui::{Context, Div, FontWeight, Role, div, prelude::*, px, rgb};
+use gpui::{AnyElement, Context, Div, FontWeight, Role, div, prelude::*, px, rgb};
 
-use crate::theme;
+use crate::{games::round_result, storage::Outcome, theme};
 
 use super::super::themed_control;
 use super::{Confirmation, GameView, board::piece_image, side_name, state::Mode};
 
 impl GameView {
-    pub(super) fn status(&self, cx: &Context<Self>) -> Div {
+    pub(super) fn status(&self, cx: &Context<Self>) -> AnyElement {
+        if let Some(ending) = self.game().ending() {
+            let (outcome, title, detail) = result_copy(self.table.mode, ending);
+            let palette = theme::colors(cx);
+            let actions = div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .child(
+                    themed_control(cx, "chess-restart", "New match", true)
+                        .border_color(rgb(palette.gold_text))
+                        .on_click(cx.listener(|view, _, window, cx| view.restart(window, cx))),
+                )
+                .child(
+                    themed_control(cx, "chess-undo", "Undo", true)
+                        .on_click(cx.listener(|view, _, window, cx| view.undo(window, cx))),
+                );
+            return round_result(cx, "chess-result", outcome, title, detail, actions);
+        }
         let palette = theme::colors(cx);
         let status = self.status_copy();
-        theme::panel(cx).w_full().px_3().py_3().child(
-            div()
-                .id("chess-status")
-                .role(Role::Status)
-                .aria_label(format!("{}. {}", status.title, status.detail))
-                .flex()
-                .gap_2()
-                .items_start()
-                .children(status.side.map(|side| piece_image(side, Piece::King, 34.)))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(theme::display_type(status.title, 20.))
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .line_height(px(18.))
-                                .min_h(px(36.))
-                                .text_color(rgb(if status.in_check {
-                                    palette.danger
-                                } else {
-                                    palette.muted
-                                }))
-                                .child(status.detail),
-                        ),
-                ),
-        )
+        theme::panel(cx)
+            .w_full()
+            .px_3()
+            .py_3()
+            .child(
+                div()
+                    .id("chess-status")
+                    .role(Role::Status)
+                    .aria_label(format!("{}. {}", status.title, status.detail))
+                    .flex()
+                    .gap_2()
+                    .items_start()
+                    .child(piece_image(status.side, Piece::King, 34.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(theme::display_type(status.title, 20.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .min_h(px(36.))
+                                    .text_color(rgb(if status.in_check {
+                                        palette.danger
+                                    } else {
+                                        palette.muted
+                                    }))
+                                    .child(status.detail),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn status_copy(&self) -> Status {
         let mover = self.game().side_to_move();
         let side = side_name(mover);
         let checked = self.game().checked_king();
-        if let Some(ending) = self.game().ending() {
-            let (winner, detail) = match ending {
-                Ending::Checkmate { winner } => (Some(winner), "Checkmate."),
-                Ending::Resignation { winner } => (
-                    Some(winner),
-                    if winner == Color::White {
-                        "Black resigned."
-                    } else {
-                        "White resigned."
-                    },
-                ),
-                Ending::ResignationDraw => (None, "Resignation. The other side has only its king."),
-                Ending::Stalemate => (None, "Stalemate. There are no legal moves."),
-                Ending::InsufficientMaterial => {
-                    (None, "Neither side has enough material to give mate.")
-                }
-                Ending::FivefoldRepetition => (None, "The same position occurred five times."),
-                Ending::SeventyFiveMoveRule => {
-                    (None, "75 moves per side without a pawn move or capture.")
-                }
-                Ending::ClaimedDraw(DrawClaim::ThreefoldRepetition) => {
-                    (None, "Draw claimed by threefold repetition.")
-                }
-                Ending::ClaimedDraw(DrawClaim::FiftyMoveRule) => {
-                    (None, "Draw claimed under the 50-move rule.")
-                }
-                Ending::AgreedDraw => (None, "Both players agreed to a draw."),
-            };
-            return Status {
-                title: winner.map_or_else(
-                    || "Draw".into(),
-                    |winner| format!("{} wins", side_name(winner)),
-                ),
-                detail: detail.into(),
-                side: winner,
-                in_check: checked.is_some() && matches!(ending, Ending::Checkmate { .. }),
-            };
-        }
         let title = if self.computer.is_some() {
             "Black is thinking".into()
         } else {
@@ -113,7 +98,7 @@ impl GameView {
         Status {
             title,
             detail,
-            side: Some(mover),
+            side: mover,
             in_check: checked.is_some(),
         }
     }
@@ -122,7 +107,7 @@ impl GameView {
         let palette = theme::colors(cx);
         let modal = self.promotion.is_some() || self.confirmation.is_some();
         let ended = self.game().ending().is_some();
-        let acted = self.game().moves().len() > 0 || ended;
+        let can_restart = self.game().moves().len() > 0 && !modal;
         let local = self.table.mode == Mode::Local;
         let choice_blocked = modal || self.claim_mode;
         let row = div().w_full().flex().items_center().flex_wrap().gap_2();
@@ -139,31 +124,24 @@ impl GameView {
             )
         } else {
             let can_claim = self.claim_now.is_some() || !self.claim_moves.is_empty();
-            row.child(
-                themed_control(cx, "chess-undo", "Undo", acted && !modal).when(
-                    acted && !modal,
+            row.when(!ended, |row| {
+                row.child(themed_control(cx, "chess-undo", "Undo", can_restart).when(
+                    can_restart,
                     |button| {
                         button.on_click(cx.listener(|view, _, window, cx| view.undo(window, cx)))
                     },
-                ),
-            )
-            .child(
-                themed_control(
-                    cx,
-                    "chess-restart",
-                    if ended { "New match" } else { "Restart" },
-                    acted && !modal,
+                ))
+                .child(
+                    themed_control(cx, "chess-restart", "Restart", can_restart).when(
+                        can_restart,
+                        |button| {
+                            button.on_click(cx.listener(|view, _, window, cx| {
+                                view.ask_for_confirmation(Confirmation::Restart, window, cx);
+                            }))
+                        },
+                    ),
                 )
-                .when(acted && !modal, |button| {
-                    button.on_click(cx.listener(|view, _, window, cx| {
-                        if view.game().ending().is_some() {
-                            view.restart(window, cx);
-                        } else {
-                            view.ask_for_confirmation(Confirmation::Restart, window, cx);
-                        }
-                    }))
-                }),
-            )
+            })
             .child(
                 themed_control(cx, "chess-flip", "Flip board", !modal).when(!modal, |button| {
                     button.on_click(cx.listener(|view, _, _, cx| view.flip(cx)))
@@ -218,10 +196,10 @@ impl GameView {
                     })),
             )
             .child(actions)
-            .child(
+            .when(!ended, |controls| controls.child(
                 div().text_size(px(12.)).line_height(px(17.)).text_color(rgb(palette.muted))
                     .child("Tab to the board. Use arrows to move the cursor and Enter to select or play."),
-            )
+            ))
     }
 
     fn confirmation_controls(&self, confirmation: Confirmation, cx: &Context<Self>) -> Div {
@@ -369,6 +347,47 @@ impl GameView {
 struct Status {
     title: String,
     detail: String,
-    side: Option<Color>,
+    side: Color,
     in_check: bool,
+}
+
+fn result_copy(mode: Mode, ending: Ending) -> (Outcome, String, String) {
+    let (winner, reason) = match ending {
+        Ending::Checkmate { winner } => (Some(winner), "Checkmate."),
+        Ending::Resignation { winner } => (
+            Some(winner),
+            if winner == Color::White {
+                "Black resigned."
+            } else {
+                "White resigned."
+            },
+        ),
+        Ending::ResignationDraw => (None, "The other side had only its king at resignation."),
+        Ending::Stalemate => (None, "Stalemate. The side to move has no legal moves."),
+        Ending::InsufficientMaterial => (None, "Neither side has enough material to give mate."),
+        Ending::FivefoldRepetition => (None, "The same position occurred five times."),
+        Ending::SeventyFiveMoveRule => (None, "75 moves per side without a pawn move or capture."),
+        Ending::ClaimedDraw(DrawClaim::ThreefoldRepetition) => {
+            (None, "Draw claimed by threefold repetition.")
+        }
+        Ending::ClaimedDraw(DrawClaim::FiftyMoveRule) => {
+            (None, "Draw claimed under the 50-move rule.")
+        }
+        Ending::AgreedDraw => (None, "Both players agreed to a draw."),
+    };
+    let Some(winner) = winner else {
+        return (Outcome::Draw, "Draw".into(), reason.into());
+    };
+    let side = side_name(winner);
+    match mode {
+        Mode::Local => (Outcome::Finished, format!("{side} wins"), reason.into()),
+        Mode::Computer => {
+            let (outcome, title) = if winner == Color::White {
+                (Outcome::Won, "You win")
+            } else {
+                (Outcome::Lost, "You lose")
+            };
+            (outcome, title.into(), format!("{side} wins. {reason}"))
+        }
+    }
 }

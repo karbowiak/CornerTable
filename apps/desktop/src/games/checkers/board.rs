@@ -1,8 +1,12 @@
-use corner_table_checkers::{Piece, Side, Square, Step};
+use std::time::Duration;
+
+use corner_table_checkers::{Outcome, Piece, Side, Square, Step};
 use gpui::{
-    Context, Div, FontWeight, Img, ObjectFit, Role, Stateful, Window, div, img, prelude::*, px,
-    rgb, rgba,
+    Animation, AnimationExt, Context, Div, FontWeight, Img, ObjectFit, Role, Stateful, Window, div,
+    ease_out_quint, img, prelude::*, px, rgb, rgba,
 };
+
+use crate::motion;
 
 use super::GameView;
 
@@ -24,6 +28,7 @@ impl GameView {
         let tile = (side - 2. * rim) / 8.;
         let focused = self.board_focus.is_focused(window);
         let show_cursor = focused && window.last_input_was_keyboard();
+        let arrival = self.arrival.filter(|_| motion::enabled(cx));
         let coordinates = (0..8).flat_map(|index| {
             let start = rim + f32::from(index) * tile;
             [
@@ -44,7 +49,11 @@ impl GameView {
             .id("checkers-board")
             .role(Role::Grid)
             .aria_label("Checkers board")
-            .aria_description("Arrow keys move between playable squares. Enter or Space selects and moves. U undoes.")
+            .aria_description(if self.table.game().outcome() == Outcome::Playing {
+                "Arrow keys move between playable squares. Enter or Space selects and moves. U undoes."
+            } else {
+                "Arrow keys review the dark squares. U undoes."
+            })
             .aria_row_count(8)
             .aria_column_count(8)
             .track_focus(&self.board_focus)
@@ -72,7 +81,7 @@ impl GameView {
                             .flex()
                             .children((0..8).map(|column| {
                                 match Square::from_coords(row, column) {
-                                    Some(square) => self.board_square(square, tile, legal, focused, show_cursor, cx).into_any_element(),
+                                    Some(square) => self.board_square(square, tile, legal, (focused, show_cursor), arrival, cx).into_any_element(),
                                     None => div().size(px(tile)).flex_none().into_any_element(),
                                 }
                             }))
@@ -85,8 +94,8 @@ impl GameView {
         square: Square,
         side: f32,
         legal: &[Step],
-        focused: bool,
-        show_cursor: bool,
+        (focused, show_cursor): (bool, bool),
+        arrival: Option<Step>,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let game = self.table.game();
@@ -149,8 +158,33 @@ impl GameView {
                     view.activate(square, false, cx);
                 }))
             })
-            .when_some(piece, |square, piece| {
-                square.child(checker(piece, side * 0.97))
+            .when_some(piece, |cell, piece| {
+                let image = checker(piece, side * 0.97);
+                if let Some(step) = arrival.filter(|step| step.to == square) {
+                    let offset = (side * 0.13).min(8.);
+                    let dx = if step.from.column() < square.column() {
+                        -offset
+                    } else {
+                        offset
+                    };
+                    let dy = if step.from.row() < square.row() {
+                        -offset
+                    } else {
+                        offset
+                    };
+                    cell.child(image.with_animation(
+                        ("checkers-arrival", game.steps().len()),
+                        Animation::new(Duration::from_millis(170)).with_easing(ease_out_quint()),
+                        move |image, progress| {
+                            image
+                                .relative()
+                                .left(px(dx * (1. - progress)))
+                                .top(px(dy * (1. - progress)))
+                        },
+                    ))
+                } else {
+                    cell.child(image)
+                }
             })
             .when(available && !selected, |square| {
                 let dot = (side * 0.13).clamp(5., 9.);

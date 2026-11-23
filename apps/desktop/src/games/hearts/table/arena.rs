@@ -5,7 +5,7 @@ use gpui::{
     Animation, AnimationExt as _, Context, Div, FontWeight, Role, div, prelude::*, px, rgb, rgba,
 };
 
-use crate::theme;
+use crate::{motion, theme};
 
 use super::{
     BRASS, CHIP, GameView, Layout, MUTED, RIM_SOFT,
@@ -118,13 +118,14 @@ impl GameView {
         let game = self.session.game();
         let passing = game.phase() == Phase::Passing;
         let received = self.session.ready_to_open();
+        let animate = (received || self.arrival.is_some()) && motion::enabled(cx);
         let inside = if passing || received {
-            self.exchange(layout, cx)
+            self.exchange(layout, animate)
         } else {
             div()
                 .size_full()
                 .relative()
-                .children(Seat::ALL.map(|seat| self.trick_card(seat, layout, cx)))
+                .children(Seat::ALL.map(|seat| self.trick_card(seat, layout, animate)))
         };
         div()
             .relative()
@@ -165,7 +166,7 @@ impl GameView {
             .child(inside)
     }
 
-    fn exchange(&self, layout: Layout, cx: &Context<Self>) -> Div {
+    fn exchange(&self, layout: Layout, animate: bool) -> Div {
         let game = self.session.game();
         let selected = self.session.selected();
         let receiving = self.session.ready_to_open();
@@ -221,7 +222,7 @@ impl GameView {
                             None => slot(width, false)
                                 .child(div().text_size(px(14.)).text_color(rgb(MUTED)).child("·")),
                         };
-                        if incoming.is_some() && !cx.reduce_motion() {
+                        if incoming.is_some() && animate {
                             card.with_animation(
                                 ("hearts-received", self.revision.wrapping_mul(3) + index),
                                 Animation::new(Duration::from_millis(410)),
@@ -240,7 +241,7 @@ impl GameView {
             )
     }
 
-    fn trick_card(&self, seat: Seat, layout: Layout, cx: &Context<Self>) -> Div {
+    fn trick_card(&self, seat: Seat, layout: Layout, animate: bool) -> Div {
         let game = self.session.game();
         let play = game.trick().iter().find(|play| play.seat == seat);
         let active = game.phase() == Phase::Playing(seat);
@@ -262,7 +263,7 @@ impl GameView {
                 .id(("hearts-played", seat.index()))
                 .role(Role::Group)
                 .aria_label(format!("{} played {}", player(seat), card_name(value)));
-            card = if self.arrival.as_ref() == Some(play) && !cx.reduce_motion() {
+            card = if animate && self.arrival.as_ref() == Some(play) {
                 let (dx, dy) = match seat {
                     Seat::West => (-17., 0.),
                     Seat::East => (17., 0.),

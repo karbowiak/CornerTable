@@ -4,7 +4,7 @@ mod state;
 
 use std::time::Duration;
 
-use corner_table_reversi::{Disc, Outcome, Position, Square, Turn, choose_move};
+use corner_table_reversi::{Disc, Position, Square, Turn, choose_move};
 use gpui::{Context, FocusHandle, KeyDownEvent, Render, Task, Window, div, prelude::*, px};
 
 use crate::{
@@ -128,15 +128,20 @@ impl GameView {
         }
         round.remember_attempt();
         self.revision = self.revision.wrapping_add(1);
-        self.animate = !cx.reduce_motion();
+        self.animate = true;
         self.notice = None;
+        let finished = matches!(self.position().turn(), Turn::Finished(_));
+        if finished {
+            self.confirm_restart = false;
+        }
         self.save();
         self.round().record_result(&self.session, self.opponent);
         audio::play(
             cx,
-            match self.position().turn() {
-                Turn::Finished(_) => Effect::Complete,
-                Turn::Play(_) => Effect::Move,
+            if finished {
+                Effect::Complete
+            } else {
+                Effect::Move
             },
         );
         self.queue_computer(cx);
@@ -220,19 +225,11 @@ impl GameView {
         }
     }
 
-    fn headline(&self) -> String {
-        match self.position().turn() {
-            Turn::Play(disc) if self.opponent == Opponent::Local => {
-                format!("{} to move", disc.label())
-            }
-            Turn::Play(Disc::Black) => "Your turn".into(),
-            Turn::Play(Disc::White) => "Computer thinking…".into(),
-            Turn::Finished(Outcome::Draw) => "Draw".into(),
-            Turn::Finished(Outcome::Won(disc)) if self.opponent == Opponent::Local => {
-                format!("{} wins", disc.label())
-            }
-            Turn::Finished(Outcome::Won(Disc::Black)) => "You win".into(),
-            Turn::Finished(Outcome::Won(Disc::White)) => "Computer wins".into(),
+    fn headline(&self, disc: Disc) -> String {
+        match (self.opponent, disc) {
+            (Opponent::Local, _) => format!("{} to move", disc.label()),
+            (_, Disc::Black) => "Your turn".into(),
+            (_, Disc::White) => "Computer thinking…".into(),
         }
     }
 
@@ -247,13 +244,6 @@ impl GameView {
             Some(Notice::Undo) => return "Last turn undone.".into(),
             Some(Notice::Restart) => return "The board is reset.".into(),
             None => {}
-        }
-        if let Turn::Finished(_) = self.position().turn() {
-            return if self.position().empty_count() == 0 {
-                "The board is full.".into()
-            } else {
-                "Neither side can move.".into()
-            };
         }
         let Some(last) = self.round().last() else {
             return "Place a disc to trap an unbroken line of opposing discs.".into();

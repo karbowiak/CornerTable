@@ -123,38 +123,43 @@ impl PhaseCopy {
         }
     }
 
-    fn score(game: &Game, result: HandResult) -> Self {
-        let moon = result.moon.map(|seat| {
-            format!(
-                "{} shot the moon. Everyone else adds 26 points.",
-                player(seat)
-            )
-        });
-        if let Some(winner) = result.winner {
-            let score = game.scores()[winner.index()];
-            let title = if winner == Seat::You {
-                "You win the match".into()
-            } else {
-                format!("{} wins the match", player(winner))
-            };
-            let detail = format!("The lowest score wins with {}.", points(score));
-            let detail = moon.map_or(detail.clone(), |moon| format!("{detail} {moon}"));
-            Self::new(title, detail)
-        } else if result.tied_at_limit {
-            let detail = "The lowest scores are tied at the match limit. Deal another hand.";
-            Self::new(
-                "Play another hand",
-                moon.map_or_else(|| detail.to_owned(), |moon| format!("{detail} {moon}")),
-            )
-        } else {
-            let detail = moon.unwrap_or_else(|| {
+    pub(super) fn score(game: &Game, result: HandResult) -> Self {
+        let scores = game.scores();
+        let your_total = points(scores[Seat::You.index()]);
+        let (title, mut detail) = match result.winner {
+            Some(Seat::You) => (
+                "You win the match",
+                format!("You finished with the lowest total, {your_total}."),
+            ),
+            Some(winner) => (
+                "You lose the match",
                 format!(
-                    "You added {} this hand.",
-                    points(u16::from(result.points[0]))
-                )
-            });
-            Self::new("Hand complete", detail)
+                    "{} wins with {}. You finished with {your_total}.",
+                    player(winner),
+                    points(scores[winner.index()])
+                ),
+            ),
+            None => {
+                let mut detail = format!(
+                    "You added {} this hand and have {your_total} total.",
+                    points(u16::from(result.points[Seat::You.index()]))
+                );
+                let title = if result.tied_at_limit {
+                    detail.push_str(" The lowest scores are tied at the match limit.");
+                    "Match continues"
+                } else {
+                    "Hand scored"
+                };
+                (title, detail)
+            }
+        };
+        if let Some(seat) = result.moon {
+            detail.push_str(&format!(
+                " {} shot the moon. Everyone else added 26 points.",
+                player(seat)
+            ));
         }
+        Self::new(title, detail)
     }
 }
 

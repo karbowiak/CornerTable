@@ -1,9 +1,12 @@
 use std::time::Duration;
 
-use corner_table_dominoes::{End, Event};
+use corner_table_dominoes::End;
 use gpui::{
-    Animation, AnimationExt, Context, Div, FontWeight, Role, Stateful, div, prelude::*, px, rgb,
+    Animation, AnimationExt, Context, Div, FontWeight, Role, Stateful, div, ease_out_quint,
+    prelude::*, px, rgb,
 };
+
+use crate::motion;
 
 use super::{GameView, pieces};
 
@@ -106,7 +109,7 @@ impl GameView {
         let layout = Layout::new(width, tiles.len(), narrow, short);
         let first = layout.slot(0);
         let last = layout.slot(tiles.len() - 1);
-        let animate = !cx.reduce_motion() && matches!(round.last_event(), Event::Played { .. });
+        let arrival = self.placement.filter(|_| motion::enabled(cx));
         div()
             .id("dominoes-chain")
             .role(Role::List)
@@ -140,12 +143,25 @@ impl GameView {
                     .absolute()
                     .left(px(slot.x))
                     .top(px(slot.y))
-                    .child(if recent && animate {
-                        div().child(piece.with_animation(
-                            ("dominoes-placement", self.revision),
-                            Animation::new(Duration::from_millis(215)),
-                            |tile, fraction| tile.opacity(1. - (1. - fraction).powi(2) * 0.46),
-                        ))
+                    .child(if let Some(end) = arrival.filter(|_| recent) {
+                        let offset = if end == End::Left || slot.reversed() {
+                            -8.
+                        } else {
+                            8.
+                        };
+                        div().child(
+                            piece.with_animation(
+                                ("dominoes-placement", self.revision),
+                                Animation::new(Duration::from_millis(215))
+                                    .with_easing(ease_out_quint()),
+                                move |tile, progress| {
+                                    let rest = 1. - progress;
+                                    tile.relative()
+                                        .left(px(offset * rest))
+                                        .opacity(1. - 0.32 * rest)
+                                },
+                            ),
+                        )
                     } else {
                         div().child(piece)
                     })

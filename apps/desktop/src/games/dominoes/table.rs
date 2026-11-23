@@ -1,10 +1,14 @@
-use corner_table_dominoes::{Action, End, Phase, Player, Tile};
+use corner_table_dominoes::{Action, End, Finish, Outcome as RoundOutcome, Phase, Player, Tile};
 use gpui::{
-    BoxShadow, Context, Div, FontWeight, Role, Stateful, Window, div, linear_color_stop,
-    linear_gradient, prelude::*, px, rgb, rgba,
+    AnyElement, BoxShadow, Context, Div, FontWeight, Role, Stateful, Window, div,
+    linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
 };
 
-use crate::theme::{self, Palette};
+use crate::{
+    games::round_result,
+    storage::Outcome,
+    theme::{self, Palette},
+};
 
 use super::{
     GameView,
@@ -18,6 +22,76 @@ const LINEN: u32 = 0xd9c5ae;
 const INK: u32 = 0x241f2c;
 
 impl GameView {
+    pub(super) fn round_result(&self, result: RoundOutcome, cx: &Context<Self>) -> AnyElement {
+        let (outcome, title, detail) = result_copy(self.mode, result);
+        let palette = theme::colors(cx);
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .child(
+                control("dominoes-next", "Next round", true, palette)
+                    .on_click(cx.listener(|view, _, window, cx| view.restart(window, cx))),
+            )
+            .child(
+                control("dominoes-review", "Review tiles", false, palette)
+                    .aria_toggled(self.review_tiles.into())
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.review_tiles = !view.review_tiles;
+                        cx.notify();
+                    })),
+            );
+        round_result(cx, "dominoes-result", outcome, title, detail, actions)
+    }
+
+    pub(super) fn remaining_tiles(&self, compact: bool, cx: &Context<Self>) -> Stateful<Div> {
+        let palette = theme::colors(cx);
+        theme::panel(cx)
+            .id("dominoes-final-hands")
+            .role(Role::Group)
+            .aria_label("Remaining tiles")
+            .flex()
+            .flex_wrap()
+            .gap_4()
+            .p_3()
+            .children([Player::One, Player::Two].map(|player| {
+                let hand = self.round().hand(player);
+                let name = self.player_name(player);
+                div()
+                    .id(("dominoes-final-hand", player.index()))
+                    .role(Role::Group)
+                    .aria_label(name)
+                    .flex_1()
+                    .min_w(px(140.))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().font_weight(FontWeight::BOLD).child(name))
+                    .when(hand.is_empty(), |column| {
+                        column.child(div().text_color(rgb(palette.muted)).child("No tiles left"))
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(hand.iter().enumerate().map(|(index, tile)| {
+                                let [a, b] = tile.pips();
+                                div()
+                                    .id(("dominoes-final-tile", index))
+                                    .role(Role::Label)
+                                    .aria_label(format!("{a} and {b}"))
+                                    .child(pieces::ivory(
+                                        [a, b],
+                                        if compact { 25. } else { 31. },
+                                        Pose::Vertical,
+                                        false,
+                                    ))
+                            })),
+                    )
+            }))
+    }
+
     pub(super) fn toolbar(&self, cx: &Context<Self>) -> Div {
         let palette = theme::colors(cx);
         let finished = self.round().outcome().is_some();
@@ -282,7 +356,6 @@ impl GameView {
 
     pub(super) fn rack(&self, compact: bool, window: &Window, cx: &Context<Self>) -> Div {
         let palette = theme::colors(cx);
-        let ended = self.round().outcome().is_some();
         let keyboard_focus = self.focus.is_focused(window);
         let headline = self.headline();
         let instruction = self.instruction();
@@ -336,9 +409,6 @@ impl GameView {
                     .child(self.turn_controls(palette, cx)),
             );
 
-        if ended {
-            return rack;
-        }
         if self.handoff() {
             return rack.child(
                 div()
@@ -413,12 +483,6 @@ impl GameView {
 
     fn turn_controls(&self, palette: Palette, cx: &Context<Self>) -> Div {
         let buttons = div().flex().flex_wrap().items_center().gap_2();
-        if self.round().outcome().is_some() {
-            return buttons.child(
-                control("dominoes-next", "Next round", true, palette)
-                    .on_click(cx.listener(|view, _, window, cx| view.restart(window, cx))),
-            );
-        }
         if self.handoff() {
             return buttons.child(
                 control("dominoes-reveal", "Reveal hand", true, palette)
@@ -508,6 +572,35 @@ impl GameView {
             })
             .child(pieces::ivory(tile.pips(), unit, Pose::Vertical, quiet))
     }
+}
+
+fn result_copy(mode: Mode, result: RoundOutcome) -> (Outcome, &'static str, String) {
+    let (outcome, title) = match (mode, result.winner) {
+        (_, None) => (Outcome::Draw, "Draw"),
+        (Mode::Computer, Some(Player::One)) => (Outcome::Won, "You win the round"),
+        (Mode::Computer, Some(Player::Two)) => (Outcome::Lost, "You lose the round"),
+        (Mode::HotSeat, Some(Player::One)) => (Outcome::Finished, "Player 1 wins the round"),
+        (Mode::HotSeat, Some(Player::Two)) => (Outcome::Finished, "Player 2 wins the round"),
+    };
+    let [first, second] = result.pips;
+    let one = mode.player_name(Player::One);
+    let two = mode.player_name(Player::Two);
+    let points = result.points;
+    let unit = if points == 1 { "point" } else { "points" };
+    let award = match result.winner {
+        Some(Player::One) if mode == Mode::Computer => format!("You earn {points} {unit}."),
+        Some(winner) => format!("{} earns {points} {unit}.", mode.player_name(winner)),
+        None => "No points awarded.".into(),
+    };
+    let reason = match result.finish {
+        Finish::WentOut => "Last tile played.",
+        Finish::Blocked => "Both players passed.",
+    };
+    (
+        outcome,
+        title,
+        format!("Pips left — {one} {first}, {two} {second}. {reason} {award}"),
+    )
 }
 
 fn score(
@@ -638,10 +731,92 @@ fn control(
 
 #[cfg(test)]
 mod tests {
+    use corner_table_api::GameId;
+    use corner_table_dominoes::computer_action;
+    use gpui::{KeyUpEvent, Keystroke, PlatformInput, TestAppContext, size};
+
     use super::*;
+    use crate::games::{GameEntry, GameLaunch, dominoes::state::Table};
 
     #[test]
     fn primary_action_builds_without_conflicting_interaction_styles() {
         let _ = control("test-action", "Draw tiles", true, theme::LIGHT);
+    }
+
+    #[gpui::test]
+    fn hot_seat_can_review_only_final_tiles_and_advance_the_scored_round(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId("dominoes-result-test".into()),
+            entry: GameEntry::Mode("hot-seat".into()),
+        };
+        let window = cx.open_window(size(px(812.), px(575.)), |window, cx| {
+            cx.set_reduce_motion(true);
+            let mut view = GameView::new(&launch, cx);
+            view.tables[Mode::HotSeat.index()] = Table::new(35);
+            while let Some(action) = computer_action(view.round()) {
+                view.apply(action, cx);
+            }
+            view.focus.focus(window, cx);
+            view
+        });
+        let (attempt, scores) = window
+            .read_with(cx, |view, _| {
+                let result = view.round().outcome().unwrap();
+                let winner = result.winner.unwrap();
+                let (outcome, title, detail) = result_copy(Mode::HotSeat, result);
+                assert_eq!(outcome, Outcome::Finished);
+                assert_eq!(
+                    title,
+                    format!("Player {} wins the round", winner.index() + 1)
+                );
+                assert!(detail.contains(&format!(
+                    "Player 1 {}, Player 2 {}",
+                    result.pips[0], result.pips[1]
+                )));
+                assert_eq!(
+                    view.table().scores()[winner.index()],
+                    u64::from(result.points)
+                );
+                assert!(view.visible_hand().is_empty());
+                (view.table().attempt(), view.table().scores())
+            })
+            .unwrap();
+        let activate_focused = |cx: &mut TestAppContext| {
+            let enter = Keystroke::parse("enter").unwrap();
+            cx.dispatch_keystroke(window.into(), enter.clone());
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke: enter }), cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            for _ in 0..4 {
+                window.focus_next(cx);
+            }
+        })
+        .unwrap();
+        activate_focused(cx);
+        window
+            .read_with(cx, |view, _| {
+                assert!(view.review_tiles);
+                assert!(view.table().attempt() == attempt);
+                assert_eq!(view.table().scores(), scores);
+            })
+            .unwrap();
+
+        cx.update_window(window.into(), |_, window, cx| window.focus_prev(cx))
+            .unwrap();
+        activate_focused(cx);
+        window
+            .update(cx, |view, window, _| {
+                assert!(view.table().attempt() != attempt);
+                assert_eq!(view.table().scores(), scores);
+                assert!(view.handoff());
+                assert!(!view.review_tiles);
+                assert!(view.focus.is_focused(window));
+            })
+            .unwrap();
     }
 }

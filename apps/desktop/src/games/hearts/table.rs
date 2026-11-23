@@ -110,6 +110,10 @@ impl GameView {
     pub(super) fn render_table(&self, window: &Window, cx: &Context<Self>) -> Stateful<Div> {
         let layout = Layout::new(window);
         let game = self.session.game();
+        let result = match game.phase() {
+            Phase::HandComplete(result) => Some(result),
+            _ => None,
+        };
         let dark = theme::colors(cx).paper != theme::PAPER;
         let felt = if dark {
             [0x4a2a3d, 0x291726]
@@ -122,9 +126,11 @@ impl GameView {
             .tab_index(0)
             .role(Role::Group)
             .aria_label("Hearts table")
-            .aria_description(
-                "Left and right arrows choose a card. Space selects or plays it. Return passes selected cards or continues.",
-            )
+            .aria_description(match result {
+                Some(result) if result.winner.is_some() => "Return starts a new match. The scorecard shows the final totals.",
+                Some(_) => "Return deals the next hand. The scorecard shows the hand and match totals.",
+                None => "Left and right arrows choose a card. Space selects or plays it. Return passes selected cards or continues.",
+            })
             .on_key_down(cx.listener(Self::key_down))
             .w_full()
             .min_w_0()
@@ -138,6 +144,7 @@ impl GameView {
             .child(self.toolbar(cx))
             .when(self.show_help, |root| root.child(self.rules(cx)))
             .when(self.confirm_new, |root| root.child(self.confirmation(cx)))
+            .when_some(result, |root, result| root.child(self.hand_result(result, cx)))
             .child(
                 div()
                     .relative()
@@ -169,11 +176,11 @@ impl GameView {
                             .flex_col()
                             .p(px(layout.inset))
                             .gap(px(if layout.compact || layout.short { 9. } else { 15. }))
-                            .child(match game.phase() {
-                                Phase::HandComplete(result) => self.score_sheet(result, layout),
-                                _ => self.arena(layout, cx),
+                            .child(match result {
+                                Some(result) => self.score_sheet(result, layout),
+                                None => self.arena(layout, cx),
                             })
-                            .child(self.phase_bar(cx))
+                            .when(result.is_none(), |felt| felt.child(self.phase_bar(cx)))
                             .when(!game.hand(Seat::You).is_empty(), |felt| {
                                 felt.child(self.player_hand(layout, window, cx))
                             }),
