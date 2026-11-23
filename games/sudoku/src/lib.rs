@@ -128,12 +128,37 @@ struct Board {
     notes: [u16; CELLS],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Edit {
+    pub index: usize,
+    pub digit: u8,
+    pub note: bool,
+}
+
+struct Undo {
+    before: Board,
+    edit: Edit,
+}
+
+/// A board and the edits after it, in the order they were played.
+pub struct Checkpoint<'a> {
+    pub values: &'a [u8],
+    pub notes: &'a [u16],
+    undo: &'a [Undo],
+}
+
+impl Checkpoint<'_> {
+    pub fn edits(&self) -> impl Iterator<Item = Edit> + '_ {
+        self.undo.iter().map(|undo| undo.edit)
+    }
+}
+
 pub struct Game {
     format: Format,
     givens: [u8; CELLS],
     solution: [u8; CELLS],
     board: Board,
-    undo: Vec<Board>,
+    undo: Vec<Undo>,
 }
 
 impl Game {
@@ -244,10 +269,65 @@ impl Game {
     }
 
     pub fn undo(&mut self) -> bool {
-        let Some(board) = self.undo.pop() else {
+        let Some(undo) = self.undo.pop() else {
             return false;
         };
-        self.board = board;
+        self.board = undo.before;
+        true
+    }
+
+    pub fn checkpoint(&self, undo_limit: usize) -> Checkpoint<'_> {
+        let undo = &self.undo[self.undo.len().saturating_sub(undo_limit)..];
+        let board = undo.first().map_or(&self.board, |undo| &undo.before);
+        let cells = self.format.cell_count();
+        Checkpoint {
+            values: &board.values[..cells],
+            notes: &board.notes[..cells],
+            undo,
+        }
+    }
+
+    /// Restore a checkpoint on this seeded puzzle. An invalid grid or edit leaves it untouched.
+    pub fn restore(
+        &mut self,
+        values: &[u8],
+        notes: &[u16],
+        edits: impl IntoIterator<Item = Edit>,
+    ) -> bool {
+        let cells = self.format.cell_count();
+        let mask = self.format.digit_mask();
+        if values.len() != cells
+            || notes.len() != cells
+            || (0..cells).any(|index| {
+                let value = values[index];
+                let given = self.givens[index];
+                usize::from(value) > self.format.size()
+                    || (given != 0 && value != given)
+                    || (value != 0 && notes[index] != 0)
+                    || notes[index] & !mask != 0
+            })
+        {
+            return false;
+        }
+
+        let mut restored = Self {
+            format: self.format,
+            givens: self.givens,
+            solution: self.solution,
+            board: Board {
+                values: [0; CELLS],
+                notes: [0; CELLS],
+            },
+            undo: Vec::new(),
+        };
+        restored.board.values[..cells].copy_from_slice(values);
+        restored.board.notes[..cells].copy_from_slice(notes);
+        for Edit { index, digit, note } in edits {
+            if !restored.enter(index, digit, note) {
+                return false;
+            }
+        }
+        *self = restored;
         true
     }
 
@@ -262,11 +342,15 @@ impl Game {
             return false;
         }
 
+        let undo = Undo {
+            before: self.board,
+            edit: Edit { index, digit, note },
+        };
         if digit != 0 && note {
             if self.value(index) != 0 {
                 return false;
             }
-            self.undo.push(self.board);
+            self.undo.push(undo);
             self.board.notes[index] ^= 1 << digit;
             return true;
         }
@@ -274,7 +358,7 @@ impl Game {
         if self.value(index) == digit && self.notes(index) == 0 {
             return false;
         }
-        self.undo.push(self.board);
+        self.undo.push(undo);
         self.board.values[index] = digit;
         self.board.notes[index] = 0;
         if digit != 0 && !self.has_conflict(index) {

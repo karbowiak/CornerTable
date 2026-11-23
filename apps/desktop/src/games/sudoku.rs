@@ -1,3 +1,5 @@
+mod persistence;
+
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,7 +10,9 @@ use gpui::{
 };
 
 use super::{GameEntry, GameLaunch, board_space};
+use crate::storage::Session;
 use crate::theme as t;
+use persistence::PracticeModes;
 
 const GRID_LINE: u32 = 0xd0d6c7;
 const PLAYER_INK: u32 = 0x23695e;
@@ -33,6 +37,13 @@ impl Puzzle {
         matches!(self, Self::Daily(_) | Self::Challenge(_))
     }
 
+    fn fixed_seed(self) -> Option<u64> {
+        match self {
+            Self::Daily(day) | Self::Challenge(day) => Some(day),
+            Self::Practice(..) => None,
+        }
+    }
+
     fn start(self, seed: u64) -> Game {
         match self {
             Self::Practice(format, difficulty) => Game::with_format(seed, difficulty, format),
@@ -43,22 +54,25 @@ impl Puzzle {
 }
 
 struct Round {
+    seed: u64,
     game: Game,
     selected: usize,
     note_mode: bool,
     hint: Option<Hint>,
     hint_open: bool,
-    hints_used: usize,
-    best: Option<usize>,
+    hints_used: u32,
+    best: Option<u32>,
 }
 
 impl Round {
-    fn new(puzzle: Puzzle, seed: u64) -> Self {
+    fn new(puzzle: Puzzle, practice_seed: u64) -> Self {
+        let seed = puzzle.fixed_seed().unwrap_or(practice_seed);
         let game = puzzle.start(seed);
         let selected = (0..game.format().cell_count())
             .find(|&index| !game.is_given(index))
             .unwrap_or(0);
         Self {
+            seed,
             game,
             selected,
             note_mode: false,
@@ -72,9 +86,13 @@ impl Round {
     fn edit(&mut self, digit: u8, note: bool) {
         if self.game.enter(self.selected, digit, note) {
             self.clear_hint();
-            if self.game.is_solved() && self.best.is_none_or(|best| self.hints_used < best) {
-                self.best = Some(self.hints_used);
-            }
+            self.record_result();
+        }
+    }
+
+    fn record_result(&mut self) {
+        if self.game.is_solved() && self.best.is_none_or(|best| self.hints_used < best) {
+            self.best = Some(self.hints_used);
         }
     }
 
@@ -116,7 +134,7 @@ impl Round {
         if self.hint.is_none() {
             self.hint = self.game.hint(self.selected);
             if self.hint.is_some() {
-                self.hints_used += 1;
+                self.hints_used = self.hints_used.saturating_add(1);
             }
         }
         if let Some(hint) = self.hint {
@@ -145,15 +163,20 @@ impl Round {
 pub struct GameView {
     focus: FocusHandle,
     focus_on_mount: bool,
+    launch: GameLaunch,
+    session: Session,
     rounds: HashMap<Puzzle, Round>,
     puzzle: Puzzle,
-    practice_seed: u64,
-    standard_difficulty: Difficulty,
-    mini_difficulty: Difficulty,
+    modes: PracticeModes,
 }
 
 impl GameView {
     pub fn new(launch: &GameLaunch, cx: &mut Context<Self>) -> Self {
+        let session = Session::new(launch);
+        let modes = match launch.entry {
+            GameEntry::Challenge(_) => PracticeModes::default(),
+            _ => session.load::<PracticeModes>().unwrap_or_default(),
+        };
         let puzzle = match &launch.entry {
             GameEntry::Challenge(id) => {
                 let seed = id.bytes().fold(0u64, |hash, byte| {
@@ -161,21 +184,17 @@ impl GameView {
                 });
                 Puzzle::Challenge(seed)
             }
-            GameEntry::Classic | GameEntry::Mode(_) => {
-                Puzzle::Practice(Format::Standard, Difficulty::Easy)
-            }
+            GameEntry::Classic | GameEntry::Mode(_) => modes.selected_puzzle(),
         };
-        let practice_seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |time| time.as_nanos() as u64);
+        let round = Round::load(puzzle, &puzzle.session(launch));
         Self {
             focus: cx.focus_handle().tab_stop(true),
             focus_on_mount: true,
-            rounds: HashMap::from([(puzzle, Round::new(puzzle, practice_seed))]),
+            launch: launch.clone(),
+            session,
+            rounds: HashMap::from([(puzzle, round)]),
             puzzle,
-            practice_seed,
-            standard_difficulty: Difficulty::Easy,
-            mini_difficulty: Difficulty::Easy,
+            modes,
         }
     }
 
@@ -190,36 +209,26 @@ impl GameView {
     }
 
     fn open(&mut self, puzzle: Puzzle) {
-        if let Puzzle::Daily(_) = puzzle {
-            self.rounds
-                .retain(|&key, _| !matches!(key, Puzzle::Daily(_)) || key == puzzle);
+        if self.puzzle == puzzle {
+            return;
         }
-        if let Puzzle::Practice(format, difficulty) = puzzle {
-            match format {
-                Format::Standard => self.standard_difficulty = difficulty,
-                Format::Mini => self.mini_difficulty = difficulty,
-            }
-        }
-        self.rounds.entry(puzzle).or_insert_with(|| {
-            if !puzzle.is_daily() {
-                self.practice_seed = self.practice_seed.wrapping_add(1);
-            }
-            Round::new(puzzle, self.practice_seed)
-        });
+        self.rounds
+            .entry(puzzle)
+            .or_insert_with(|| Round::load(puzzle, &puzzle.session(&self.launch)));
         self.puzzle = puzzle;
+        self.modes.select(puzzle);
+        self.session.save(&self.modes);
     }
 
     fn start_over(&mut self) {
-        let puzzle = self.puzzle;
-        let best = if puzzle.is_daily() {
-            self.round().best
-        } else {
-            self.practice_seed = self.practice_seed.wrapping_add(1);
-            None
-        };
-        let mut next = Round::new(puzzle, self.practice_seed);
-        next.best = best;
-        self.rounds.insert(puzzle, next);
+        let previous = self.round();
+        let mut next = Round::new(self.puzzle, previous.seed.wrapping_add(1));
+        next.best = previous.best;
+        self.rounds.insert(self.puzzle, next);
+    }
+
+    fn save_round(&self) {
+        self.round().save(&self.puzzle.session(&self.launch));
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -266,6 +275,7 @@ impl GameView {
             }
         }
         cx.stop_propagation();
+        self.save_round();
         cx.notify();
     }
 
@@ -282,14 +292,14 @@ impl GameView {
                     "Classic 9×9",
                     ButtonStyle::selected(practice && format == Format::Standard),
                     cx,
-                    |view| view.open(Puzzle::Practice(Format::Standard, view.standard_difficulty)),
+                    |view| view.open(view.modes.practice(Format::Standard)),
                 ))
                 .child(control(
                     "sudoku-mini",
                     "Mini 6×6",
                     ButtonStyle::selected(practice && format == Format::Mini),
                     cx,
-                    |view| view.open(Puzzle::Practice(Format::Mini, view.mini_difficulty)),
+                    |view| view.open(view.modes.practice(Format::Mini)),
                 ))
                 .child(control(
                     "sudoku-daily",
@@ -386,6 +396,7 @@ impl GameView {
                     )
                     .on_click(cx.listener(move |view, _, window, cx| {
                         view.round_mut().selected = index;
+                        view.save_round();
                         view.focus.focus(window, cx);
                         cx.notify();
                     }))
@@ -614,6 +625,9 @@ impl GameView {
             panel = panel
                 .child(progress(game, palette))
                 .when(daily, |panel| panel.child(daily_goal(round, palette)))
+                .when_some(round.best.filter(|_| !daily), |panel, best| {
+                    panel.child(best_result(best, palette))
+                })
                 .when(!compact, |panel| panel.child(self.keypad(compact, cx)));
         }
 
@@ -833,11 +847,7 @@ fn daily_goal(round: &Round, palette: t::Palette) -> Div {
             )
         })
         .when_some(round.best, |goal, best| {
-            goal.child(
-                div()
-                    .text_color(rgb(palette.muted))
-                    .child(format!("Best · {}", result(best))),
-            )
+            goal.child(best_result(best, palette))
         })
 }
 
@@ -867,27 +877,24 @@ fn completed(round: &Round, daily: bool, palette: t::Palette) -> Div {
                 .child(description),
         )
         .when_some(
-            round.best.filter(|&best| daily && best < round.hints_used),
-            |panel, best| {
-                panel.child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(rgb(palette.muted))
-                        .child(format!("Best · {}", result(best))),
-                )
-            },
+            round.best.filter(|&best| best < round.hints_used),
+            |panel, best| panel.child(best_result(best, palette)),
         )
 }
 
-fn result(hints: usize) -> String {
-    if hints == 0 {
-        "Clean solve".to_owned()
-    } else {
-        format!("Solved with {}", hint_count(hints).to_lowercase())
-    }
+fn best_result(hints: u32, palette: t::Palette) -> Div {
+    div()
+        .text_size(px(13.))
+        .line_height(px(18.))
+        .text_color(rgb(palette.muted))
+        .child(if hints == 0 {
+            "Best · Clean solve".to_owned()
+        } else {
+            format!("Best · {}", hint_count(hints).to_lowercase())
+        })
 }
 
-fn hint_count(hints: usize) -> String {
+fn hint_count(hints: u32) -> String {
     if hints == 1 {
         "1 hint".to_owned()
     } else {
@@ -1054,6 +1061,7 @@ fn control(
                 .focus_visible(|style| style.border_color(rgb(palette.ink)).bg(rgb(hover)))
                 .on_click(cx.listener(move |view, _, window, cx| {
                     action(view);
+                    view.save_round();
                     view.focus.focus(window, cx);
                     cx.notify();
                 }))

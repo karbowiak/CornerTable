@@ -118,6 +118,83 @@ fn placing_a_digit_prunes_peer_notes_and_undo_restores_them() {
 }
 
 #[test]
+fn checkpoint_preserves_progress_before_and_after_the_undo_limit() {
+    let mut game = Game::with_format(173, Difficulty::Medium, Format::Mini);
+    let given = (0..36).find(|&index| game.is_given(index)).unwrap();
+    let index = (0..36)
+        .find(|&index| !game.is_given(index) && Format::Mini.related(index, given))
+        .unwrap();
+    let digit = game.value(given);
+    assert!(game.enter(index, 1, true));
+    assert!(game.enter(index, 2, true));
+    assert!(game.enter(index, digit, false));
+    assert!(game.has_conflict(index));
+
+    let saved = game.checkpoint(2);
+    let mut restored = Game::with_format(173, Difficulty::Medium, Format::Mini);
+    assert!(restored.restore(saved.values, saved.notes, saved.edits()));
+    assert_eq!(restored.board.values, game.board.values);
+    assert_eq!(restored.board.notes, game.board.notes);
+    assert!(restored.has_conflict(index));
+    assert!(restored.undo());
+    assert_eq!(restored.notes(index), (1 << 1) | (1 << 2));
+    assert!(restored.undo());
+    assert_eq!(restored.notes(index), 1 << 1);
+    assert!(!restored.undo());
+}
+
+#[test]
+fn restore_rejects_bad_dimensions_givens_digits_notes_and_edits() {
+    let mut game = Game::with_format(0, Difficulty::Easy, Format::Mini);
+    let given = (0..36).find(|&index| game.is_given(index)).unwrap();
+    let index = (0..36).find(|&index| !game.is_given(index)).unwrap();
+    let values = game.givens[..36].to_vec();
+    let notes = [0; 36];
+    assert!(game.enter(index, 1, true));
+
+    let mut changed_given = values.clone();
+    changed_given[given] = 0;
+    let mut out_of_range = values.clone();
+    out_of_range[index] = 7;
+    let mut bad_note = notes;
+    bad_note[index] = 1 << 7;
+    let mut note_on_given = notes;
+    note_on_given[given] = 1 << 1;
+    for (values, notes) in [
+        (&values[..35], &notes[..]),
+        (&values[..], &notes[..35]),
+        (&changed_given, &notes),
+        (&out_of_range, &notes),
+        (&values, &bad_note),
+        (&values, &note_on_given),
+    ] {
+        assert!(!game.restore(values, notes, []));
+    }
+    for bad in [given, 36, usize::MAX] {
+        assert!(!game.restore(
+            &values,
+            &notes,
+            [
+                Edit {
+                    index,
+                    digit: 3,
+                    note: false
+                },
+                Edit {
+                    index: bad,
+                    digit: 3,
+                    note: false
+                },
+            ],
+        ));
+    }
+    assert_eq!(game.value(index), 0);
+    assert_eq!(game.notes(index), 1 << 1);
+    assert!(game.undo());
+    assert_eq!(game.notes(index), 0);
+}
+
+#[test]
 fn hints_explain_duplicates_and_distinguish_wrong_entries_without_duplicates() {
     let mut game = Game::new(173, Difficulty::Hard);
     let index = (0..CELLS).find(|&index| !game.is_given(index)).unwrap();
