@@ -1,6 +1,6 @@
 # Corner Table
 
-A Linux-first desktop home for casual games. The GPUI app includes five playable Solitaire variants, Mahjong, Minesweeper, Sudoku, and Jigsaw, alongside the illustrated library, a daily challenge, and sample guest leaderboards. See the [development handoff](HANDOFF.md) for the game branches, their current status, and worktree setup. The app includes all its fonts, art, and sample data in the binary.
+Corner Table is a native Rust and GPUI collection of twelve tabletop and arcade game families. Play offline, browse an illustrated library, favorite games, or open a deterministic daily puzzle from a week of challenges. The app includes its fonts, artwork, and sample data in the binary. See the [game directory](games/README.md) for the games and the [development handoff](HANDOFF.md) for integration notes.
 
 ## Run on Linux
 
@@ -75,4 +75,4 @@ git worktree add ../corner-table-mahjong -b game/mahjong main
 
 Have each worktree own its game's files. The integration pass adds workspace members, desktop dependencies, and dispatch entries. It also regenerates `Cargo.lock` after combining the changes. Keep stable IDs and shared controls together in the integration branch.
 
-The next milestone is to finish the remaining game boards and add saves that survive an app restart. See [HANDOFF.md](HANDOFF.md) for the desktop and online roadmap.
+The appearance control at the bottom of the sidebar offers System, Light, and Dark. The sidebar Back and Forward controls also respond to mouse navigation buttons and keyboard shortcuts. Last Played, Favorites, appearance, and supported game sessions are saved on this device. Set `CORNER_TABLE_DATA_DIR` when you want to run a separate test profile.

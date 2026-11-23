@@ -1,8 +1,8 @@
 # Game directory
 
-Each game title has a stable catalog ID and its own future Rust crate. Add a crate when implementing rules, with seeded puzzle generation, move validation, and scoring where applicable.
+Each game family has a stable catalog ID and its own Rust rules crate. Keep seeded generation, move validation, and scoring in the rules crate so they can be used independently of the desktop UI.
 
-| Catalog ID | Planned rules path | Planned desktop module |
+| Catalog ID | Rules path | Desktop module |
 | --- | --- | --- |
 | `solitaire` | `games/solitaire/` | `games::solitaire` |
 | `mahjong` | `games/mahjong/` | `games::mahjong` |
