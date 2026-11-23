@@ -2,11 +2,14 @@
 members = [
     "apps/desktop",
     "crates/api",
+    "games/block-puzzle",
     "games/jigsaw",
     "games/mahjong",
+    "games/match-three",
     "games/minesweeper",
     "games/solitaire",
     "games/sudoku",
+    "games/word-games",
 ]
 default-members = ["apps/desktop"]
 resolver = "3"

@@ -13,6 +13,11 @@ cargo run --locked
 
 GPUI uses your desktop's Wayland or X11 session and a Vulkan driver. Mesa users generally get the driver from `mesa-vulkan-drivers`. The mock API runs in process. You can run the app offline.
 
+## Run on macOS
+
+Install Rust and Apple's Command Line Tools, then run `cargo run --locked`.
+Run `python3 scripts/dev.py` to rebuild and restart the app as source and assets change. The current window stays open if a build fails. Press Ctrl+C in the watcher terminal to stop it and the game client.
+
 ```sh
 cargo fmt --all -- --check
 cargo test --locked --workspace

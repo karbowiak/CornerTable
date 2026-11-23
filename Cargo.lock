@@ -1061,11 +1061,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "corner-table-api",
+ "corner-table-block-puzzle",
  "corner-table-jigsaw",
  "corner-table-mahjong",
+ "corner-table-match-three",
  "corner-table-minesweeper",
  "corner-table-solitaire",
  "corner-table-sudoku",
+ "corner-table-word-games",
  "gpui",
  "include_dir",
 ]
@@ -1079,11 +1082,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "corner-table-block-puzzle"
+version = "0.1.0"
+
+[[package]]
 name = "corner-table-jigsaw"
 version = "0.1.0"
 
 [[package]]
 name = "corner-table-mahjong"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-match-three"
 version = "0.1.0"
 
 [[package]]
@@ -1096,6 +1107,10 @@ version = "0.1.0"
 
 [[package]]
 name = "corner-table-sudoku"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-word-games"
 version = "0.1.0"
 
 [[package]]

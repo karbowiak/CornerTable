@@ -6,10 +6,19 @@ edition.workspace = true
 [dependencies]
 anyhow = "1"
 corner-table-api = { path = "../../crates/api" }
+corner-table-block-puzzle = { path = "../../games/block-puzzle" }
 corner-table-jigsaw = { path = "../../games/jigsaw" }
 corner-table-mahjong = { path = "../../games/mahjong" }
+corner-table-match-three = { path = "../../games/match-three" }
 corner-table-minesweeper = { path = "../../games/minesweeper" }
 corner-table-solitaire = { path = "../../games/solitaire" }
 corner-table-sudoku = { path = "../../games/sudoku" }
-gpui = "=0.2.2"
+corner-table-word-games = { path = "../../games/word-games" }
 include_dir = "0.7"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+gpui = "=0.2.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS can compile the shaders on launch with just Command Line Tools installed.
+gpui = { version = "=0.2.2", features = ["runtime_shaders"] }

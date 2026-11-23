@@ -226,7 +226,7 @@ impl GameView {
                                 .font_weight(FontWeight::BOLD)
                                 .text_size(px(25.))
                                 .hover(|style| style.bg(rgb(t::GOLD_HOVER)))
-                                .focus_visible(|style| style.border_2().border_color(rgb(FOREST)))
+                                .focus(|style| style.border_color(rgb(FOREST)))
                                 .child(char::from(letter).to_string())
                                 .children(chosen.map(|order| {
                                     div()
@@ -435,7 +435,7 @@ impl GameView {
             .flex_grow()
             .child(t::display_type("Mini Crossword", 26.))
             .child(div().text_color(rgb(t::MUTED)).child("Select a clue or square, then type. Use the arrow keys to move and Space to change direction."))
-            .child(div().p_2().rounded_lg().bg(rgb(FOREST)).self_start().child(board))
+            .child(div().flex().child(div().p_2().rounded_lg().bg(rgb(FOREST)).child(board)))
             .child(div().flex().gap_3().flex_wrap()
                 .child(button("crossword-check", "Check letters", true, cx, |view| view.check_crossword()))
                 .child(button("crossword-reveal", "Reveal solution", false, cx, |view| {
@@ -511,7 +511,7 @@ impl Render for GameView {
                     .justify_between()
                     .gap_3()
                     .flex_wrap()
-                    .child(t::heading("Word Games"))
+                    .child(div().text_color(rgb(t::MUTED)).child("Choose a puzzle."))
                     .child(button("word-new", "New puzzle", false, cx, |view| {
                         view.seed = view.seed.wrapping_add(1);
                         view.reset(view.mode);
@@ -567,7 +567,7 @@ fn button(
         .bg(rgb(if active { t::GOLD } else { t::SURFACE }))
         .font_weight(FontWeight::SEMIBOLD)
         .hover(|style| style.bg(rgb(t::GOLD_HOVER)))
-        .focus_visible(|style| style.border_2().border_color(rgb(FOREST)))
+        .focus(|style| style.border_color(rgb(FOREST)))
         .child(label.into())
         .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
             view.focus.focus(window);
