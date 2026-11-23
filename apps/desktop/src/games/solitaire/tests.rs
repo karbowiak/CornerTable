@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use corner_table_api::GameId;
 use corner_table_solitaire::TableCard;
-use gpui::{Bounds, Modifiers, Pixels, TestAppContext, VisualTestContext, WindowHandle, size};
+use gpui::{
+    Bounds, KeyUpEvent, Keystroke, Modifiers, Pixels, TestAppContext, VisualTestContext,
+    WindowHandle, size,
+};
 
 use super::*;
 
@@ -48,6 +51,255 @@ fn click(visual: &mut VisualTestContext, id: &'static str) -> Bounds<Pixels> {
     visual.simulate_click(bounds.center(), Modifiers::none());
     draw(visual);
     bounds
+}
+
+fn press(visual: &mut VisualTestContext, keys: &'static str) {
+    for key in keys.split_whitespace() {
+        visual.simulate_keystrokes(key);
+        visual.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse(key).unwrap(),
+        });
+    }
+    draw(visual);
+}
+
+fn focused(window: WindowHandle<GameView>, cx: &mut TestAppContext) -> Option<Place> {
+    window
+        .update(cx, |view, window, _| {
+            assert!(view.focus.is_focused(window));
+            view.cursor.place()
+        })
+        .unwrap()
+}
+
+#[gpui::test]
+fn klondike_arrows_move_focus_without_selecting_and_undo_recovers_from_empty_waste(
+    cx: &mut TestAppContext,
+) {
+    let mode = DealMode::KlondikeDrawThree;
+    let (window, mut visual) = open(cx, mode, 18);
+    assert_eq!(focused(window, cx), Some(Place::Stock));
+    press(&mut visual, "enter right");
+    assert!(visual.debug_bounds("solitaire-flight-0").is_some());
+    assert_eq!(focused(window, cx), Some(Place::Foundation(0)));
+    advance(&mut visual, 350);
+    press(&mut visual, "left space down");
+    assert!(matches!(focused(window, cx), Some(Place::Tableau(..))));
+    window
+        .read_with(cx, |view, _| {
+            assert_eq!(view.deal.selected, Some(Place::Waste))
+        })
+        .unwrap();
+    press(&mut visual, "escape up");
+    assert_eq!(focused(window, cx), Some(Place::Waste));
+    press(&mut visual, "u h");
+    assert_eq!(focused(window, cx), Some(Place::Stock));
+    window
+        .read_with(cx, |view, _| {
+            assert_eq!(view.deal.game, Game::with_mode(mode, 18));
+            assert!(view.deal.selected.is_none());
+            assert!(view.suggestion.is_some());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn freecell_arrows_reach_cells_columns_and_foundations_with_one_board_tab_stop(
+    cx: &mut TestAppContext,
+) {
+    let (window, mut visual) = open(cx, DealMode::FreeCell, 146);
+    assert_eq!(focused(window, cx), Some(Place::Cell(0)));
+    press(&mut visual, "right right right right");
+    assert_eq!(focused(window, cx), Some(Place::Foundation(0)));
+    press(&mut visual, "left left left left down enter up space");
+    assert_eq!(focused(window, cx), Some(Place::Cell(0)));
+    window
+        .read_with(cx, |view, _| {
+            assert_eq!(view.deal.game.moves, 1);
+            assert!(view.deal.game.cells[0].is_some());
+            assert!(view.deal.selected.is_none());
+        })
+        .unwrap();
+    press(&mut visual, "down right");
+    let column = Some(Place::Tableau(1, 6));
+    assert_eq!(focused(window, cx), column);
+    window
+        .update(cx, |view, window, cx| {
+            window.focus_prev(cx);
+            assert!(!view.focus.is_focused(window));
+            window.focus_next(cx);
+            assert!(view.focus.is_focused(window));
+        })
+        .unwrap();
+    assert_eq!(focused(window, cx), column);
+}
+
+#[gpui::test]
+fn spider_keyboard_deal_and_undo_keep_the_table_reachable_during_flights(cx: &mut TestAppContext) {
+    let (window, mut visual) = open(cx, DealMode::SpiderOneSuit, 266);
+    press(&mut visual, "down right space");
+    let second_column = Some(Place::Tableau(1, 5));
+    assert_eq!(focused(window, cx), second_column);
+    window
+        .read_with(cx, |view, _| assert_eq!(view.deal.selected, second_column))
+        .unwrap();
+    press(&mut visual, "d down");
+    assert_eq!(focused(window, cx), Some(Place::Stock));
+    assert!(visual.debug_bounds("solitaire-flight-0").is_some());
+    advance(&mut visual, 470);
+    press(&mut visual, "down right");
+    assert_eq!(focused(window, cx), Some(Place::Tableau(1, 6)));
+    press(&mut visual, "u");
+    assert_eq!(focused(window, cx), second_column);
+    window
+        .read_with(cx, |view, _| assert_eq!(view.deal.game.moves, 0))
+        .unwrap();
+}
+
+#[gpui::test]
+fn pyramid_and_tripeaks_skip_covered_cards_and_refocus_after_clearing(cx: &mut TestAppContext) {
+    let pair = Move::Transfer {
+        from: Place::Layout(24),
+        to: Place::Layout(25),
+    };
+    let clear = Move::Clear(Place::Layout(22));
+    for (mode, action, keys, first) in [
+        (
+            DealMode::Pyramid,
+            pair,
+            "enter right space",
+            Place::Layout(24),
+        ),
+        (DealMode::TriPeaks, clear, "space", Place::Layout(22)),
+    ] {
+        let (seed, expected) = (0..100)
+            .find_map(|seed| {
+                let mut game = Game::with_mode(mode, seed);
+                game.play(action).then_some((seed, game))
+            })
+            .unwrap();
+        let (window, mut visual) = open(cx, mode, seed);
+        if mode == DealMode::TriPeaks {
+            press(&mut visual, "right");
+            assert_eq!(focused(window, cx), Some(Place::Waste));
+            press(&mut visual, "space left");
+            assert_eq!(focused(window, cx), Some(Place::Stock));
+        }
+        press(&mut visual, "up");
+        assert_eq!(focused(window, cx), Some(first));
+        press(&mut visual, keys);
+        let fallback = focused(window, cx).unwrap();
+        if mode == DealMode::Pyramid {
+            assert_eq!(fallback, Place::Layout(18));
+        } else {
+            assert!(matches!(fallback, Place::Layout(21 | 23)));
+        }
+        assert!(expected.selectable(fallback));
+        window
+            .read_with(cx, |view, _| assert_eq!(view.deal.game, expected))
+            .unwrap();
+        press(&mut visual, "d");
+        assert_eq!(focused(window, cx), Some(fallback));
+        assert!(visual.debug_bounds("solitaire-flight-0").is_some());
+    }
+}
+
+#[gpui::test]
+fn a_keyboard_stock_draw_can_end_the_round_and_tab_to_recovery(cx: &mut TestAppContext) {
+    let (window, mut visual) = open(cx, DealMode::Pyramid, 16);
+    let before = window
+        .update(cx, |view, _, cx| {
+            while view.deal.game.stock.len() > 1 {
+                assert!(view.deal.apply(Move::Draw));
+            }
+            cx.notify();
+            view.deal.game.clone()
+        })
+        .unwrap();
+    draw(&mut visual);
+    press(&mut visual, "space");
+    assert_eq!(focused(window, cx), None);
+    assert!(visual.debug_bounds("solitaire-blocked").is_none());
+    advance(&mut visual, 280);
+    assert_eq!(focused(window, cx), None);
+    assert!(visual.debug_bounds("solitaire-blocked").is_some());
+    window
+        .update(cx, |_, window, cx| window.focus_next(cx))
+        .unwrap();
+    press(&mut visual, "enter");
+    assert_eq!(focused(window, cx), Some(Place::Stock));
+    window
+        .read_with(cx, |view, _| assert_eq!(view.deal.game, before))
+        .unwrap();
+
+    press(&mut visual, "enter");
+    advance(&mut visual, 280);
+    window
+        .update(cx, |_, window, cx| {
+            window.focus_next(cx);
+            window.focus_next(cx);
+        })
+        .unwrap();
+    press(&mut visual, "space");
+    assert_eq!(focused(window, cx), Some(Place::Stock));
+    window
+        .read_with(cx, |view, _| {
+            assert_eq!(view.deal.game, Game::with_mode(DealMode::Pyramid, 16))
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn modified_arrows_follow_history_from_a_focused_solitaire_card(cx: &mut TestAppContext) {
+    use crate::app::{Action, Desktop, Page};
+    use corner_table_api::FixtureApi;
+
+    cx.update(crate::install_shortcuts);
+    let launch = GameLaunch {
+        game: GameId("solitaire".into()),
+        entry: GameEntry::Mode("klondike".into()),
+    };
+    let page = Page::Game(launch);
+    let window = cx.open_window(size(px(900.), px(660.)), |window, cx| {
+        let desktop = Desktop::new(
+            FixtureApi::load().unwrap(),
+            t::Appearance::Light,
+            window,
+            cx,
+        );
+        desktop.focus.focus(window, cx);
+        desktop
+    });
+    window
+        .update(cx, |desktop, window, cx| {
+            desktop.dispatch(Action::Navigate(page.clone()), window, cx);
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    draw(&mut visual);
+    draw(&mut visual);
+    press(&mut visual, "down h");
+    assert!(visual.debug_bounds("solitaire-hint-source").is_some());
+    assert_eq!(
+        window
+            .read_with(cx, |desktop, _| desktop.page.clone())
+            .unwrap(),
+        page
+    );
+    press(&mut visual, "alt-left");
+    assert_eq!(
+        window
+            .read_with(cx, |desktop, _| desktop.page.clone())
+            .unwrap(),
+        Page::Library
+    );
+    press(&mut visual, "alt-right");
+    assert_eq!(
+        window
+            .read_with(cx, |desktop, _| desktop.page.clone())
+            .unwrap(),
+        page
+    );
 }
 
 fn near_destination(flight: Bounds<Pixels>, slot: Bounds<Pixels>) {

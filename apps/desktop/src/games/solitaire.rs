@@ -1,3 +1,4 @@
+mod keyboard;
 mod motion;
 mod session;
 mod style;
@@ -21,6 +22,7 @@ use crate::{
 };
 
 use self::{
+    keyboard::{Cursor, Direction},
     motion::{Anchor, DealFrame, DealMotion, fan_len},
     session::{Deal, TableSession},
     style::{TablePalette, TableStyle},
@@ -52,6 +54,10 @@ impl CardSize {
         self.stride() * self.columns as f32 - self.gap
     }
 
+    fn field_gap(self) -> f32 {
+        (self.width * 0.17).clamp(12., 21.)
+    }
+
     fn back_step(self) -> f32 {
         self.width * 0.155
     }
@@ -71,6 +77,37 @@ impl CardSize {
             0.
         }
     }
+
+    fn layout_rows(self, variant: Variant) -> (&'static [usize], f32) {
+        match variant {
+            Variant::Pyramid => (&[1, 2, 3, 4, 5, 6, 7], self.width * 0.43),
+            Variant::TriPeaks => (&[3, 6, 9, 10], self.width * 0.51),
+            _ => unreachable!("only Pyramid and TriPeaks have layouts"),
+        }
+    }
+
+    fn layout_height(self, variant: Variant) -> f32 {
+        let (rows, row_step) = self.layout_rows(variant);
+        (rows.len() - 1) as f32 * row_step + self.height()
+    }
+
+    fn layout_positions(self, variant: Variant) -> impl Iterator<Item = (usize, f32, f32)> {
+        let (rows, row_step) = self.layout_rows(variant);
+        rows.iter().enumerate().flat_map(move |(row, &count)| {
+            let offset = rows[..row].iter().sum::<usize>();
+            (0..count).map(move |column| {
+                let x = if variant == Variant::Pyramid {
+                    column as f32 + (rows.len() - count) as f32 / 2.
+                } else if row == 3 {
+                    column as f32
+                } else {
+                    let per_peak = row + 1;
+                    (column / per_peak * 3 + column % per_peak) as f32 + (3 - row) as f32 / 2.
+                };
+                (offset + column, x * self.stride(), row as f32 * row_step)
+            })
+        })
+    }
 }
 
 struct TableSize {
@@ -83,6 +120,16 @@ struct BoardFrame<'a> {
     size: CardSize,
     interactive: bool,
     flight: Option<DealFrame<'a>>,
+}
+
+impl BoardFrame<'_> {
+    fn waste_top_visible(&self, game: &Game) -> bool {
+        game.waste.len().checked_sub(1).is_some_and(|index| {
+            self.flight.as_ref().is_none_or(|flight| {
+                flight.previous_waste().is_none() && !flight.waste_pending(index)
+            })
+        })
+    }
 }
 
 impl TableSize {
@@ -136,6 +183,7 @@ pub struct GameView {
     revision: u64,
     show_title: bool,
     focus: FocusHandle,
+    cursor: Cursor,
     initial_focus: bool,
     suggestion: Option<Suggestion>,
     deal_motion: Option<DealMotion>,
@@ -156,6 +204,7 @@ impl GameView {
             revision: 0,
             show_title: !matches!(launch.entry, GameEntry::Mode(_)),
             focus: cx.focus_handle(),
+            cursor: Cursor::default(),
             initial_focus: true,
             suggestion: None,
             deal_motion: None,
@@ -164,6 +213,7 @@ impl GameView {
 
     fn restart(&mut self, seed: Option<u64>) {
         self.deal.restart(seed);
+        self.cursor = Cursor::default();
         self.board_changed();
     }
 
@@ -175,6 +225,7 @@ impl GameView {
         {
             std::mem::swap(&mut self.deal, deal);
             self.session.save_mode(mode);
+            self.cursor = Cursor::default();
             self.board_changed();
         }
     }
@@ -197,6 +248,50 @@ impl GameView {
                 .hint()
                 .map_or(Suggestion::NoneAvailable, Suggestion::Move),
         );
+        cx.notify();
+    }
+
+    fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.deal.undo() {
+            self.board_changed();
+            self.focus.focus(window, cx);
+            audio::play(cx, Effect::Move);
+            cx.notify();
+        }
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let stroke = &event.keystroke;
+        if stroke.modifiers.modified() {
+            return;
+        }
+        let key = stroke.key.as_str();
+        let on_board = self.focus.is_focused(window);
+        let live = self.cursor.place().is_some();
+        if on_board
+            && live
+            && let Some(direction) = Direction::from_key(key)
+        {
+            self.cursor.step(direction);
+        } else if !event.is_held {
+            match key {
+                "h" if live => self.show_hint(cx),
+                "u" if self.deal.can_undo() => self.undo(window, cx),
+                "d" if live && self.deal.game.variant != Variant::FreeCell => {
+                    self.focus.focus(window, cx);
+                    self.play_at(Place::Stock, cx);
+                }
+                "escape" if on_board && live => {
+                    self.deal.selected = None;
+                    self.deal.status = "";
+                    self.suggestion = None;
+                }
+                _ => return,
+            }
+        } else {
+            return;
+        }
+        cx.stop_propagation();
         cx.notify();
     }
 
@@ -370,6 +465,8 @@ impl GameView {
             .then(|| self.drag_source(place, face, size, owner))
             .flatten();
         let draggable = drag.is_some();
+        let keyboard_target = self.cursor.place() == Some(place);
+        let showing_waste = place == Place::Waste && matches!(face, CardFace::Up(_));
         card_surface(face, size, selected, palette)
             .when_some(marker, |surface, marker| {
                 marker.mark(surface, size, palette)
@@ -379,23 +476,28 @@ impl GameView {
                 element.debug_selector(move || format!("solitaire-slot-{place:?}"))
             })
             .block_mouse_except_scroll()
+            .when(showing_waste && !clickable, |element| {
+                element
+                    .role(Role::Label)
+                    .aria_label(card_label(place, face, game))
+            })
+            .when(keyboard_target, |element| {
+                // Keep one handle as its slot moves so removing a card cannot break the key path.
+                element
+                    .track_focus(&self.focus.clone().tab_stop(true))
+                    .focus_visible(|style| {
+                        style.border_color(rgb(0x272730)).shadow(vec![
+                            BoxShadow::new(px(0.), px(0.), rgb(palette.accent).into())
+                                .spread_radius(px(2.)),
+                        ])
+                    })
+            })
             .when(clickable, |element| {
                 element
                     .role(Role::Button)
                     .aria_label(card_label(place, face, game))
                     .when_some(marker, |card, marker| card.aria_description(marker.label()))
                     .aria_selected(selected)
-                    .when(
-                        !matches!(face, CardFace::Back) || place == Place::Stock,
-                        |element| {
-                            element.tab_index(0).focus_visible(|style| {
-                                style.border_color(rgb(0x272730)).shadow(vec![
-                                    BoxShadow::new(px(0.), px(0.), rgb(palette.accent).into())
-                                        .spread_radius(px(2.)),
-                                ])
-                            })
-                        },
-                    )
                     .cursor_pointer()
                     .hover(move |style| {
                         let style = style.border_color(rgb(0xcbaf79));
@@ -405,7 +507,10 @@ impl GameView {
                             style
                         }
                     })
-                    .on_click(cx.listener(move |view, _, _, cx| {
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        if view.cursor.set(place) {
+                            view.focus.focus(window, cx);
+                        }
                         view.play_at(place, cx);
                         cx.notify();
                     }))
@@ -484,6 +589,7 @@ impl GameView {
         let previous = board.flight.as_ref().and_then(DealFrame::previous_waste);
         let waste = previous.unwrap_or(&game.waste);
         let start = waste.len() - fan_len(game.mode(), waste.len());
+        let top_visible = board.waste_top_visible(game);
         let fan = div()
             .relative()
             .w(px(size.width + step * 2.))
@@ -511,7 +617,7 @@ impl GameView {
                             return None;
                         }
                         let face = CardFace::Up(card);
-                        let surface = if previous.is_none() && waste_index + 1 == waste.len() {
+                        let surface = if top_visible && waste_index + 1 == waste.len() {
                             self.card(Place::Waste, face, board, cx).into_any_element()
                         } else {
                             card_surface(face, size, false, palette).into_any_element()
@@ -636,45 +742,29 @@ impl GameView {
         let size = table.size;
         let game = &self.deal.game;
         let pyramid = game.variant == Variant::Pyramid;
-        let row_step = size.width * if pyramid { 0.43 } else { 0.51 };
-        let rows = if pyramid { 7 } else { 4 };
-        let mut board = div()
+        div()
             .relative()
             .w(px(size.span()))
-            .h(px((rows - 1) as f32 * row_step + size.height()));
-        let mut offset = 0;
-        for row in 0..rows {
-            let count = if pyramid { row + 1 } else { [3, 6, 9, 10][row] };
-            for column in 0..count {
-                let place = Place::Layout(offset + column);
-                let Some(card) = game.layout[offset + column] else {
-                    continue;
-                };
-                let x = if pyramid {
-                    column as f32 + (rows - count) as f32 / 2.
-                } else if row == 3 {
-                    column as f32
-                } else {
-                    let per_peak = row + 1;
-                    (column / per_peak * 3 + column % per_peak) as f32 + (3 - row) as f32 / 2.
-                };
-                let uncovered = game.selectable(place);
-                let face = match (uncovered, pyramid) {
-                    (true, _) => CardFace::Up(card),
-                    (false, true) => CardFace::Covered(card),
-                    (false, false) => CardFace::Back,
-                };
-                board = board.child(
-                    div()
-                        .absolute()
-                        .top(px(row as f32 * row_step))
-                        .left(px(x * size.stride()))
-                        .child(self.card(place, face, table, cx)),
-                );
-            }
-            offset += count;
-        }
-        board
+            .h(px(size.layout_height(game.variant)))
+            .children(
+                size.layout_positions(game.variant)
+                    .filter_map(|(index, x, y)| {
+                        let card = game.layout[index]?;
+                        let place = Place::Layout(index);
+                        let face = match (game.selectable(place), pyramid) {
+                            (true, _) => CardFace::Up(card),
+                            (false, true) => CardFace::Covered(card),
+                            (false, false) => CardFace::Back,
+                        };
+                        Some(
+                            div()
+                                .absolute()
+                                .left(px(x))
+                                .top(px(y))
+                                .child(self.card(place, face, table, cx)),
+                        )
+                    }),
+            )
     }
 
     fn mode_picker(&self, cx: &Context<Self>) -> Option<Div> {
@@ -751,13 +841,7 @@ impl GameView {
             .when(can_undo, |button| {
                 button
                     .aria_label("Undo move")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if view.deal.undo() {
-                            view.board_changed();
-                            audio::play(cx, Effect::Move);
-                            cx.notify();
-                        }
-                    }))
+                    .on_click(cx.listener(|view, _, window, cx| view.undo(window, cx)))
             })
     }
 
@@ -785,9 +869,10 @@ impl GameView {
                 .when(cfg!(test), |button| {
                     button.debug_selector(|| "solitaire-finish-button".into())
                 })
-                .on_click(cx.listener(|view, _, _, cx| {
+                .on_click(cx.listener(|view, _, window, cx| {
                     if view.deal.finish() {
                         view.board_changed();
+                        view.focus.focus(window, cx);
                         audio::play(cx, Effect::Complete);
                         cx.notify();
                     }
@@ -806,8 +891,9 @@ impl GameView {
                 button.debug_selector(move || id.into())
             })
             .aria_label("Replay this deal")
-            .on_click(cx.listener(|view, _, _, cx| {
+            .on_click(cx.listener(|view, _, window, cx| {
                 view.restart(None);
+                view.focus.focus(window, cx);
                 cx.notify();
             }))
     }
@@ -837,8 +923,9 @@ impl GameView {
             .hover(|style| style.bg(rgb(t::GOLD_HOVER)))
             .focus_visible(|style| style.border_color(rgb(focus_color)))
             .child("New deal")
-            .on_click(cx.listener(|view, _, _, cx| {
+            .on_click(cx.listener(|view, _, window, cx| {
                 view.restart(Some(fresh_seed()));
+                view.focus.focus(window, cx);
                 cx.notify();
             }))
     }
@@ -984,12 +1071,18 @@ impl Render for GameView {
             interactive: !won && !stalled,
             flight: self.deal_motion.as_ref().map(|deal| deal.frame(now)),
         };
+        self.cursor.update(game, &board);
         let note: SharedString = self
             .suggestion
             .as_ref()
             .map_or_else(|| self.note().into(), |hint| hint.message(game).into());
         let has_layout = !game.layout.is_empty();
         let field = div()
+            .id("solitaire-field")
+            .when(self.cursor.place().is_none(), |field| {
+                // Keep the board's focus in the tab order just before result actions.
+                field.track_focus(&self.focus.clone().tab_stop(false))
+            })
             .flex_1()
             .flex()
             .flex_col()
@@ -997,7 +1090,7 @@ impl Render for GameView {
             .when(has_layout && outcome.is_none(), |field| {
                 field.justify_center()
             })
-            .gap(px((table.card.width * 0.17).clamp(12., 21.)));
+            .gap(px(table.card.field_gap()));
         let field = match (has_layout, outcome) {
             (true, Some(Outcome::Won)) => field.child(self.result(Outcome::Won, cx)),
             (false, Some(Outcome::Won)) => field
@@ -1020,18 +1113,7 @@ impl Render for GameView {
         };
         div()
             .w_full()
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "h"
-                    && !event.keystroke.modifiers.modified()
-                    && !event.is_held
-                    && !view.deal.game.won()
-                    && !view.deal.game.stalled()
-                {
-                    view.show_hint(cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .on_key_down(cx.listener(Self::key_down))
             .flex()
             .flex_col()
             .gap_3()
