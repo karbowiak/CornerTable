@@ -1,4 +1,4 @@
-use corner_table_mahjong::{Board, DAILY_SEED, Face, MoveResult, Tile};
+use corner_table_mahjong::{Board, DAILY_SEED, Face, Layout, MoveResult, Tile};
 use gpui::{
     Context, Div, FontWeight, IntoElement, Render, Stateful, Window, div, prelude::*, px, rgb,
 };
@@ -9,10 +9,14 @@ use super::{GameEntry, GameLaunch};
 use crate::theme;
 
 const INSTRUCTION: &str = "Match identical tiles with no tile above and at least one open side.";
+const NO_MATCHES: &str = "No free matches remain. Undo a move or restart the deal.";
+const MAT_INSET: f32 = 15.;
+const TILE_RATIO: f32 = 1.15;
 
 pub struct GameView {
     board: Board,
     daily: bool,
+    clean_clear: bool,
     highlighted: Option<[usize; 2]>,
     status: &'static str,
 }
@@ -29,6 +33,7 @@ impl GameView {
         Self {
             board: Board::new(seed),
             daily: matches!(&launch.entry, GameEntry::Challenge(_)),
+            clean_clear: false,
             highlighted: None,
             status: INSTRUCTION,
         }
@@ -42,12 +47,65 @@ impl GameView {
             MoveResult::Deselected => INSTRUCTION,
             MoveResult::DifferentFace => "Those tiles differ. Your last choice is selected.",
             MoveResult::Matched if self.board.remaining() == 0 => "Board cleared!",
-            MoveResult::Matched if self.board.hint().is_none() => {
-                "No free matches remain. Undo a move or restart the deal."
-            }
+            MoveResult::Matched if self.board.hint().is_none() => NO_MATCHES,
             MoveResult::Matched => "Pair matched.",
         };
         cx.notify();
+    }
+
+    fn new_deal(&mut self, layout: Layout) {
+        self.board = Board::with_layout(layout, new_seed());
+        self.highlighted = None;
+        self.status = INSTRUCTION;
+    }
+
+    fn deal_options(&self, cx: &Context<Self>) -> Div {
+        let layout = self.board.layout();
+        div()
+            .flex()
+            .flex_wrap()
+            .justify_between()
+            .gap_3()
+            .child(
+                option_group("Layout").children(
+                    [
+                        ("mahjong-terrace", "Terrace", Layout::Terrace),
+                        ("mahjong-atrium", "Atrium", Layout::Atrium),
+                        ("mahjong-crown", "Crown", Layout::Crown),
+                        ("mahjong-lantern", "Lantern", Layout::Lantern),
+                    ]
+                    .map(|(id, label, option)| {
+                        choice(
+                            id,
+                            label,
+                            layout == option,
+                            move |view| {
+                                if view.board.layout() != option {
+                                    view.new_deal(option);
+                                }
+                            },
+                            cx,
+                        )
+                    }),
+                ),
+            )
+            .child(
+                option_group("Objective")
+                    .child(choice(
+                        "mahjong-classic",
+                        "Classic",
+                        !self.clean_clear,
+                        |view| view.clean_clear = false,
+                        cx,
+                    ))
+                    .child(choice(
+                        "mahjong-clean-clear",
+                        "Clean Clear",
+                        self.clean_clear,
+                        |view| view.clean_clear = true,
+                        cx,
+                    )),
+            )
     }
 
     fn tile(
@@ -91,8 +149,8 @@ impl GameView {
         div()
             .id(("mahjong-tile", id))
             .absolute()
-            .left(px(f32::from(tile.x) * (width * 0.5) + 10. + depth))
-            .top(px(f32::from(tile.y) * (height * 0.5) + 14. - depth))
+            .left(px(f32::from(tile.x) * (width * 0.5) + MAT_INSET + depth))
+            .top(px(f32::from(tile.y) * (height * 0.5) + MAT_INSET - depth))
             .w(px(width - 1.))
             .h(px(height - 1.))
             .border_1()
@@ -134,39 +192,52 @@ fn new_seed() -> u64 {
 fn control(
     id: &'static str,
     label: &'static str,
-    active: bool,
-    action: impl Fn(&mut GameView, &mut Context<GameView>) + 'static,
+    enabled: bool,
+    action: impl Fn(&mut GameView) + 'static,
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
-    div()
-        .id(id)
-        .px_3()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(theme::BORDER))
-        .bg(rgb(theme::SURFACE))
-        .text_color(rgb(if active { theme::INK } else { 0x7c817c }))
-        .when(active, |button| {
-            button
-                .tab_index(0)
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(theme::SAGE)))
-                .focus(|style| style.border_color(rgb(theme::MUTED)))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    action(view, cx);
-                    cx.notify();
-                }))
-        })
-        .child(label)
+    super::control(id, label, enabled).when(enabled, |button| {
+        button.on_click(cx.listener(move |view, _, _, cx| {
+            action(view);
+            cx.notify();
+        }))
+    })
+}
+
+fn choice(
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    action: impl Fn(&mut GameView) + 'static,
+    cx: &Context<GameView>,
+) -> Stateful<Div> {
+    control(id, label, true, action, cx).when(selected, |button| {
+        button.bg(rgb(theme::SAGE)).border_color(rgb(theme::MUTED))
+    })
+}
+
+fn option_group(label: &'static str) -> Div {
+    div().flex().flex_wrap().items_center().gap_2().child(
+        div()
+            .text_size(px(13.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(rgb(theme::MUTED))
+            .child(label),
+    )
 }
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let viewport = f32::from(window.viewport_size().width);
-        let chrome = if viewport < 1080. { 218. } else { 288. };
-        let width = ((viewport - chrome - 62.) / 14.).clamp(22., 49.);
-        let height = width * 1.15;
+        let (extent_x, extent_y) = self.board.dimensions();
+        let (columns, rows) = (f32::from(extent_x) * 0.5, f32::from(extent_y) * 0.5);
+        let padding = MAT_INSET * 2.;
+        let fit_width = (super::board_space(window) - padding - 2.) / columns;
+        // Reserve space for the game page header, controls, and objective text.
+        let fit_height =
+            (f32::from(window.viewport_size().height) - 350. - padding) / (rows * TILE_RATIO);
+        let width = fit_width.min(fit_height.max(30.)).clamp(22., 49.).floor();
+        let height = width * TILE_RATIO;
+        let remaining = self.board.remaining();
         let mut controls = div()
             .flex()
             .flex_wrap()
@@ -174,13 +245,13 @@ impl Render for GameView {
             .child(control(
                 "mahjong-hint",
                 "Hint",
-                self.board.remaining() > 0,
-                |view, _| {
-                    view.highlighted = view.board.hint();
+                remaining > 0,
+                |view| {
+                    view.highlighted = view.board.reveal_hint();
                     view.status = if view.highlighted.is_some() {
                         "The highlighted tiles form a free pair."
                     } else {
-                        "No free matches remain. Undo a move or restart the deal."
+                        NO_MATCHES
                     };
                 },
                 cx,
@@ -189,7 +260,7 @@ impl Render for GameView {
                 "mahjong-undo",
                 "Undo",
                 self.board.can_undo(),
-                |view, _| {
+                |view| {
                     view.board.undo();
                     view.highlighted = None;
                     view.status = "Last pair restored.";
@@ -200,7 +271,7 @@ impl Render for GameView {
                 "mahjong-restart",
                 "Restart",
                 true,
-                |view, _| {
+                |view| {
                     view.board.restart();
                     view.highlighted = None;
                     view.status = INSTRUCTION;
@@ -213,27 +284,27 @@ impl Render for GameView {
                 "mahjong-new",
                 "New deal",
                 true,
-                |view, _| {
-                    view.board = Board::new(new_seed());
-                    view.highlighted = None;
-                    view.status = INSTRUCTION;
-                },
+                |view| view.new_deal(view.board.layout()),
                 cx,
             ));
         }
+
+        let objective = if self.board.used_assistance() {
+            "Assisted run. Restart to try for a Clean Clear."
+        } else {
+            "Clear every tile without using Hint or Undo."
+        };
+        let status = if self.clean_clear && remaining == 0 && !self.board.used_assistance() {
+            "Clean Clear complete!"
+        } else {
+            self.status
+        };
 
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(theme::display_type(
-                if self.daily {
-                    "Mahjong Daily Challenge"
-                } else {
-                    "Mahjong"
-                },
-                40.,
-            ))
+            .when(!self.daily, |root| root.child(self.deal_options(cx)))
             .child(
                 div()
                     .flex()
@@ -244,10 +315,14 @@ impl Render for GameView {
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("{} tiles left", self.board.remaining())),
+                            .child(format!("{remaining} tiles left")),
                     )
                     .child(controls),
             )
+            .child(div().text_color(rgb(theme::MUTED)).child(status).when(
+                self.clean_clear && (remaining > 0 || self.board.used_assistance()),
+                |group| group.child(div().font_weight(FontWeight::SEMIBOLD).child(objective)),
+            ))
             .child(
                 div()
                     .w_full()
@@ -261,8 +336,8 @@ impl Render for GameView {
                     .child(
                         div()
                             .relative()
-                            .w(px(width * 14. + 22.))
-                            .h(px(height * 8. + 28.))
+                            .w(px(width * columns + padding))
+                            .h(px(height * rows + padding))
                             .children(
                                 self.board
                                     .tiles()
@@ -270,6 +345,5 @@ impl Render for GameView {
                             ),
                     ),
             )
-            .child(div().text_color(rgb(theme::MUTED)).child(self.status))
     }
 }
