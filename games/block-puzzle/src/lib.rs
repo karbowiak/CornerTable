@@ -1,5 +1,7 @@
 pub const SIDE: usize = 8;
 pub const TRAY_SIZE: usize = 3;
+pub const CHALLENGE_TRAYS: usize = 10;
+pub const CHALLENGE_SEED: u64 = 0x7465_6e2d_7472_6179;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Wood {
@@ -14,6 +16,14 @@ pub enum Wood {
 pub struct Piece {
     pub tiles: &'static [(usize, usize)],
     pub wood: Wood,
+}
+
+impl Piece {
+    pub fn dimensions(self) -> (usize, usize) {
+        self.tiles.iter().fold((0, 0), |(width, height), &(x, y)| {
+            (width.max(x + 1), height.max(y + 1))
+        })
+    }
 }
 
 use Wood::*;
@@ -104,6 +114,8 @@ pub struct Move {
 pub struct Placement {
     pub lines: usize,
     pub points: u64,
+    pub cleared_rows: [bool; SIDE],
+    pub cleared_columns: [bool; SIDE],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,15 +124,26 @@ pub struct Game {
     tray: [Option<Piece>; TRAY_SIZE],
     score: u64,
     random: u64,
+    remaining: Option<usize>,
 }
 
 impl Game {
     pub fn new(seed: u64) -> Self {
+        Self::deal(seed, None)
+    }
+
+    /// A repeatable deal with a fixed budget of ten trays.
+    pub fn ten_trays(seed: u64) -> Self {
+        Self::deal(seed, Some(CHALLENGE_TRAYS * TRAY_SIZE))
+    }
+
+    fn deal(seed: u64, remaining: Option<usize>) -> Self {
         let mut game = Self {
             board: [[None; SIDE]; SIDE],
             tray: [None; TRAY_SIZE],
             score: 0,
             random: seed,
+            remaining,
         };
         game.refill();
         game
@@ -136,6 +159,10 @@ impl Game {
 
     pub fn score(&self) -> u64 {
         self.score
+    }
+
+    pub fn placements_left(&self) -> Option<usize> {
+        self.remaining
     }
 
     pub fn can_place(&self, turn: Move) -> bool {
@@ -175,10 +202,18 @@ impl Game {
         }
         let points = piece.tiles.len() as u64 + 10 * lines as u64 * lines as u64;
         self.score = self.score.saturating_add(points);
-        if self.tray.iter().all(Option::is_none) {
+        if let Some(remaining) = &mut self.remaining {
+            *remaining -= 1;
+        }
+        if self.remaining != Some(0) && self.tray.iter().all(Option::is_none) {
             self.refill();
         }
-        Some(Placement { lines, points })
+        Some(Placement {
+            lines,
+            points,
+            cleared_rows: rows,
+            cleared_columns: columns,
+        })
     }
 
     pub fn has_moves(&self) -> bool {
@@ -246,7 +281,9 @@ mod tests {
             result,
             Some(Placement {
                 lines: 2,
-                points: 41
+                points: 41,
+                cleared_rows: std::array::from_fn(|index| index == 3),
+                cleared_columns: std::array::from_fn(|index| index == 3),
             })
         );
         assert_eq!(game.score(), 41);
@@ -282,5 +319,33 @@ mod tests {
         assert!(!game.has_moves());
         game.tray[1] = Some(PIECES[0]);
         assert!(game.has_moves());
+    }
+
+    #[test]
+    fn ten_trays_can_be_completed_and_stops_at_thirty_placements() {
+        let solution = [
+            [(2, 0, 0), (1, 0, 4), (0, 0, 6)],
+            [(0, 0, 0), (1, 3, 0), (2, 4, 0)],
+            [(0, 1, 5), (1, 2, 3), (2, 1, 2)],
+            [(1, 1, 6), (0, 0, 3), (2, 2, 0)],
+            [(2, 1, 0), (0, 7, 0), (1, 5, 3)],
+            [(1, 2, 1), (2, 5, 0), (0, 0, 0)],
+            [(1, 4, 1), (0, 6, 5), (2, 5, 7)],
+            [(0, 6, 0), (2, 0, 1), (1, 1, 0)],
+            [(1, 6, 2), (2, 2, 1), (0, 1, 5)],
+            [(0, 1, 2), (1, 1, 0), (2, 4, 0)],
+        ];
+        let mut game = Game::ten_trays(CHALLENGE_SEED);
+        for (i, (slot, column, row)) in solution.into_iter().flatten().enumerate() {
+            assert_eq!(
+                game.placements_left(),
+                Some(CHALLENGE_TRAYS * TRAY_SIZE - i)
+            );
+            assert!(game.place(Move { slot, column, row }).is_some());
+        }
+        assert_eq!(game.placements_left(), Some(0));
+        assert_eq!(game.score(), 213);
+        assert_eq!(game.tray(), &[None; TRAY_SIZE]);
+        assert!(!game.has_moves());
     }
 }
