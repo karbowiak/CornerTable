@@ -1,0 +1,4 @@
+[package]
+name = "corner-table-block-puzzle"
+version.workspace = true
+edition.workspace = true
