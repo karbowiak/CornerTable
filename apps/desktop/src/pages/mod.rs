@@ -6,7 +6,7 @@ pub use leaderboard::leaderboard;
 pub use library::library;
 pub use solitaire::solitaire;
 
-use gpui::{Context, Div, div, prelude::*, px, rgb};
+use gpui::{AnyView, Context, Div, div, prelude::*, px, rgb};
 
 use crate::app::{Action, Desktop, Page};
 use crate::games::{GameEntry, GameLaunch};
@@ -58,7 +58,12 @@ pub fn daily_challenge(app: &Desktop, cx: &Context<Desktop>) -> Div {
         )
 }
 
-pub fn game(app: &Desktop, launch: &GameLaunch, cx: &Context<Desktop>) -> Div {
+pub fn game(
+    app: &Desktop,
+    launch: &GameLaunch,
+    view: Option<AnyView>,
+    cx: &Context<Desktop>,
+) -> Div {
     let (title, description) = app
         .api
         .game(&launch.game)
@@ -93,7 +98,7 @@ pub fn game(app: &Desktop, launch: &GameLaunch, cx: &Context<Desktop>) -> Div {
             )
         }
     };
-    div()
+    let header = div()
         .flex()
         .flex_col()
         .items_start()
@@ -105,8 +110,11 @@ pub fn game(app: &Desktop, launch: &GameLaunch, cx: &Context<Desktop>) -> Div {
             false,
             cx,
         ))
-        .child(t::heading(title.to_owned()))
-        .child(
+        .child(t::heading(title.to_owned()));
+
+    match view {
+        Some(view) => header.child(div().w_full().child(view)),
+        None => header.child(
             t::surface()
                 .w_full()
                 .overflow_hidden()
@@ -130,5 +138,6 @@ pub fn game(app: &Desktop, launch: &GameLaunch, cx: &Context<Desktop>) -> Div {
                                 .child(description.to_owned()),
                         ),
                 ),
-        )
+        ),
+    }
 }

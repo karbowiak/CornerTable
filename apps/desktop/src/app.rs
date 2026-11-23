@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use corner_table_api::{FixtureApi, GameId, Period};
-use gpui::{Context, FocusHandle, ScrollHandle, Window, div, point, prelude::*, px, rgb};
+use gpui::{AnyView, Context, FocusHandle, ScrollHandle, Window, div, point, prelude::*, px, rgb};
 
 use crate::games::{GameEntry, GameLaunch};
 use crate::{pages, theme, widgets};
@@ -36,6 +38,7 @@ pub struct Desktop {
     pub search_focus: FocusHandle,
     pub search_select_all: bool,
     scroll: ScrollHandle,
+    games: HashMap<GameLaunch, AnyView>,
     pub focus: FocusHandle,
 }
 
@@ -52,6 +55,7 @@ impl Desktop {
             search_focus: cx.focus_handle().tab_stop(true),
             search_select_all: false,
             scroll: ScrollHandle::new(),
+            games: HashMap::new(),
             focus: cx.focus_handle(),
         }
     }
@@ -99,7 +103,14 @@ impl Render for Desktop {
             Page::Solitaire => pages::solitaire(self, narrow, cx),
             Page::DailyChallenge => pages::daily_challenge(self, cx),
             Page::Leaderboard => pages::leaderboard(self, narrow, cx),
-            Page::Game(launch) => pages::game(self, launch, cx),
+            Page::Game(launch) => {
+                if !self.games.contains_key(launch)
+                    && let Some(view) = crate::games::open(launch, cx)
+                {
+                    self.games.insert(launch.clone(), view);
+                }
+                pages::game(self, launch, self.games.get(launch).cloned(), cx)
+            }
         };
 
         div()
