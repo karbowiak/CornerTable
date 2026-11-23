@@ -1,6 +1,6 @@
 # Corner Table
 
-A Linux-first desktop home for casual games. The current build is a GPUI shell with the illustrated library, five Solitaire variants, a daily challenge, and filterable guest leaderboards. Game entries open their own placeholder pages. The app includes all its fonts, art, and sample data in the binary.
+A Linux-first desktop home for casual games. The GPUI app includes five playable Solitaire variants, Mahjong, Minesweeper, Sudoku, and Jigsaw, alongside the illustrated library, a daily challenge, and sample guest leaderboards. See the [development handoff](HANDOFF.md) for the game branches, their current status, and worktree setup. The app includes all its fonts, art, and sample data in the binary.
 
 ## Run on Linux
 
@@ -24,7 +24,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 | Path | Owns |
 | --- | --- |
 | `apps/desktop/src/pages/` | The library, Solitaire collection, daily challenge, and leaderboard |
-| `apps/desktop/src/games/` | Game launch context and future per-game GPUI views |
+| `apps/desktop/src/games/` | Game launch context and per-game GPUI views |
 | `apps/desktop/src/theme.rs` and `widgets.rs` | Shared typography, colors, and desktop controls |
 | `apps/desktop/assets/` | Original prototype illustrations and bundled fonts |
 | `crates/api/` | JSON wire types and the fixture-backed API |
@@ -54,4 +54,4 @@ git worktree add ../corner-table-mahjong -b game/mahjong main
 
 Have each worktree own its game's files. The integration pass adds workspace members, desktop dependencies, and dispatch entries. It also regenerates `Cargo.lock` after combining the changes. Keep stable IDs and shared controls together in the integration branch.
 
-The first playable milestone is a single game with local resume and a seeded daily puzzle. After that, add more game modes independently. The server can then replace the fixed challenge and guest fixtures, and score verification can use the same rules as the desktop.
+The next milestone is to finish the remaining game boards and add saves that survive an app restart. See [HANDOFF.md](HANDOFF.md) for the desktop and online roadmap.
