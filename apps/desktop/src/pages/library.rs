@@ -1,8 +1,10 @@
 use corner_table_api::{Game, GameCategory};
-use gpui::{Context, Div, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Role, div, prelude::*, px, rgb};
 
 use crate::app::{Action, Desktop, Page};
 use crate::{daily, theme as t, widgets};
+
+use super::solitaire::open_mode;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LibraryFilter {
@@ -34,7 +36,7 @@ impl LibraryFilter {
     }
 }
 
-pub fn matching_games<'a>(app: &'a Desktop, query: &str) -> impl Iterator<Item = &'a Game> {
+fn matching_games<'a>(app: &'a Desktop, query: &str) -> impl Iterator<Item = &'a Game> {
     let query = query.trim().to_lowercase();
     app.api.library.games.iter().filter(move |game| {
         let matches_filter = match app.library_filter {
@@ -65,19 +67,58 @@ pub fn matching_games<'a>(app: &'a Desktop, query: &str) -> impl Iterator<Item =
     })
 }
 
+fn matching_mode<'a>(
+    app: &'a Desktop,
+    game: &Game,
+    query: &str,
+) -> Option<&'a corner_table_api::Mode> {
+    if game.id.0 != "solitaire" {
+        return None;
+    }
+    let query = query.to_ascii_lowercase();
+    let query = query.strip_suffix(" solitaire").unwrap_or(&query);
+    app.api
+        .library
+        .solitaire_modes
+        .iter()
+        .find(|mode| mode.title.eq_ignore_ascii_case(query))
+}
+
+pub fn open_search_result(app: &Desktop, query: &str) -> Option<Action> {
+    let mut matches = matching_games(app, query);
+    let first = matches.next()?;
+    let second = matches.next();
+    let exact = |game: &Game| {
+        game.title.eq_ignore_ascii_case(query) || matching_mode(app, game, query).is_some()
+    };
+    let game = if second.is_none() || exact(first) {
+        first
+    } else {
+        second.into_iter().chain(matches).find(|game| exact(game))?
+    };
+    Some(if let Some(mode) = matching_mode(app, game, query) {
+        open_mode(&mode.id)
+    } else {
+        Action::OpenGame(game.id.clone())
+    })
+}
+
 pub fn library(app: &Desktop, content_width: f32, cx: &Context<Desktop>) -> Div {
     let palette = t::colors(cx);
     let query = app.search.read(cx).query().trim();
     let featured = app.library_filter == LibraryFilter::All && query.is_empty();
     let games = matching_games(app, query)
         .map(|game| {
-            widgets::tile(
-                &game.id.0,
-                &game.title,
-                124.,
-                Action::OpenGame(game.id.clone()),
-                cx,
-            )
+            let (id, title, action) = if let Some(mode) = matching_mode(app, game, query) {
+                (mode.id.as_str(), mode.title.as_str(), open_mode(&mode.id))
+            } else {
+                (
+                    game.id.0.as_str(),
+                    game.title.as_str(),
+                    Action::OpenGame(game.id.clone()),
+                )
+            };
+            widgets::tile(id, title, 124., action, cx)
         })
         .collect::<Vec<_>>();
     let catalog = if games.is_empty() {
@@ -98,20 +139,22 @@ pub fn library(app: &Desktop, content_width: f32, cx: &Context<Desktop>) -> Div 
         };
         widgets::columns(games, columns, 16.)
     };
-    let filters =
-        div()
-            .flex()
-            .flex_wrap()
-            .gap_2()
-            .children(LibraryFilter::CHOICES.into_iter().map(|filter| {
-                let (id, label) = filter.button();
-                let active = app.library_filter == filter;
-                widgets::button(id, label, Action::FilterLibrary(filter), active, cx)
-                    .min_h(px(34.))
-                    .px_3()
-                    .text_size(px(13.))
-                    .aria_toggled(active.into())
-            }));
+    let filters = div()
+        .id("library-filters")
+        .role(Role::Group)
+        .aria_label("Filter games")
+        .flex()
+        .flex_wrap()
+        .gap_2()
+        .children(LibraryFilter::CHOICES.into_iter().map(|filter| {
+            let (id, label) = filter.button();
+            let active = app.library_filter == filter;
+            widgets::button(id, label, Action::FilterLibrary(filter), active, cx)
+                .min_h(px(34.))
+                .px_3()
+                .text_size(px(13.))
+                .aria_toggled(active.into())
+        }));
     let wide = content_width >= 1002.;
     let (header_filters, second_row_filters) = if wide {
         (Some(filters), None)
@@ -123,10 +166,13 @@ pub fn library(app: &Desktop, content_width: f32, cx: &Context<Desktop>) -> Div 
         .items_center()
         .justify_between()
         .gap_3()
-        .child(t::display_type(
-            "Game Library",
-            if content_width < 792. { 32. } else { 36. },
-        ))
+        .child(
+            t::display_type("Game Library", if content_width < 792. { 32. } else { 36. })
+                .id("library-heading")
+                .role(Role::Heading)
+                .aria_level(1)
+                .aria_label("Game Library"),
+        )
         .children(header_filters)
         .child(
             div()

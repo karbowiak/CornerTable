@@ -6,7 +6,7 @@ mod solitaire;
 
 pub use daily_challenge::{DailyCalendar, daily_challenge};
 pub use guide::GuideOverlay;
-pub use library::{LibraryFilter, library, matching_games};
+pub use library::{LibraryFilter, library, open_search_result};
 pub use records::{RecordAction, Records, records};
 pub use solitaire::solitaire;
 

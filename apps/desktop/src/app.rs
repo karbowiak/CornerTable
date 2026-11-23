@@ -345,22 +345,6 @@ impl Desktop {
             });
         }));
     }
-
-    fn search_result(&self, cx: &Context<Self>) -> Option<GameId> {
-        let query = self.search.read(cx).submitted_query()?;
-        let mut matches = pages::matching_games(self, query);
-        let first = matches.next()?;
-        let other = matches.next();
-        let exact = |game: &corner_table_api::Game| game.title.eq_ignore_ascii_case(query);
-        if other.is_none() || exact(first) {
-            return Some(first.id.clone());
-        }
-        other
-            .into_iter()
-            .chain(matches)
-            .find(|game| exact(game))
-            .map(|game| game.id.clone())
-    }
 }
 
 impl Render for Desktop {
@@ -421,9 +405,10 @@ impl Render for Desktop {
             }))
             .on_action(cx.listener(|desktop, _: &OpenSearchResult, window, cx| {
                 if desktop.page == Page::Library
-                    && let Some(game) = desktop.search_result(cx)
+                    && let Some(query) = desktop.search.read(cx).submitted_query()
+                    && let Some(action) = pages::open_search_result(desktop, query)
                 {
-                    desktop.dispatch(Action::OpenGame(game), window, cx);
+                    desktop.dispatch(action, window, cx);
                 }
             }))
             .on_action(cx.listener(|desktop, _: &ToggleGuide, window, cx| {
