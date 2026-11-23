@@ -1,9 +1,13 @@
 //! Desktop entry points for game views. Each game is hosted in its own GPUI entity.
 
 mod block_puzzle;
+mod bubble_shooter;
+mod gem_cascade;
 mod jigsaw;
 mod mahjong;
+mod mahjong_cubes;
 mod match_three;
+mod mine_trails;
 mod minesweeper;
 mod solitaire;
 mod sudoku;
@@ -47,9 +51,13 @@ impl GameLaunch {
 pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
     let view = match launch.game.0.as_str() {
         "block-puzzle" => cx.new(|cx| block_puzzle::GameView::new(launch, cx)).into(),
+        "bubble-shooter" => cx.new(|cx| bubble_shooter::GameView::new(launch, cx)).into(),
+        "gem-cascade" => cx.new(|cx| gem_cascade::GameView::new(launch, cx)).into(),
         "jigsaw" => cx.new(|cx| jigsaw::GameView::new(launch, cx)).into(),
         "mahjong" => cx.new(|cx| mahjong::GameView::new(launch, cx)).into(),
+        "mahjong-cubes" => cx.new(|cx| mahjong_cubes::GameView::new(launch, cx)).into(),
         "match-three" => cx.new(|cx| match_three::GameView::new(launch, cx)).into(),
+        "mine-trails" => cx.new(|cx| mine_trails::GameView::new(launch, cx)).into(),
         "minesweeper" => cx.new(|cx| minesweeper::GameView::new(launch, cx)).into(),
         "solitaire" => cx.new(|cx| solitaire::GameView::new(launch, cx)).into(),
         "sudoku" => cx.new(|cx| sudoku::GameView::new(launch, cx)).into(),

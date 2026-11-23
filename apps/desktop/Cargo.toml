@@ -7,9 +7,13 @@ edition.workspace = true
 anyhow = "1"
 corner-table-api = { path = "../../crates/api" }
 corner-table-block-puzzle = { path = "../../games/block-puzzle" }
+corner-table-bubble-shooter = { path = "../../games/bubble-shooter" }
+corner-table-gem-cascade = { path = "../../games/gem-cascade" }
 corner-table-jigsaw = { path = "../../games/jigsaw" }
 corner-table-mahjong = { path = "../../games/mahjong" }
+corner-table-mahjong-cubes = { path = "../../games/mahjong-cubes" }
 corner-table-match-three = { path = "../../games/match-three" }
+corner-table-mine-trails = { path = "../../games/mine-trails" }
 corner-table-minesweeper = { path = "../../games/minesweeper" }
 corner-table-solitaire = { path = "../../games/solitaire" }
 corner-table-sudoku = { path = "../../games/sudoku" }

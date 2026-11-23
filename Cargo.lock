@@ -1062,9 +1062,13 @@ dependencies = [
  "anyhow",
  "corner-table-api",
  "corner-table-block-puzzle",
+ "corner-table-bubble-shooter",
+ "corner-table-gem-cascade",
  "corner-table-jigsaw",
  "corner-table-mahjong",
+ "corner-table-mahjong-cubes",
  "corner-table-match-three",
+ "corner-table-mine-trails",
  "corner-table-minesweeper",
  "corner-table-solitaire",
  "corner-table-sudoku",
@@ -1086,6 +1090,14 @@ name = "corner-table-block-puzzle"
 version = "0.1.0"
 
 [[package]]
+name = "corner-table-bubble-shooter"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-gem-cascade"
+version = "0.1.0"
+
+[[package]]
 name = "corner-table-jigsaw"
 version = "0.1.0"
 
@@ -1094,7 +1106,15 @@ name = "corner-table-mahjong"
 version = "0.1.0"
 
 [[package]]
+name = "corner-table-mahjong-cubes"
+version = "0.1.0"
+
+[[package]]
 name = "corner-table-match-three"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-mine-trails"
 version = "0.1.0"
 
 [[package]]
