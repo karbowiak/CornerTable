@@ -1,15 +1,16 @@
 mod art;
 mod run;
+mod well;
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use corner_table_gem_cascade::{
-    COLUMNS, Clear, Fall, GROUP_SIZE, Gem, PAIRS_PER_LEVEL, PlacedGem, ROWS, SPAWN_COLUMN,
-    SPAWN_ROW, Wave,
+    COLUMNS, Clear, Fall, GROUP_SIZE, Gem, PAIRS_PER_LEVEL, PlacedGem, ROWS, Wave,
 };
 use gpui::{
-    ClickEvent, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, Render, Role,
-    Stateful, Subscription, Task, Toggled, Window, div, prelude::*, px, rgb,
+    Bounds, ClickEvent, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, Render,
+    Role, SharedString, Stateful, Subscription, Task, Toggled, Window, canvas, div, point,
+    prelude::*, px, rgb, rgba, size,
 };
 
 use crate::{
@@ -20,21 +21,17 @@ use crate::{
 };
 
 use self::{
-    art::{Finish, name, stone},
+    art::{Artwork, name},
     run::{Mode, Record, Run, SAVE_VERSION, SavedSession},
+    well::{ClearFrame, Field, GAP, INSET as WELL_INSET, Settling},
 };
 use run::Move;
 
-const GAP: f32 = 2.;
-const WELL_INSET: f32 = 7.;
-const FRAME: u32 = 0x142b29;
-const SLOT: u32 = 0x203e39;
-const SLOT_EDGE: u32 = 0x2b4c46;
-const SPAWN_EDGE: u32 = 0x567268;
-const CLEAR_SLOT: u32 = 0x435749;
 const WAVE_TIME: Duration = Duration::from_millis(260);
 const FALL_TIME: Duration = Duration::from_millis(85);
 const IMPACT_TIME: Duration = Duration::from_millis(125);
+const MAX_PANEL_WIDTH: f32 = 780.;
+const MIN_CONSOLE_WIDTH: f32 = 238.;
 
 pub struct GameView {
     session: Session,
@@ -81,13 +78,18 @@ enum Motion {
 
 struct Cascade {
     started: Instant,
-    waves: Vec<Wave>,
+    waves: Vec<PaintedWave>,
     previous_best: u32,
+}
+
+struct PaintedWave {
+    wave: Wave,
+    settling: Settling,
 }
 
 #[derive(Clone, Copy)]
 struct WaveFrame<'a> {
-    wave: &'a Wave,
+    current: &'a PaintedWave,
     number: usize,
     progress: f32,
     points_pending: u32,
@@ -100,10 +102,13 @@ impl Cascade {
         let stage = elapsed / WAVE_TIME.as_secs_f32();
         let index = (stage as usize).min(self.waves.len() - 1);
         WaveFrame {
-            wave: &self.waves[index],
+            current: &self.waves[index],
             number: index + 1,
             progress: (stage - index as f32).min(1.),
-            points_pending: self.waves[index + 1..].iter().map(|wave| wave.points).sum(),
+            points_pending: self.waves[index + 1..]
+                .iter()
+                .map(|wave| wave.wave.points)
+                .sum(),
             previous_best: self.previous_best,
         }
     }
@@ -305,7 +310,14 @@ impl GameView {
                     if cleared {
                         self.cascade = Some(Cascade {
                             started,
-                            waves: result.waves,
+                            waves: result
+                                .waves
+                                .into_iter()
+                                .map(|wave| PaintedWave {
+                                    settling: Settling::new(&wave),
+                                    wave,
+                                })
+                                .collect(),
                             previous_best,
                         });
                         self.motion = None;
@@ -390,13 +402,16 @@ impl GameView {
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let game = &self.run().game;
-        let board = wave.map_or(game.board(), |frame| &frame.wave.board);
+        let board = wave.map_or(game.board(), |frame| &frame.current.wave.board);
         let active = wave.is_none().then(|| game.active()).flatten();
         let landing = (wave.is_none() && self.phase == Phase::Playing)
             .then(|| game.landing())
             .flatten();
         let impact = match self.motion {
-            Some(Motion::Impact(started, cells)) if now - started < IMPACT_TIME => Some(cells),
+            Some(Motion::Impact(started, cells)) => {
+                let progress = (now - started).as_secs_f32() / IMPACT_TIME.as_secs_f32();
+                Some((cells, (1. - progress.clamp(0., 1.)).powi(3)))
+            }
             _ => None,
         };
         let fall_offset = match self.motion {
@@ -406,6 +421,59 @@ impl GameView {
             }
             _ => 0.,
         };
+        let art = Artwork::shared(cx);
+        let field = Field {
+            board: *board,
+            active,
+            landing,
+            clear: wave.map(|frame| ClearFrame {
+                settling: frame.current.settling,
+                progress: frame.progress,
+            }),
+            fall_offset,
+            impact,
+        };
+        let grid = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(px(GAP))
+            .children(board.iter().enumerate().map(|(row, cells)| {
+                div()
+                    .id(("gem-row", row))
+                    .role(Role::Row)
+                    .aria_row_index(row)
+                    .flex()
+                    .gap(px(GAP))
+                    .children(cells.iter().enumerate().map(|(column, &settled)| {
+                        let label: SharedString = if let Some(gem) = gem_at(active, row, column) {
+                            format!("{} falling", name(gem)).into()
+                        } else if let Some(gem) = settled {
+                            name(gem).into()
+                        } else if let Some(gem) = gem_at(landing, row, column) {
+                            format!("{} landing outline", name(gem)).into()
+                        } else {
+                            "Empty".into()
+                        };
+                        div()
+                            .id(("gem-cell", column))
+                            .role(Role::GridCell)
+                            .aria_column_index(column)
+                            .aria_label(label)
+                            .size(px(size))
+                            .flex_none()
+                    }))
+            }))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, (), window, _| {
+                        field.paint(art, bounds, size, window);
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
 
         div()
             .id("gem-cascade-board")
@@ -421,55 +489,13 @@ impl GameView {
             .flex_col()
             .flex_none()
             .overflow_hidden()
-            .gap(px(GAP))
             .p(px(WELL_INSET))
-            .rounded_lg()
+            .rounded(px(10.))
             .border_2()
-            .border_color(rgb(0x4b665b))
-            .focus(|style| style.border_color(rgb(t::GOLD)))
-            .bg(rgb(FRAME))
-            .children(board.iter().enumerate().map(|(row, cells)| {
-                div()
-                    .id(("gem-row", row))
-                    .role(Role::Row)
-                    .aria_row_index(row)
-                    .flex()
-                    .gap(px(GAP))
-                    .children(cells.iter().enumerate().map(|(column, &settled)| {
-                        let active = gem_at(active, row, column);
-                        let ghost = gem_at(landing, row, column);
-                        let clearing = wave.filter(|frame| frame.wave.cleared.iter().any(|cell| cell.row == row && cell.column == column));
-                        let appearance = if let Some(gem) = active {
-                            Some((gem, Finish::Active, format!("{} falling", name(gem))))
-                        } else if let Some(gem) = settled {
-                            let finish = clearing.map_or(Finish::Settled, |frame| Finish::Clearing(frame.progress));
-                            Some((gem, finish, name(gem).to_owned()))
-                        } else {
-                            ghost.map(|gem| (gem, Finish::Ghost, format!("{} landing outline", name(gem))))
-                        };
-                        let spawn = column == SPAWN_COLUMN && row <= SPAWN_ROW;
-                        let flashed = gem_at(impact, row, column).is_some() || clearing.is_some();
-                        let slot = div()
-                            .id(("gem-cell", column))
-                            .role(Role::GridCell)
-                            .aria_column_index(column)
-                            .aria_label(appearance.as_ref().map_or("Empty", |(_, _, label)| label.as_str()).to_owned())
-                            .size(px(size))
-                            .flex_none()
-                            .rounded_sm()
-                            .border_1()
-                            .bg(rgb(if flashed { CLEAR_SLOT } else { SLOT }))
-                            .border_color(rgb(if spawn { SPAWN_EDGE } else { SLOT_EDGE }))
-                            .flex()
-                            .items_center()
-                            .justify_center();
-                        slot.children(appearance.map(|(gem, finish, _)| {
-                            div().relative()
-                                .top(px(if active.is_some() { fall_offset } else { 0. }))
-                                .child(stone(gem, size - 3., finish))
-                        }))
-                    }))
-            }))
+            .border_color(rgb(well::RIM))
+            .focus(|style| style.border_color(rgb(0xd9ad74)))
+            .bg(rgb(well::DARK_METAL))
+            .child(grid)
             .children(self.overlay(cx))
     }
 
@@ -504,7 +530,7 @@ impl GameView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::rgba(0x0d201ec4))
+                .bg(rgba(0x14141cb8))
                 .p_3()
                 .child(
                     t::panel(cx)
@@ -634,9 +660,9 @@ impl GameView {
         let run = self.run();
         let clear = if let Some(frame) = wave {
             Clear {
-                gems: frame.wave.cleared.len(),
+                gems: frame.current.wave.cleared.len(),
                 chain: frame.number as u32,
-                points: frame.wave.points,
+                points: frame.current.wave.points,
             }
         } else {
             run.last_scoring
@@ -688,9 +714,9 @@ impl GameView {
                 self.button("gem-timed", Mode::Timed.label(), Action::Select(Mode::Timed), false, cx),
                 self.button("gem-practice", Mode::Practice.label(), Action::Select(Mode::Practice), false, cx),
             ))
-            .child(self.scoreboard(wave, p))
+            .child(self.scoreboard(wave, p, cx))
             .child(self.pace(p))
-            .child(clear_status(clear, p))
+            .child(clear_status(clear, wave.is_some(), p))
             .child(group)
             .child(
                 div().text_size(px(12.)).line_height(px(17.)).text_color(rgb(p.muted))
@@ -698,7 +724,7 @@ impl GameView {
             )
     }
 
-    fn scoreboard(&self, wave: Option<WaveFrame<'_>>, p: Palette) -> Div {
+    fn scoreboard(&self, wave: Option<WaveFrame<'_>>, p: Palette, cx: &Context<Self>) -> Div {
         let run = self.run();
         let game = &run.game;
         let [pivot, satellite] = if wave.is_some() {
@@ -740,20 +766,18 @@ impl GameView {
             .flex_none()
             .items_center()
             .gap_2()
-            .child(caption("Next", p))
+            .child(caption("Next pair", p))
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(1.))
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(rgb(FRAME))
+                    .relative()
+                    .w(px(44.))
+                    .h(px(62.))
+                    .rounded(px(7.))
+                    .border_1()
+                    .border_color(rgb(well::RIM))
+                    .bg(rgb(well::DARK_METAL))
                     .opacity(if game.is_over() { 0.45 } else { 1. })
-                    .child(stone(satellite, 25., Finish::Settled))
-                    .child(stone(pivot, 25., Finish::Settled)),
+                    .child(pair_preview(satellite, pivot, Artwork::shared(cx))),
             );
         div()
             .flex()
@@ -824,10 +848,16 @@ impl Render for GameView {
             Some(Motion::Impact(started, _)) => Some((started, IMPACT_TIME)),
             None => None,
         };
-        if motion_time.is_some_and(|(started, duration)| now - started >= duration) {
+        let reduce_motion = cx.reduce_motion();
+        if reduce_motion || motion_time.is_some_and(|(started, duration)| now - started >= duration)
+        {
             self.motion = None;
         }
-        let wave = self.cascade.as_ref().map(|cascade| cascade.frame(now));
+        let wave = self
+            .cascade
+            .as_ref()
+            .filter(|_| !reduce_motion)
+            .map(|cascade| cascade.frame(now));
         if wave.is_some() || self.motion.is_some() {
             window.request_animation_frame();
         }
@@ -835,9 +865,15 @@ impl Render for GameView {
         let viewport = window.viewport_size();
         let compact = viewport.width < px(930.);
         let inset = if compact { 12. } else { 20. };
+        let panel_gap = if compact { 16. } else { 24. };
+        let padding = 2. * (inset + WELL_INSET + 3.);
         // The parent play page supplies the title, scroll padding and navigation rail.
-        let height = f32::from(viewport.height) - 90. - 2. * (inset + WELL_INSET + 3.);
-        let size = ((height - GAP * (ROWS - 1) as f32) / ROWS as f32)
+        let board_height = f32::from(viewport.height) - 90. - padding;
+        let panel_width = (super::board_space(window) + 36.).min(MAX_PANEL_WIDTH);
+        let board_width = panel_width - padding - panel_gap - MIN_CONSOLE_WIDTH;
+        let fit = |space, count: usize| (space - GAP * (count - 1) as f32) / count as f32;
+        let size = fit(board_height, ROWS)
+            .min(fit(board_width, COLUMNS))
             .floor()
             .clamp(26., 54.);
 
@@ -846,10 +882,10 @@ impl Render for GameView {
             .track_focus(&self.scope)
             .on_key_down(cx.listener(Self::key_down))
             .w_full()
-            .max_w(px(780.))
+            .max_w(px(MAX_PANEL_WIDTH))
             .flex()
             .items_start()
-            .gap(px(if compact { 16. } else { 24. }))
+            .gap(px(panel_gap))
             .p(px(inset))
             .child(self.well(size, wave, now, cx))
             .child(self.console(wave, compact, cx))
@@ -877,6 +913,21 @@ fn gem_at(cells: Option<[PlacedGem; 2]>, row: usize, column: usize) -> Option<Ge
         .map(|cell| cell.gem)
 }
 
+fn pair_preview(top: Gem, bottom: Gem, art: &'static Artwork) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            let stone_size = size(px(25.), px(25.));
+            let center = bounds.center();
+            let top_at = Bounds::new(center - point(px(12.5), px(25.5)), stone_size);
+            let bottom_at = Bounds::new(center + point(px(-12.5), px(0.5)), stone_size);
+            well::paint_pair(art, [(top, top_at), (bottom, bottom_at)], window);
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
 fn caption(text: impl Into<gpui::SharedString>, p: Palette) -> Div {
     div()
         .font_weight(FontWeight::SEMIBOLD)
@@ -886,7 +937,7 @@ fn caption(text: impl Into<gpui::SharedString>, p: Palette) -> Div {
         .child(text.into())
 }
 
-fn clear_status(clear: Clear, p: Palette) -> Stateful<Div> {
+fn clear_status(clear: Clear, live: bool, p: Palette) -> Stateful<Div> {
     let message = match clear.chain {
         0 => "Outlines show the landing".to_owned(),
         1 => format!("{} gems cleared", clear.gems),
@@ -904,14 +955,23 @@ fn clear_status(clear: Clear, p: Palette) -> Stateful<Div> {
         .flex()
         .justify_between()
         .items_center()
-        .min_h(px(26.))
+        .min_h(px(30.))
+        .gap_2()
+        .px_2()
+        .rounded(px(5.))
+        .bg(rgb(if live { p.hover } else { p.paper }))
         .text_size(px(13.))
         .line_height(px(17.))
         .text_color(rgb(if clear.chain > 0 { p.ink } else { p.muted }))
-        .child(message)
+        .child(
+            div()
+                .when(clear.chain > 1, |label| label.font_weight(FontWeight::BOLD))
+                .child(message),
+        )
         .when(clear.points > 0, |status| {
             status.child(
                 div()
+                    .flex_none()
                     .font_weight(FontWeight::BOLD)
                     .text_color(rgb(p.gold_text))
                     .child(format!("+{}", clear.points)),
