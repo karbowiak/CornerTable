@@ -83,6 +83,9 @@ fn dev() -> Result<()> {
 
     let status = Command::new(dx)
         .current_dir(workspace_root())
+        // Dioxus 0.7.10 invalidates the legacy Cargo fingerprint before each full relink.
+        // Keep that layout for its builds until Dioxus supports Cargo 1.100's new cache.
+        .env("__CARGO_TEMPORARY_BUILD_DIR_NEW_LAYOUT_OPT_OUT", "1")
         .args([
             "serve",
             "--platform",
