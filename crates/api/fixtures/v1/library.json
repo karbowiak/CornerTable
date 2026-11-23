@@ -15,7 +15,9 @@
     {"id": "reversi", "title": "Reversi", "description": "Surround your opponent’s discs and turn the board in your favor.", "category": "board", "search_terms": ["strategy", "hot seat", "two players"]},
     {"id": "checkers", "title": "Checkers", "description": "Jump opposing pieces and crown kings on a carved wooden board.", "category": "board", "search_terms": ["draughts", "strategy", "hot seat", "two players"]},
     {"id": "hearts", "title": "Hearts", "description": "Play a four-player trick-taking game and keep penalty cards out of your pile.", "category": "cards", "search_terms": ["tricks", "queen of spades", "shoot the moon"]},
-    {"id": "picture-logic", "title": "Picture Logic", "description": "Follow numbered row and column clues to uncover a hidden picture.", "category": "puzzles", "search_terms": ["nonogram", "picross", "griddler", "pixel art"]}
+    {"id": "picture-logic", "title": "Picture Logic", "description": "Follow numbered row and column clues to uncover a hidden picture.", "category": "puzzles", "search_terms": ["nonogram", "picross", "griddler", "pixel art"]},
+    {"id": "memory-match", "title": "Memory Match", "description": "Turn over illustrated tidepool cards and find each matching pair.", "category": "cards", "search_terms": ["concentration", "pairs", "matching", "tidepool"]},
+    {"id": "kakuro", "title": "Kakuro", "description": "Fill crossing runs of digits so they add up to the clues.", "category": "puzzles", "search_terms": ["cross sums", "numbers", "logic"]}
   ],
   "solitaire_modes": [
     {"id": "klondike", "title": "Klondike", "description": "Build four foundations, starting with the aces."},

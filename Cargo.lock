@@ -1187,9 +1187,11 @@ dependencies = [
  "corner-table-gem-cascade",
  "corner-table-hearts",
  "corner-table-jigsaw",
+ "corner-table-kakuro",
  "corner-table-mahjong",
  "corner-table-mahjong-cubes",
  "corner-table-match-three",
+ "corner-table-memory-match",
  "corner-table-mine-trails",
  "corner-table-minesweeper",
  "corner-table-picture-logic",
@@ -1253,6 +1255,10 @@ name = "corner-table-jigsaw"
 version = "0.1.0"
 
 [[package]]
+name = "corner-table-kakuro"
+version = "0.1.0"
+
+[[package]]
 name = "corner-table-mahjong"
 version = "0.1.0"
 
@@ -1263,6 +1269,13 @@ version = "0.1.0"
 [[package]]
 name = "corner-table-match-three"
 version = "0.1.0"
+
+[[package]]
+name = "corner-table-memory-match"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "corner-table-mine-trails"

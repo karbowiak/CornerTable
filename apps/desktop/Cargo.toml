@@ -17,9 +17,11 @@ corner-table-checkers = { path = "../../games/checkers" }
 corner-table-gem-cascade = { path = "../../games/gem-cascade" }
 corner-table-hearts = { path = "../../games/hearts" }
 corner-table-jigsaw = { path = "../../games/jigsaw" }
+corner-table-kakuro = { path = "../../games/kakuro" }
 corner-table-mahjong = { path = "../../games/mahjong" }
 corner-table-mahjong-cubes = { path = "../../games/mahjong-cubes" }
 corner-table-match-three = { path = "../../games/match-three" }
+corner-table-memory-match = { path = "../../games/memory-match" }
 corner-table-mine-trails = { path = "../../games/mine-trails" }
 corner-table-minesweeper = { path = "../../games/minesweeper" }
 corner-table-picture-logic = { path = "../../games/picture-logic" }

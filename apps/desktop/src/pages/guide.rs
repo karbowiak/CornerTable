@@ -329,6 +329,23 @@ impl Guide {
                     ),
                 ],
             },
+            "kakuro" => Self {
+                title: "Kakuro",
+                sections: &[
+                    (
+                        "Add up the clues",
+                        "Fill each empty square with a digit from 1 to 9. The upper-right number in a clue square is the sum across. The lower-left number is the sum down. A digit can appear only once in any run.",
+                    ),
+                    (
+                        "Make notes as you go",
+                        "Click a square or use the arrows to move, then type a digit. Press N to switch Pencil on or off. Backspace or Delete clears an entry. The two runs through the selected square share its digit.",
+                    ),
+                    (
+                        "Check your deductions",
+                        "Conflict markings flag a repeated number or a sum that can’t be reached. Press H for a hint and Enter to apply it. Your progress is saved separately for each grid.",
+                    ),
+                ],
+            },
             "mahjong" => Self {
                 title: "Mahjong",
                 sections: &[
@@ -377,6 +394,23 @@ impl Guide {
                     (
                         "Advance or try again",
                         "Meet every goal within the move limit to unlock the next stage. Hint (H) marks a swap. If you run out of moves, Retry replays the layout and New board gives the stage a fresh deal.",
+                    ),
+                ],
+            },
+            "memory-match" => Self {
+                title: "Memory Match",
+                sections: &[
+                    (
+                        "Turn over two cards",
+                        "Click a card to reveal it. To play with the keyboard, Tab into the board, use the arrow keys to move, and press Enter or Space to flip. Each choice of two distinct cards counts as one attempt.",
+                    ),
+                    (
+                        "Find the matching illustrations",
+                        "Pairs stay face up. A mismatch shows both cards briefly. Turn on Hold mismatches to keep both visible until you choose Hide cards or press H on the board.",
+                    ),
+                    (
+                        "Complete each board",
+                        "Find all the pairs in as few attempts as you can. Each board size keeps its own progress and personal best. Choose New deal to shuffle that board again.",
                     ),
                 ],
             },

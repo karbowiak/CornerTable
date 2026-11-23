@@ -6,9 +6,11 @@ mod checkers;
 mod gem_cascade;
 mod hearts;
 mod jigsaw;
+mod kakuro;
 mod mahjong;
 mod mahjong_cubes;
 mod match_three;
+mod memory_match;
 mod mine_trails;
 mod minesweeper;
 mod picture_logic;
@@ -64,9 +66,11 @@ pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
         "gem-cascade" => cx.new(|cx| gem_cascade::GameView::new(launch, cx)).into(),
         "hearts" => cx.new(|cx| hearts::GameView::new(launch, cx)).into(),
         "jigsaw" => cx.new(|cx| jigsaw::GameView::new(launch, cx)).into(),
+        "kakuro" => cx.new(|cx| kakuro::GameView::new(launch, cx)).into(),
         "mahjong" => cx.new(|cx| mahjong::GameView::new(launch, cx)).into(),
         "mahjong-cubes" => cx.new(|cx| mahjong_cubes::GameView::new(launch, cx)).into(),
         "match-three" => cx.new(|cx| match_three::GameView::new(launch, cx)).into(),
+        "memory-match" => cx.new(|cx| memory_match::GameView::new(launch, cx)).into(),
         "mine-trails" => cx.new(|cx| mine_trails::GameView::new(launch, cx)).into(),
         "minesweeper" => cx.new(|cx| minesweeper::GameView::new(launch, cx)).into(),
         "picture-logic" => cx.new(|cx| picture_logic::GameView::new(launch, cx)).into(),
