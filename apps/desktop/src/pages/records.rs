@@ -4,9 +4,9 @@ use chrono::{DateTime, Datelike as _, Days, Local, NaiveDate};
 use corner_table_api::{GameId, Period};
 use gpui::{Context, Div, FontWeight, Role, SharedString, Stateful, div, prelude::*, px, rgb};
 
-use crate::app::{Action, Desktop};
+use crate::app::{Action, Desktop, Page};
 use crate::storage::{GameResult, Outcome, ResultMetric};
-use crate::{theme as t, widgets};
+use crate::{daily, theme as t, widgets};
 
 const PAGE_SIZE: usize = 12;
 
@@ -170,11 +170,26 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         .take(state.visible)
                         .enumerate()
                         .map(|(index, result)| {
-                            let title = app
-                                .api
-                                .game(&result.game)
-                                .map_or(result.game.0.as_str(), |game| game.title.as_str());
-                            result_row(index, result, title, palette).when(index > 0, |row| {
+                            let game = app.api.game(&result.game);
+                            let title = game.map_or(result.game.0.as_str(), |game| &game.title);
+                            let open_game = game.map(|_| {
+                                result
+                                    .launch
+                                    .as_ref()
+                                    .filter(|launch| launch.game == result.game)
+                                    .map_or_else(
+                                        || ("Open", Action::OpenGame(result.game.clone())),
+                                        |launch| {
+                                            let label = if daily::from_launch(launch).is_some() {
+                                                "Open daily"
+                                            } else {
+                                                "Open"
+                                            };
+                                            (label, Action::Navigate(Page::Game(launch.clone())))
+                                        },
+                                    )
+                            });
+                            result_row(index, result, title, open_game, cx).when(index > 0, |row| {
                                 row.border_t_1().border_color(rgb(palette.border))
                             })
                         }),
@@ -255,8 +270,10 @@ fn result_row(
     index: usize,
     result: &GameResult,
     title: &str,
-    palette: t::Palette,
+    open_game: Option<(&'static str, Action)>,
+    cx: &Context<Desktop>,
 ) -> Stateful<Div> {
+    let palette = t::colors(cx);
     let (outcome, outcome_color) = match result.outcome {
         Outcome::Won => ("Won", palette.success),
         Outcome::Lost => ("Lost", palette.muted),
@@ -352,6 +369,14 @@ fn result_row(
                         .child(date),
                 ),
         )
+        .children(open_game.map(|(label, action)| {
+            widgets::button("open-record-game", label, action, false, cx)
+                .aria_label(format!("Open {title}, {}", result.mode))
+                .min_h(px(32.))
+                .flex_shrink_0()
+                .px_2()
+                .text_size(px(13.))
+        }))
 }
 
 fn filters(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
