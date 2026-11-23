@@ -1,4 +1,4 @@
-use corner_table_dominoes::{Action, End, Event, Player, Round, Tile};
+use corner_table_dominoes::{Action, Difficulty, End, Event, Player, Round, Tile};
 use serde::{Deserialize, Serialize};
 
 use crate::storage::AttemptId;
@@ -56,6 +56,7 @@ impl Table {
                 moves: Vec::new(),
                 banked_scores: [0; 2],
                 attempt: AttemptId::default(),
+                difficulty: Difficulty::default(),
             },
             preceding_event: None,
         }
@@ -71,8 +72,18 @@ impl Table {
 
     pub(super) fn redeal(&mut self, seed: u64) {
         let banked_scores = self.scores();
+        let difficulty = self.difficulty();
         *self = Self::new(seed);
         self.saved.banked_scores = banked_scores;
+        self.saved.difficulty = difficulty;
+    }
+
+    pub(super) fn difficulty(&self) -> Difficulty {
+        self.saved.difficulty
+    }
+
+    pub(super) fn set_difficulty(&mut self, difficulty: Difficulty) {
+        self.saved.difficulty = difficulty;
     }
 
     pub(super) fn scores(&self) -> [u64; 2] {
@@ -101,6 +112,8 @@ struct SavedTable {
     moves: Vec<RecordedAction>,
     banked_scores: [u64; 2],
     attempt: AttemptId,
+    #[serde(default)]
+    difficulty: Difficulty,
 }
 
 impl SavedTable {
@@ -199,6 +212,7 @@ mod tests {
     #[test]
     fn scores_survive_resume_and_bank_once_on_the_next_deal() {
         let mut tables = [Table::new(35), Table::new(9)];
+        tables[0].set_difficulty(Difficulty::Hard);
         play_out(&mut tables[0]);
         let action = computer_action(&tables[1].round).unwrap();
         tables[1].act(action).unwrap();
@@ -211,6 +225,7 @@ mod tests {
             assert_eq!(actual.scores(), expected.scores());
             assert_eq!(actual.preceding_event, expected.preceding_event);
             assert!(actual.attempt() == expected.attempt());
+            assert_eq!(actual.difficulty(), expected.difficulty());
         }
         let table = &mut restored[0];
         let scores = table.scores();
@@ -218,6 +233,7 @@ mod tests {
         table.redeal(2);
         assert!(table.attempt() != tables[0].attempt());
         assert_eq!(table.scores(), scores);
+        assert_eq!(table.difficulty(), Difficulty::Hard);
         table.redeal(3);
         assert_eq!(table.scores(), scores);
     }

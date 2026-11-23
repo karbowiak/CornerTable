@@ -3,8 +3,8 @@ use std::time::Duration;
 use corner_table_api::GameId;
 use corner_table_solitaire::TableCard;
 use gpui::{
-    Bounds, KeyUpEvent, Keystroke, Modifiers, Pixels, TestAppContext, VisualTestContext,
-    WindowHandle, size,
+    Bounds, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
+    TestAppContext, VisualTestContext, WindowHandle, size,
 };
 
 use super::*;
@@ -71,6 +71,41 @@ fn focused(window: WindowHandle<GameView>, cx: &mut TestAppContext) -> Option<Pl
             view.cursor.place()
         })
         .unwrap()
+}
+
+#[gpui::test]
+fn double_click_sends_an_exposed_ace_to_its_foundation(cx: &mut TestAppContext) {
+    let mode = DealMode::KlondikeDrawOne;
+    let seed = (0..1000)
+        .find(|&seed| Game::with_mode(mode, seed).tableau[0][0].card.rank == 1)
+        .unwrap();
+    let (window, mut visual) = open(cx, mode, seed);
+    let position = click(&mut visual, "solitaire-slot-Tableau(0, 0)").center();
+    window
+        .read_with(cx, |view, _| {
+            assert_eq!(view.deal.selected, Some(Place::Tableau(0, 0)))
+        })
+        .unwrap();
+    visual.simulate_event(MouseDownEvent {
+        position,
+        button: MouseButton::Left,
+        click_count: 2,
+        ..Default::default()
+    });
+    visual.simulate_event(MouseUpEvent {
+        position,
+        button: MouseButton::Left,
+        click_count: 2,
+        modifiers: Modifiers::none(),
+    });
+    draw(&mut visual);
+    window
+        .read_with(cx, |view, _| {
+            assert_eq!(view.deal.game.foundation_count(), 1);
+            assert!(view.deal.game.tableau[0].is_empty());
+            assert!(view.deal.selected.is_none());
+        })
+        .unwrap();
 }
 
 #[gpui::test]

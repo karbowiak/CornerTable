@@ -331,6 +331,8 @@ fn mode_id(mode: DealMode) -> &'static str {
         DealMode::SpiderTwoSuits => "two-suits",
         DealMode::SpiderFourSuits => "four-suits",
         DealMode::FreeCell => "freecell",
+        DealMode::PyramidEasy => "pyramid-easy",
+        DealMode::PyramidMedium => "pyramid-medium",
         DealMode::Pyramid => "pyramid",
         DealMode::TriPeaks => "tripeaks",
         DealMode::TriPeaksSolvable => "tripeaks-solvable",

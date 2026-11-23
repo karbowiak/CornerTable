@@ -35,7 +35,14 @@ pub(super) fn has_clear(game: &Game) -> bool {
 
 pub(super) fn play(game: &mut Game, action: Move) -> bool {
     match action {
-        Move::Draw => game.draw_waste(1, false),
+        Move::Draw => {
+            let recycle = game.can_recycle_stock();
+            let moved = game.draw_waste(1, recycle);
+            if recycle {
+                game.stock_recycles = game.stock_recycles.saturating_add(1);
+            }
+            moved
+        }
         Move::Clear(place) if available(game, place).is_some_and(|card| card.rank == 13) => {
             remove(game, place);
             true
@@ -53,6 +60,16 @@ pub(super) fn play(game: &mut Game, action: Move) -> bool {
         }
         _ => false,
     }
+}
+
+pub(super) fn assisted_pair(game: &Game, from: Place) -> Option<Move> {
+    let card = available(game, from)?;
+    (0..game.layout.len())
+        .map(Place::Layout)
+        .chain(std::iter::once(Place::Waste))
+        .filter(|&to| to != from)
+        .find(|&to| available(game, to).is_some_and(|partner| card.rank + partner.rank == 13))
+        .map(|to| Move::Transfer { from, to })
 }
 
 fn remove(game: &mut Game, place: Place) {

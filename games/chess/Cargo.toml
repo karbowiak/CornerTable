@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 cozy-chess = "0.3.4"
+serde = { version = "1", features = ["derive"] }

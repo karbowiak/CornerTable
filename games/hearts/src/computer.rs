@@ -1,4 +1,15 @@
+use serde::{Deserialize, Serialize};
+
 use super::{Card, Game, Phase, Suit, winning_card};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Difficulty {
+    Easy,
+    #[default]
+    Medium,
+    Hard,
+}
 
 pub(super) fn pass(hand: &[Card]) -> [Card; 3] {
     let mut ranked = hand.to_vec();
@@ -26,11 +37,14 @@ fn discard_risk(card: Card) -> u8 {
     }
 }
 
-pub(super) fn play(game: &Game) -> Option<Card> {
+pub(super) fn play(game: &Game, difficulty: Difficulty) -> Option<Card> {
     let Phase::Playing(seat) = game.phase() else {
         return None;
     };
     let legal = game.legal_plays();
+    if difficulty == Difficulty::Easy {
+        return legal.into_iter().min_by_key(|card| card.rank());
+    }
     let held = game.hand(seat);
     let queen_live = !game
         .taken
@@ -47,7 +61,12 @@ pub(super) fn play(game: &Game) -> Option<Card> {
                 && card.suit() == Suit::Spades
                 && card.rank() < 12
                 && !held.contains(&Card::QUEEN_OF_SPADES);
-            (!probes_queen, discard_risk(card), short_suit)
+            let voids = if difficulty == Difficulty::Hard {
+                known_voids(game, card.suit())
+            } else {
+                0
+            };
+            (voids, !probes_queen, discard_risk(card), short_suit)
         });
     };
 
@@ -71,7 +90,12 @@ pub(super) fn play(game: &Game) -> Option<Card> {
         let captured = game.hand_points();
         let threat = captured[leader.seat.index()];
         // One opponent has every penalty so far. Take this trick if possible.
-        if threat >= 16
+        let threshold = if difficulty == Difficulty::Hard && points_on_table <= 3 {
+            10
+        } else {
+            16
+        };
+        if threat >= threshold
             && captured.iter().sum::<u8>() == threat
             && let Some(card) = legal
                 .iter()
@@ -93,4 +117,18 @@ fn weakest_take(game: &Game) -> Option<Card> {
     game.legal_plays()
         .into_iter()
         .min_by_key(|card| (card.points(), card.rank()))
+}
+
+fn known_voids(game: &Game, suit: Suit) -> usize {
+    let mut seats = [false; 4];
+    for trick in game.taken.as_chunks::<4>().0 {
+        if trick[0].card.suit() == suit {
+            for play in &trick[1..] {
+                if play.card.suit() != suit {
+                    seats[play.seat.index()] = true;
+                }
+            }
+        }
+    }
+    seats.into_iter().filter(|&void| void).count()
 }

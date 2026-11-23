@@ -1,10 +1,10 @@
-use corner_table_hearts::{HandResult, MATCH_LIMIT, Phase, Seat, TRICKS_PER_HAND};
+use corner_table_hearts::{Difficulty, HandResult, MATCH_LIMIT, Phase, Seat, TRICKS_PER_HAND};
 use gpui::{
     AnyElement, Context, Div, FontWeight, Role, Stateful, Toggled, div, prelude::*, px, rgb, rgba,
 };
 
 use crate::{
-    games::{round_result, themed_control},
+    games::{round_result, themed_choice, themed_control},
     storage::Outcome,
     theme,
 };
@@ -85,7 +85,38 @@ impl GameView {
             )
             .child(div().flex().flex_wrap().gap_2().when(!finished, |row| {
                 let paused = self.session.pause_tricks();
-                row.child(
+                row.when(!self.confirm_new, |row| {
+                    row.child(
+                        div()
+                            .id("hearts-difficulty")
+                            .role(Role::Group)
+                            .aria_label("Computer difficulty")
+                            .flex()
+                            .gap_1()
+                            .children(
+                                [
+                                    (Difficulty::Easy, "hearts-easy", "Easy"),
+                                    (Difficulty::Medium, "hearts-medium", "Medium"),
+                                    (Difficulty::Hard, "hearts-hard", "Hard"),
+                                ]
+                                .map(|(difficulty, id, label)| {
+                                    themed_choice(
+                                        cx,
+                                        id,
+                                        label,
+                                        self.session.difficulty() == difficulty,
+                                    )
+                                    .px_2()
+                                    .on_click(cx.listener(
+                                        move |view, _, _, cx| {
+                                            view.choose_difficulty(difficulty, cx);
+                                        },
+                                    ))
+                                }),
+                            ),
+                    )
+                })
+                .child(
                     themed_control(cx, "hearts-trick-pacing", "Pause after each trick", true)
                         .aria_toggled(if paused {
                             Toggled::True
@@ -433,7 +464,7 @@ mod tests {
             })
             .unwrap();
         };
-        use_result_action(cx, 3);
+        use_result_action(cx, 6);
         window
             .update(cx, |view, _, cx| {
                 assert_eq!(view.session.game().hand_number(), 2);

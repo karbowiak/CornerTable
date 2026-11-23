@@ -184,6 +184,32 @@ fn deterministic_computer_games_reach_a_terminal_match() {
     }
 }
 
+#[test]
+fn opponent_levels_choose_legal_and_distinct_plays() {
+    let mut game = Game::new(42);
+    let mut easy_differs = false;
+    let mut hard_differs = false;
+    loop {
+        let action = match game.phase() {
+            Phase::Passing => Action::Pass(computer::pass(game.hand(Seat::You))),
+            Phase::Playing(_) => {
+                let legal = game.legal_plays();
+                let easy = game.suggested_play_at(Difficulty::Easy).unwrap();
+                let medium = game.suggested_play().unwrap();
+                let hard = game.suggested_play_at(Difficulty::Hard).unwrap();
+                assert!(legal.contains(&easy) && legal.contains(&hard));
+                easy_differs |= easy != medium;
+                hard_differs |= hard != medium;
+                Action::Play(medium)
+            }
+            Phase::TrickComplete(_) => Action::Collect,
+            Phase::HandComplete(_) => break,
+        };
+        assert!(game.apply(action));
+    }
+    assert!(easy_differs && hard_differs);
+}
+
 fn finish_hand(game: &mut Game) -> HandResult {
     loop {
         let action = match game.phase() {

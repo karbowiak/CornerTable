@@ -146,13 +146,17 @@ fn bit_board_matches_a_grid_scan_across_complete_games() {
 #[test]
 fn computer_difficulties_play_legal_distinct_games() {
     let mut board = Position::new();
-    let mut different = false;
+    let mut club_differs_from_casual = false;
+    let mut club_differs_from_strategist = false;
     while let Turn::Play(disc) = board.turn() {
         let casual = choose_move(board, Difficulty::Casual).unwrap();
+        let club = choose_move(board, Difficulty::Club).unwrap();
         let strategist = choose_move(board, Difficulty::Strategist).unwrap();
         assert!(board.legal_moves().contains(casual));
+        assert!(board.legal_moves().contains(club));
         assert!(board.legal_moves().contains(strategist));
-        different |= casual != strategist;
+        club_differs_from_casual |= club != casual;
+        club_differs_from_strategist |= club != strategist;
         let square = if disc == Disc::Black {
             casual
         } else {
@@ -160,7 +164,7 @@ fn computer_difficulties_play_legal_distinct_games() {
         };
         board.play(square).unwrap();
     }
-    assert!(different);
+    assert!(club_differs_from_casual && club_differs_from_strategist);
     assert!(board.score(Disc::White) > board.score(Disc::Black));
 }
 

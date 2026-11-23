@@ -10,6 +10,7 @@
 //! player goes out or both pass in succession. On a block, the lower pip total
 //! wins. Either kind of win scores the difference in the remaining pip totals.
 
+use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, fmt};
 
 pub const MAX_PIP: u8 = 6;
@@ -195,15 +196,14 @@ pub struct Round {
     last_event: Event,
 }
 
+fn double_six_tiles() -> impl Iterator<Item = Tile> {
+    (0..=MAX_PIP).flat_map(|high| (0..=high).map(move |low| Tile { low, high }))
+}
+
 impl Round {
     /// Start a reproducible deal. The shuffle is part of the saved game format.
     pub fn new(seed: u64) -> Self {
-        let mut deck = Vec::with_capacity(TILE_COUNT);
-        for high in 0..=MAX_PIP {
-            for low in 0..=high {
-                deck.push(Tile { low, high });
-            }
-        }
+        let mut deck: Vec<_> = double_six_tiles().collect();
         shuffle(&mut deck, seed);
         Self::deal(deck)
     }
@@ -385,6 +385,19 @@ impl Round {
 /// Choose a legal play using only the active player's hand and public ends.
 /// Favors shedding pips and keeping at least one useful matching tile.
 pub fn computer_action(round: &Round) -> Option<Action> {
+    computer_action_at(round, Difficulty::Medium)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Difficulty {
+    Easy,
+    #[default]
+    Medium,
+    Hard,
+}
+
+pub fn computer_action_at(round: &Round, difficulty: Difficulty) -> Option<Action> {
     match round.phase() {
         Phase::Finished => None,
         Phase::Draw => Some(Action::Draw),
@@ -392,6 +405,28 @@ pub fn computer_action(round: &Round) -> Option<Action> {
         Phase::Play => {
             let hand = round.hand(round.player());
             let ends = round.ends();
+            if difficulty == Difficulty::Easy {
+                return hand.iter().find_map(|&tile| {
+                    End::ALL
+                        .into_iter()
+                        .find(|end| tile.other(ends[end.index()]).is_some())
+                        .map(|end| Action::Play(tile, end))
+                });
+            }
+            let hard = difficulty == Difficulty::Hard;
+            let unseen: Vec<_> = if hard {
+                double_six_tiles()
+                    .filter(|tile| {
+                        !hand.contains(tile)
+                            && !round.chain().iter().any(|entry| entry.tile == *tile)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let unseen = &unseen;
+            let held_pips: usize = hand.iter().map(|tile| usize::from(tile.total())).sum();
+            let unseen_pips: usize = unseen.iter().map(|tile| usize::from(tile.total())).sum();
             hand.iter()
                 .flat_map(|&tile| {
                     End::ALL.into_iter().filter_map(move |end| {
@@ -404,7 +439,20 @@ pub fn computer_action(round: &Round) -> Option<Action> {
                             })
                             .count();
                         let weight = usize::from(tile.total()) * 3 + options.min(5) * 2;
-                        Some(((weight, options, tile.is_double()), Action::Play(tile, end)))
+                        let replies = unseen
+                            .iter()
+                            .filter(|tile| next.iter().any(|&pip| tile.other(pip).is_some()))
+                            .count();
+                        let losing_block = hard
+                            && round.boneyard_count() == 0
+                            && replies == 0
+                            && options == 0
+                            && held_pips - usize::from(tile.total()) > unseen_pips;
+                        let weight = weight + 4 * (unseen.len() - replies);
+                        Some((
+                            (!losing_block, weight, options, tile.is_double()),
+                            Action::Play(tile, end),
+                        ))
                     })
                 })
                 .max_by_key(|&(rank, _)| rank)

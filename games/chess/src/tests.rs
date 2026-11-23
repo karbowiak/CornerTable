@@ -301,3 +301,29 @@ fn computer_finds_mate_and_cancellable_search_returns_legal_replies() {
     }
     assert_eq!(choose_turn(&game, &AtomicBool::new(true)), None);
 }
+
+#[test]
+fn all_computer_levels_find_a_legal_move_and_honor_cancellation() {
+    let game = fixture("7k/5K2/6Q1/8/8/8/8/8 w - - 0 1");
+    for level in [
+        Difficulty::Easy,
+        Difficulty::Medium,
+        Difficulty::Hard,
+        Difficulty::Expert,
+    ] {
+        let mut position = game.clone();
+        let Some(ComputerTurn::Play(movement)) =
+            choose_turn_with_difficulty(&position, level, &AtomicBool::new(false))
+        else {
+            panic!("{level:?} did not find a move");
+        };
+        assert!(
+            position.play(movement).is_some(),
+            "{level:?} sent an illegal move"
+        );
+        assert_eq!(
+            choose_turn_with_difficulty(&game, level, &AtomicBool::new(true)),
+            None
+        );
+    }
+}

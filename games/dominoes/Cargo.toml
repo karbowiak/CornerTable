@@ -2,3 +2,6 @@
 name = "corner-table-dominoes"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

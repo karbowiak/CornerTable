@@ -11,23 +11,26 @@ pub(super) enum Opponent {
     #[default]
     Local,
     Casual,
+    Club,
     Strategist,
 }
 
 impl Opponent {
-    pub(super) const ALL: [Self; 3] = [Self::Local, Self::Casual, Self::Strategist];
+    pub(super) const ALL: [Self; 4] = [Self::Local, Self::Casual, Self::Club, Self::Strategist];
 
     pub(super) const fn slot(self) -> usize {
         match self {
             Self::Local => 0,
             Self::Casual => 1,
             Self::Strategist => 2,
+            Self::Club => 3,
         }
     }
 
     pub(super) fn from_id(id: &str) -> Self {
         match id {
             "casual" => Self::Casual,
+            "club" => Self::Club,
             "strategist" => Self::Strategist,
             _ => Self::Local,
         }
@@ -37,6 +40,7 @@ impl Opponent {
         match self {
             Self::Local => "Two players",
             Self::Casual => "Casual",
+            Self::Club => "Club",
             Self::Strategist => "Strategist",
         }
     }
@@ -45,6 +49,7 @@ impl Opponent {
         match self {
             Self::Local => None,
             Self::Casual => Some(Difficulty::Casual),
+            Self::Club => Some(Difficulty::Club),
             Self::Strategist => Some(Difficulty::Strategist),
         }
     }
@@ -70,40 +75,47 @@ pub(super) struct Saved {
     version: u8,
     opponent: Opponent,
     display: DisplayOptions,
-    moves: [Vec<u8>; 3],
+    moves: Vec<Vec<u8>>,
     #[serde(default)]
-    attempts: [Option<AttemptId>; 3],
+    attempts: Vec<Option<AttemptId>>,
 }
 
 impl Saved {
     pub(super) fn capture(
         opponent: Opponent,
         display: DisplayOptions,
-        rounds: &[Round; 3],
+        rounds: &[Round; Opponent::ALL.len()],
     ) -> Self {
         Self {
             version: SAVE_VERSION,
             opponent,
             display,
-            moves: std::array::from_fn(|i| {
-                rounds[i]
-                    .history
-                    .iter()
-                    .map(|ply| ply.played.square.index())
-                    .collect()
-            }),
-            attempts: std::array::from_fn(|i| rounds[i].attempt),
+            moves: rounds
+                .iter()
+                .map(|round| {
+                    round
+                        .history
+                        .iter()
+                        .map(|ply| ply.played.square.index())
+                        .collect()
+                })
+                .collect(),
+            attempts: rounds.iter().map(|round| round.attempt).collect(),
         }
     }
 
-    pub(super) fn restore(self) -> Option<(Opponent, DisplayOptions, [Round; 3])> {
+    pub(super) fn restore(
+        self,
+    ) -> Option<(Opponent, DisplayOptions, [Round; Opponent::ALL.len()])> {
         if self.version != SAVE_VERSION {
             return None;
         }
         let rounds = std::array::from_fn(|i| {
-            Round::replay(&self.moves[i])
+            self.moves
+                .get(i)
+                .and_then(|moves| Round::replay(moves))
                 .map(|mut round| {
-                    round.attempt = self.attempts[i];
+                    round.attempt = self.attempts.get(i).copied().flatten();
                     round
                 })
                 .unwrap_or_default()
@@ -229,6 +241,7 @@ mod tests {
         place_first(&mut rounds[0], 3);
         place_first(&mut rounds[1], 5);
         place_first(&mut rounds[2], 10);
+        place_first(&mut rounds[Opponent::Club.slot()], 2);
         for round in &mut rounds {
             round.remember_attempt();
         }
@@ -264,6 +277,7 @@ mod tests {
         let casual = &rounds[Opponent::Casual.slot()];
         assert_eq!(casual.position.turn(), Turn::Play(Disc::White));
         assert!(casual.attempt.is_none());
+        assert_eq!(rounds[Opponent::Club.slot()].position, Position::new());
     }
 
     #[test]

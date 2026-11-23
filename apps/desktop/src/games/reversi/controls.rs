@@ -179,6 +179,7 @@ impl GameView {
         let description = match self.opponent {
             Opponent::Local => "Share the board with another player.",
             Opponent::Casual => "Play Black against a computer that favors quick captures.",
+            Opponent::Club => "Play Black against a computer that weighs corners and mobility.",
             Opponent::Strategist => "Play Black against a computer that plans ahead.",
         };
         div()

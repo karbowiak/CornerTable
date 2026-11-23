@@ -5,6 +5,14 @@ All notable changes to Corner Table are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Pyramid difficulty levels with unlimited stock recycles on Easy, three on Medium, and one pass on Hard.
+- Double-click eligible cards to send them to the foundation in Klondike and FreeCell, or to match a pair on Pyramid Easy and Medium.
+- Chess computer opponents with Easy, Medium, Hard, and Expert search settings.
+- Hearts and Dominoes computer opponents with Easy, Medium, and Hard settings.
+- A Club opponent in Reversi between Casual and Strategist, with its own saved table.
+
 ## [0.1.1] - 2026-11-23
 
 ### Added

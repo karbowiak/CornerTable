@@ -1322,6 +1322,7 @@ name = "corner-table-chess"
 version = "0.1.1"
 dependencies = [
  "cozy-chess",
+ "serde",
 ]
 
 [[package]]
@@ -1336,6 +1337,9 @@ dependencies = [
 [[package]]
 name = "corner-table-dominoes"
 version = "0.1.1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "corner-table-gem-cascade"
@@ -1343,7 +1347,10 @@ version = "0.1.0"
 
 [[package]]
 name = "corner-table-hearts"
-version = "0.1.0"
+version = "0.1.1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "corner-table-jigsaw"

@@ -3,6 +3,7 @@ use super::{Position, Square, Squares, Turn, flips, legal_moves, place, shift};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Difficulty {
     Casual,
+    Club,
     Strategist,
 }
 
@@ -18,7 +19,7 @@ const WIN: i32 = 10_000;
 const LIMIT: i32 = WIN * 2;
 const NODE_BUDGET: u32 = 100_000;
 
-/// Select a legal move offline. Strategist should be called on a background executor.
+/// Select a legal move offline. Run the search levels on a background executor.
 pub fn choose_move(position: Position, difficulty: Difficulty) -> Option<Square> {
     let Turn::Play(disc) = position.turn() else {
         return None;
@@ -36,17 +37,24 @@ pub fn choose_move(position: Position, difficulty: Difficulty) -> Option<Square>
             let corner = if bit & CORNERS != 0 { 16 } else { 0 };
             (corner + gain, std::cmp::Reverse(*square))
         }),
-        Difficulty::Strategist => deeper_move(mine, theirs, legal),
+        Difficulty::Club => deeper_move(mine, theirs, legal, 3, 8_000),
+        Difficulty::Strategist => {
+            let empty = (mine | theirs).count_zeros();
+            let max_depth = if empty <= 10 { empty } else { 7 };
+            deeper_move(mine, theirs, legal, max_depth, NODE_BUDGET)
+        }
     }
 }
 
-fn deeper_move(mine: u64, theirs: u64, legal: Squares) -> Option<Square> {
-    let empty = (mine | theirs).count_zeros();
-    let max_depth = if empty <= 10 { empty } else { 7 };
+fn deeper_move(
+    mine: u64,
+    theirs: u64,
+    legal: Squares,
+    max_depth: u32,
+    budget: u32,
+) -> Option<Square> {
     let mut best = ordered(legal.0).next()?;
-    let mut search = Search {
-        remaining: NODE_BUDGET,
-    };
+    let mut search = Search { remaining: budget };
     // Keep the last completed iteration if a particularly broad position uses the budget.
     for depth in 1..=max_depth {
         let mut choice = best;

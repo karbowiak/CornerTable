@@ -211,9 +211,11 @@ fn going_out_wins_even_when_the_other_player_has_only_a_blank() {
 #[test]
 fn computer_finishes_many_deals_with_an_intact_chain_and_tile_set() {
     for seed in 0..512 {
+        let levels = [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard];
+        let difficulty = levels[seed as usize % levels.len()];
         let mut round = Round::new(seed);
         for _ in 0..70 {
-            let Some(action) = computer_action(&round) else {
+            let Some(action) = computer_action_at(&round, difficulty) else {
                 break;
             };
             round.act(action).expect("computer must act legally");
@@ -234,6 +236,6 @@ fn computer_finishes_many_deals_with_an_intact_chain_and_tile_set() {
             assert_eq!(all_tiles.len(), TILE_COUNT);
         }
         assert!(round.outcome().is_some(), "seed {seed} did not end");
-        assert_eq!(computer_action(&round), None);
+        assert_eq!(computer_action_at(&round, difficulty), None);
     }
 }

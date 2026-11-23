@@ -1,14 +1,33 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cozy_chess::{Board, Color, Move, Piece};
+use serde::{Deserialize, Serialize};
 
 use super::{Game, Position, captured_piece, claim_on, insufficient_material, raw_moves, repeated};
 
-const NODE_LIMIT: usize = 28_000;
-const MAX_DEPTH: u8 = 4;
-const CAPTURE_DEPTH: u8 = 3;
 const MATE: i32 = 30_000;
 const BOUND: i32 = MATE + 1;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Difficulty {
+    Easy,
+    #[default]
+    Medium,
+    Hard,
+    Expert,
+}
+
+impl Difficulty {
+    fn search_budget(self) -> (usize, u8, u8) {
+        match self {
+            Self::Easy => (600, 1, 0),
+            Self::Medium => (28_000, 4, 3),
+            Self::Hard => (120_000, 5, 3),
+            Self::Expert => (450_000, 7, 4),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComputerTurn {
@@ -19,6 +38,14 @@ pub enum ComputerTurn {
 /// Search a fixed number of nodes and honor cancellation between nodes. Call
 /// this on a background thread. Identical positions and histories play alike.
 pub fn choose_turn(game: &Game, cancel: &AtomicBool) -> Option<ComputerTurn> {
+    choose_turn_with_difficulty(game, Difficulty::Medium, cancel)
+}
+
+pub fn choose_turn_with_difficulty(
+    game: &Game,
+    difficulty: Difficulty,
+    cancel: &AtomicBool,
+) -> Option<ComputerTurn> {
     if game.ending().is_some() || cancel.load(Ordering::Relaxed) {
         return None;
     }
@@ -28,8 +55,9 @@ pub fn choose_turn(game: &Game, cancel: &AtomicBool) -> Option<ComputerTurn> {
     order_moves(board, &mut moves);
     let mut best = *moves.first()?;
     let mut score = -BOUND;
+    let (node_limit, max_depth, capture_depth) = difficulty.search_budget();
     let mut search = Search {
-        remaining: NODE_LIMIT,
+        remaining: node_limit,
         cancel,
         // Keep the newest board at the end for inexpensive push/pop in search.
         ancestors: game
@@ -39,12 +67,12 @@ pub fn choose_turn(game: &Game, cancel: &AtomicBool) -> Option<ComputerTurn> {
             .chain(std::iter::once(board.clone()))
             .collect(),
     };
-    for depth in 1..=MAX_DEPTH {
+    for depth in 1..=max_depth {
         let mut alpha = -BOUND;
         let mut best_index = 0;
         for (index, &movement) in moves.iter().enumerate() {
             let child = position.after(movement);
-            let Some(value) = search.score(&child, depth - 1, CAPTURE_DEPTH, 1, -BOUND, -alpha)
+            let Some(value) = search.score(&child, depth - 1, capture_depth, 1, -BOUND, -alpha)
             else {
                 break;
             };

@@ -3,7 +3,7 @@ mod table;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use corner_table_hearts::{Card, Phase, PlayedCard, Seat, TRICKS_PER_HAND};
+use corner_table_hearts::{Card, Difficulty, Phase, PlayedCard, Seat, TRICKS_PER_HAND};
 use gpui::{Context, FocusHandle, IntoElement, KeyDownEvent, Render, Task, Window};
 
 use crate::{
@@ -104,7 +104,7 @@ impl GameView {
         let game = self.session.game();
         let (turn, delay) = match game.phase() {
             Phase::Playing(seat) if seat != Seat::You => {
-                let Some(card) = game.suggested_play() else {
+                let Some(card) = game.suggested_play_at(self.session.difficulty()) else {
                     return;
                 };
                 (Turn::Play { card: card.id() }, OPPONENT_DELAY)
@@ -127,6 +127,18 @@ impl GameView {
                 }
             });
         }));
+    }
+
+    fn choose_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
+        if self.confirm_new || self.session.difficulty() == difficulty {
+            return;
+        }
+        self.session.set_difficulty(difficulty);
+        if matches!(self.session.game().phase(), Phase::Playing(seat) if seat != Seat::You) {
+            self.timer = None;
+            self.revision = self.revision.wrapping_add(1);
+        }
+        cx.notify();
     }
 
     fn keyboard_cards(&self) -> Vec<Card> {

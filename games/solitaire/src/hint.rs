@@ -348,6 +348,7 @@ fn draw_hint(game: &Game, require_safe_foundation: bool) -> Option<Hint> {
             }
         }
         Variant::Spider => HintReason::DealRow,
+        Variant::Pyramid if game.can_recycle_stock() => HintReason::Recycle,
         _ => HintReason::Draw,
     };
     Some(Hint {

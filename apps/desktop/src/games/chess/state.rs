@@ -1,4 +1,4 @@
-use corner_table_chess::{Decision, Game, Move};
+use corner_table_chess::{Decision, Difficulty, Game, Move};
 use serde::{Deserialize, Serialize};
 
 use super::super::{GameEntry, GameLaunch};
@@ -28,6 +28,7 @@ pub(super) struct Table {
     matches: [Game; 2],
     pub(super) mode: Mode,
     pub(super) flipped: bool,
+    pub(super) difficulty: Difficulty,
 }
 
 impl Table {
@@ -36,26 +37,28 @@ impl Table {
         let saved = session
             .load::<Saved>()
             .filter(|save| save.version == SAVE_VERSION);
-        let (mode, flipped, matches) = if let Some(saved) = saved {
+        let (mode, flipped, matches, difficulty) = if let Some(saved) = saved {
             (
                 saved.mode,
                 saved.flipped,
                 saved
                     .matches
                     .map(|record| record.restore().unwrap_or_default()),
+                saved.difficulty,
             )
         } else {
             let mode = match &launch.entry {
                 GameEntry::Mode(id) if id == "computer" => Mode::Computer,
                 _ => Mode::Local,
             };
-            (mode, false, Default::default())
+            (mode, false, Default::default(), Difficulty::default())
         };
         Self {
             session,
             matches,
             mode,
             flipped,
+            difficulty,
         }
     }
 
@@ -72,6 +75,7 @@ impl Table {
             version: SAVE_VERSION,
             mode: self.mode,
             flipped: self.flipped,
+            difficulty: self.difficulty,
             matches: self.matches.each_ref().map(MatchRecord::capture),
         });
     }
@@ -82,6 +86,8 @@ struct Saved {
     version: u8,
     mode: Mode,
     flipped: bool,
+    #[serde(default)]
+    difficulty: Difficulty,
     matches: [MatchRecord; 2],
 }
 

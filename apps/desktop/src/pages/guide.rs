@@ -645,7 +645,11 @@ impl Guide {
                 ),
                 (
                     "Choose a pair or draw",
-                    "Select the two cards or drag one onto the other. Draw from Stock to use the top waste card as a partner. The stock runs through once.",
+                    "Select two cards or drag one onto the other. Draw from Stock to use the top waste card as a partner. Double-click an exposed card to find a partner on Easy or Medium.",
+                ),
+                (
+                    "Choose a difficulty",
+                    "Easy lets you recycle the waste into Stock as often as you like. Medium allows three recycles. Hard gives you one pass through the stock.",
                 ),
                 MOVE_CARDS,
                 TRY_AGAIN,

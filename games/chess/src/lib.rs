@@ -3,7 +3,7 @@
 mod computer;
 mod notation;
 
-pub use computer::{ComputerTurn, choose_turn};
+pub use computer::{ComputerTurn, Difficulty, choose_turn, choose_turn_with_difficulty};
 pub use cozy_chess::{Color, File, Move, Piece, Rank, Square};
 
 use cozy_chess::{BitBoard, Board};

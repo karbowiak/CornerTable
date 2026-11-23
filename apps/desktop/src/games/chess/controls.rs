@@ -1,4 +1,4 @@
-use corner_table_chess::{Color, Decision, DrawClaim, Ending, Piece};
+use corner_table_chess::{Color, Decision, Difficulty, DrawClaim, Ending, Piece};
 use gpui::{AnyElement, Context, Div, FontWeight, Role, div, prelude::*, px, rgb};
 
 use crate::{games::round_result, storage::Outcome, theme};
@@ -235,7 +235,45 @@ impl GameView {
                         }),
                     ),
             )
+            .when(!local, |controls| {
+                controls.child(self.difficulty_controls(choice_blocked, cx))
+            })
             .child(actions)
+    }
+
+    fn difficulty_controls(&self, blocked: bool, cx: &Context<Self>) -> gpui::Stateful<Div> {
+        div()
+            .id("chess-difficulty")
+            .role(Role::Group)
+            .aria_label("Computer difficulty")
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .children(
+                [
+                    (Difficulty::Easy, "chess-easy", "Easy"),
+                    (Difficulty::Medium, "chess-medium", "Medium"),
+                    (Difficulty::Hard, "chess-hard", "Hard"),
+                    (Difficulty::Expert, "chess-expert", "Expert"),
+                ]
+                .map(|(difficulty, id, label)| {
+                    let chosen = self.table.difficulty == difficulty;
+                    let button = if chosen {
+                        themed_choice(cx, id, label, true)
+                    } else {
+                        themed_control(cx, id, label, !blocked)
+                    };
+                    button
+                        .px_2()
+                        .text_size(px(12.))
+                        .aria_toggled(chosen.into())
+                        .when(!blocked, |button| {
+                            button.on_click(cx.listener(move |view, _, _, cx| {
+                                view.choose_difficulty(difficulty, cx)
+                            }))
+                        })
+                }),
+            )
     }
 
     fn confirmation_controls(&self, confirmation: Confirmation, cx: &Context<Self>) -> Div {

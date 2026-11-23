@@ -5,7 +5,9 @@ mod table;
 
 use std::time::Duration;
 
-use corner_table_dominoes::{Action, End, Event, Phase, Player, Round, Tile, computer_action};
+use corner_table_dominoes::{
+    Action, Difficulty, End, Event, Phase, Player, Round, Tile, computer_action_at,
+};
 use gpui::{Context, FocusHandle, KeyDownEvent, Render, Role, Task, Window, div, prelude::*, px};
 
 use crate::{
@@ -154,12 +156,25 @@ impl GameView {
                 }
                 view.computer = None;
                 if view.computer_turn()
-                    && let Some(action) = computer_action(view.round())
+                    && let Some(action) =
+                        computer_action_at(view.round(), view.table().difficulty())
                 {
                     view.apply(action, cx);
                 }
             });
         }));
+    }
+
+    fn choose_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
+        if self.mode != Mode::Computer
+            || self.confirm_restart
+            || self.table().difficulty() == difficulty
+        {
+            return;
+        }
+        self.tables[Mode::Computer.index()].set_difficulty(difficulty);
+        self.save();
+        cx.notify();
     }
 
     fn apply(&mut self, action: Action, cx: &mut Context<Self>) {

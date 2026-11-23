@@ -2,6 +2,8 @@
 
 mod computer;
 
+pub use computer::Difficulty;
+
 pub const MATCH_LIMIT: u16 = 100;
 pub const TRICKS_PER_HAND: usize = 13;
 const POINTS_IN_HAND: u8 = 26;
@@ -276,7 +278,11 @@ impl Game {
 
     /// Rates the current player's legal cards using their hand and public play.
     pub fn suggested_play(&self) -> Option<Card> {
-        computer::play(self)
+        self.suggested_play_at(Difficulty::Medium)
+    }
+
+    pub fn suggested_play_at(&self, difficulty: Difficulty) -> Option<Card> {
+        computer::play(self, difficulty)
     }
 
     fn deal(&mut self) {

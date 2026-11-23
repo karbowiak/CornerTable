@@ -553,13 +553,24 @@ impl GameView {
                             style
                         }
                     })
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        if view.cursor.set(place) {
-                            view.focus.focus(window, cx);
-                        }
-                        view.play_at(place, cx);
-                        cx.notify();
-                    }))
+                    .on_click(
+                        cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                            if view.cursor.set(place) {
+                                view.focus.focus(window, cx);
+                            }
+                            let moved = event.click_count() == 2
+                                && view.deal.selected == Some(place)
+                                && view
+                                    .deal
+                                    .game
+                                    .double_click_move(place)
+                                    .is_some_and(|movement| view.apply(movement, cx));
+                            if !moved {
+                                view.play_at(place, cx);
+                            }
+                            cx.notify();
+                        }),
+                    )
             })
             .when_some(drag, |element, drag| {
                 element
@@ -601,18 +612,26 @@ impl GameView {
         let game = &self.deal.game;
         let recycling = board.flight.as_ref().is_some_and(DealFrame::recycling);
         let face = if game.stock.is_empty() || recycling {
-            CardFace::Empty(
-                if !recycling && game.variant == Variant::Klondike && !game.waste.is_empty() {
-                    Slot::Recycle
-                } else {
-                    Slot::Plain
-                },
-            )
+            CardFace::Empty(if !recycling && game.can_recycle_stock() {
+                Slot::Recycle
+            } else {
+                Slot::Plain
+            })
         } else {
             CardFace::Back
         };
+        let label = match game.mode() {
+            DealMode::PyramidEasy => format!("Stock {} · Unlimited recycles", game.stock.len()),
+            DealMode::PyramidMedium => format!(
+                "Stock {} · Recycles left {}",
+                game.stock.len(),
+                game.pyramid_recycles_remaining().unwrap_or(0),
+            ),
+            DealMode::Pyramid => format!("Stock {} · One pass", game.stock.len()),
+            _ => format!("Stock  {}", game.stock.len()),
+        };
         labeled(
-            format!("Stock  {}", game.stock.len()),
+            label,
             div()
                 .relative()
                 .child(self.card(Place::Stock, face, board, cx))
@@ -1057,7 +1076,9 @@ impl GameView {
                 }
                 Variant::Spider => "A stock row can’t be dealt and no card or suited run can move.",
                 Variant::FreeCell => "No transfer is available from the columns or free cells.",
-                Variant::Pyramid => "The stock is empty and there are no available pairs or kings.",
+                Variant::Pyramid => {
+                    "The stock is exhausted and there are no available pairs or kings."
+                }
                 Variant::TriPeaks => {
                     "The stock is empty and no exposed card can be played on the waste."
                 }
@@ -1767,7 +1788,10 @@ fn mode_label(mode: DealMode) -> &'static str {
         DealMode::SpiderOneSuit => "1 suit",
         DealMode::SpiderTwoSuits => "2 suits",
         DealMode::SpiderFourSuits => "4 suits",
-        DealMode::FreeCell | DealMode::Pyramid | DealMode::TriPeaks => "Standard",
+        DealMode::PyramidEasy => "Easy",
+        DealMode::PyramidMedium => "Medium",
+        DealMode::Pyramid => "Hard",
+        DealMode::FreeCell | DealMode::TriPeaks => "Standard",
         DealMode::TriPeaksSolvable => "Solvable",
     }
 }

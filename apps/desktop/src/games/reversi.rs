@@ -27,7 +27,7 @@ enum Notice {
 }
 
 pub struct GameView {
-    rounds: [Round; 3],
+    rounds: [Round; Opponent::ALL.len()],
     opponent: Opponent,
     display: DisplayOptions,
     session: Session,

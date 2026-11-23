@@ -1,11 +1,13 @@
-use corner_table_dominoes::{Action, End, Finish, Outcome as RoundOutcome, Phase, Player, Tile};
+use corner_table_dominoes::{
+    Action, Difficulty, End, Finish, Outcome as RoundOutcome, Phase, Player, Tile,
+};
 use gpui::{
     AnyElement, BoxShadow, Context, Div, FontWeight, Role, Stateful, Window, div,
     linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
 };
 
 use crate::{
-    games::round_result,
+    games::{round_result, themed_choice},
     storage::Outcome,
     theme::{self, Palette},
 };
@@ -140,6 +142,38 @@ impl GameView {
             .justify_between()
             .gap_2()
             .child(modes)
+            .when(self.mode == Mode::Computer && !confirm, |row| {
+                row.child(
+                    div()
+                        .id("dominoes-difficulty")
+                        .role(Role::Group)
+                        .aria_label("Computer difficulty")
+                        .flex()
+                        .gap_1()
+                        .children(
+                            [
+                                (Difficulty::Easy, "dominoes-easy", "Easy"),
+                                (Difficulty::Medium, "dominoes-medium", "Medium"),
+                                (Difficulty::Hard, "dominoes-hard", "Hard"),
+                            ]
+                            .map(|(difficulty, id, label)| {
+                                themed_choice(
+                                    cx,
+                                    id,
+                                    label,
+                                    self.table().difficulty() == difficulty,
+                                )
+                                .min_h(px(33.))
+                                .px_2()
+                                .on_click(cx.listener(
+                                    move |view, _, _, cx| {
+                                        view.choose_difficulty(difficulty, cx);
+                                    },
+                                ))
+                            }),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()

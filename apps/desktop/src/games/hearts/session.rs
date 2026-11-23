@@ -1,4 +1,4 @@
-use corner_table_hearts::{Action, Card, Game, Pass, Phase, Seat};
+use corner_table_hearts::{Action, Card, Difficulty, Game, Pass, Phase, Seat};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -27,6 +27,8 @@ struct SavedMatch {
     selected: Vec<u8>,
     pause_tricks: bool,
     #[serde(default)]
+    difficulty: Difficulty,
+    #[serde(default)]
     attempt: Option<AttemptId>,
 }
 
@@ -38,6 +40,7 @@ impl SavedMatch {
             turns: Vec::new(),
             selected: Vec::new(),
             pause_tricks,
+            difficulty: Difficulty::default(),
             attempt: Some(AttemptId::default()),
         }
     }
@@ -198,6 +201,15 @@ impl TableSession {
         self.saved.pause_tricks
     }
 
+    pub(super) fn difficulty(&self) -> Difficulty {
+        self.saved.difficulty
+    }
+
+    pub(super) fn set_difficulty(&mut self, difficulty: Difficulty) {
+        self.saved.difficulty = difficulty;
+        self.save();
+    }
+
     pub(super) fn toggle_pause(&mut self) {
         self.saved.pause_tricks = !self.saved.pause_tricks;
         self.save();
@@ -217,7 +229,10 @@ impl TableSession {
 
     pub(super) fn restart(&mut self, seed: u64) {
         self.round = Round::new(seed);
-        self.saved = SavedMatch::new(seed, self.saved.pause_tricks);
+        self.saved = SavedMatch {
+            difficulty: self.saved.difficulty,
+            ..SavedMatch::new(seed, self.saved.pause_tricks)
+        };
         self.save();
     }
 
@@ -300,6 +315,7 @@ mod tests {
         let (round, saved) = saved.restore().unwrap();
         assert_eq!(round.game.phase(), Phase::Passing);
         assert!(saved.attempt.is_none());
+        assert_eq!(saved.difficulty, Difficulty::Medium);
     }
 
     #[test]

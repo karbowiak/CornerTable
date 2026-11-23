@@ -11,7 +11,8 @@ use std::{
 };
 
 use corner_table_chess::{
-    Color, ComputerTurn, Decision, DrawClaim, Game, Move, Piece, Square, choose_turn,
+    Color, ComputerTurn, Decision, Difficulty, DrawClaim, Game, Move, Piece, Square,
+    choose_turn_with_difficulty,
 };
 use gpui::{Context, FocusHandle, KeyDownEvent, Render, Task, Window, div, prelude::*};
 
@@ -164,12 +165,15 @@ impl GameView {
             return;
         }
         let game = self.game().clone();
+        let difficulty = self.table.difficulty;
         let revision = self.revision;
         let cancelled = Arc::new(AtomicBool::new(false));
         let search_cancellation = cancelled.clone();
         let executor = cx.background_executor();
         let pause = executor.timer(Duration::from_millis(420));
-        let search = executor.spawn(async move { choose_turn(&game, &search_cancellation) });
+        let search = executor.spawn(async move {
+            choose_turn_with_difficulty(&game, difficulty, &search_cancellation)
+        });
         let task = cx.spawn(async move |view, cx| {
             let turn = search.await;
             pause.await;
@@ -206,6 +210,13 @@ impl GameView {
         self.table.save();
         self.queue_computer(cx);
         cx.notify();
+    }
+
+    fn choose_difficulty(&mut self, difficulty: Difficulty, cx: &mut Context<Self>) {
+        if self.table.difficulty != difficulty {
+            self.table.difficulty = difficulty;
+            self.refresh(None, cx);
+        }
     }
 
     fn play(&mut self, movement: Move, cx: &mut Context<Self>) {

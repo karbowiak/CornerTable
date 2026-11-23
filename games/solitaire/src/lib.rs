@@ -43,7 +43,7 @@ impl Variant {
             Self::Klondike => &[KlondikeDrawOne, KlondikeDrawThree, KlondikeDrawOneVerified],
             Self::Spider => &[SpiderOneSuit, SpiderTwoSuits, SpiderFourSuits],
             Self::FreeCell => &[FreeCell],
-            Self::Pyramid => &[Pyramid],
+            Self::Pyramid => &[PyramidEasy, PyramidMedium, Pyramid],
             Self::TriPeaks => &[TriPeaks, TriPeaksSolvable],
         }
     }
@@ -59,6 +59,9 @@ pub enum DealMode {
     SpiderTwoSuits,
     SpiderFourSuits,
     FreeCell,
+    PyramidEasy,
+    PyramidMedium,
+    /// One pass through stock. This is the original Pyramid mode.
     Pyramid,
     TriPeaks,
     TriPeaksSolvable,
@@ -72,7 +75,7 @@ impl DealMode {
             }
             Self::SpiderOneSuit | Self::SpiderTwoSuits | Self::SpiderFourSuits => Variant::Spider,
             Self::FreeCell => Variant::FreeCell,
-            Self::Pyramid => Variant::Pyramid,
+            Self::PyramidEasy | Self::PyramidMedium | Self::Pyramid => Variant::Pyramid,
             Self::TriPeaks | Self::TriPeaksSolvable => Variant::TriPeaks,
         }
     }
@@ -135,11 +138,16 @@ pub struct Game {
     pub layout: Vec<Option<Card>>,
     pub runs: usize,
     pub moves: usize,
+    stock_recycles: usize,
 }
 
 impl Game {
     pub fn new(variant: Variant, seed: u64) -> Self {
-        Self::with_mode(variant.deal_modes()[0], seed)
+        let mode = match variant {
+            Variant::Pyramid => DealMode::Pyramid,
+            _ => variant.deal_modes()[0],
+        };
+        Self::with_mode(mode, seed)
     }
 
     pub fn with_mode(mode: DealMode, seed: u64) -> Self {
@@ -154,6 +162,7 @@ impl Game {
             layout: Vec::new(),
             runs: 0,
             moves: 0,
+            stock_recycles: 0,
         };
         let deck_seed = if mode == DealMode::KlondikeDrawOneVerified {
             klondike::verified::shuffle_seed(seed)
@@ -176,6 +185,28 @@ impl Game {
 
     pub fn mode(&self) -> DealMode {
         self.mode
+    }
+
+    /// The finite number of waste-to-stock recycles remaining in Pyramid.
+    pub fn pyramid_recycles_remaining(&self) -> Option<usize> {
+        match self.mode {
+            DealMode::Pyramid => Some(0),
+            DealMode::PyramidMedium => Some(3_usize.saturating_sub(self.stock_recycles)),
+            _ => None,
+        }
+    }
+
+    pub fn can_recycle_stock(&self) -> bool {
+        self.stock.is_empty()
+            && !self.waste.is_empty()
+            && match self.mode {
+                DealMode::PyramidMedium => self.pyramid_recycles_remaining() != Some(0),
+                DealMode::PyramidEasy
+                | DealMode::KlondikeDrawOne
+                | DealMode::KlondikeDrawThree
+                | DealMode::KlondikeDrawOneVerified => true,
+                _ => false,
+            }
     }
 
     /// Replay witness that wins the opening [`DealMode::KlondikeDrawOneVerified`] deal at `seed`.
@@ -221,6 +252,28 @@ impl Game {
         }
     }
 
+    /// Find a legal shortcut for the selected card without changing the deal.
+    pub fn double_click_move(&self, from: Place) -> Option<Move> {
+        let accepts = match self.variant {
+            Variant::Klondike => klondike::accepts,
+            Variant::FreeCell => freecell::accepts,
+            Variant::Pyramid if self.mode != DealMode::Pyramid => {
+                return pyramid::assisted_pair(self, from);
+            }
+            _ => return None,
+        };
+        if matches!(from, Place::Foundation(_)) {
+            return None;
+        }
+        let (card, count) = self.card_run(from)?;
+        if count != 1 {
+            return None;
+        }
+        (0..4).map(Place::Foundation).find_map(|to| {
+            accepts(self, from, to, card, count).then_some(Move::Transfer { from, to })
+        })
+    }
+
     pub fn won(&self) -> bool {
         match self.variant {
             Variant::Klondike | Variant::FreeCell => self.foundation_count() == 52,
@@ -246,13 +299,13 @@ impl Game {
         }
     }
 
-    /// The stock is exhausted and neither a clear nor a pair is possible.
+    /// No draw, recycle, clear, or pair is possible.
     /// Only Pyramid and TriPeaks have these layout rules.
     pub fn layout_stalled(&self) -> bool {
         self.stock.is_empty()
             && !self.won()
             && match self.variant {
-                Variant::Pyramid => !pyramid::has_clear(self),
+                Variant::Pyramid => !self.can_recycle_stock() && !pyramid::has_clear(self),
                 Variant::TriPeaks => !tripeaks::has_clear(self),
                 _ => false,
             }
@@ -691,6 +744,57 @@ mod tests {
         assert!(game.layout_stalled());
         game.layout[21] = None;
         assert!(!game.layout_stalled());
+    }
+
+    #[test]
+    fn pyramid_recycles_are_limited_by_mode_and_restore_from_moves() {
+        let seed = 18;
+        let hard = Game::with_mode(DealMode::Pyramid, seed);
+        let passes = [
+            (DealMode::PyramidEasy, 5),
+            (DealMode::PyramidMedium, 3),
+            (DealMode::Pyramid, 0),
+        ];
+        for (mode, recycles) in passes {
+            let mut game = Game::with_mode(mode, seed);
+            assert_eq!(game.layout, hard.layout);
+            assert_eq!(game.stock, hard.stock);
+            let turns = hard.stock.len() * (recycles + 1) + recycles;
+            for _ in 0..turns {
+                assert!(game.play(Move::Draw));
+            }
+            assert_eq!(
+                game,
+                Game::replay(mode, seed, std::iter::repeat_n(Move::Draw, turns)).unwrap()
+            );
+            assert_eq!(game.can_recycle_stock(), mode == DealMode::PyramidEasy);
+            assert_eq!(game.play(Move::Draw), mode == DealMode::PyramidEasy);
+            if mode == DealMode::PyramidMedium {
+                assert_eq!(game.pyramid_recycles_remaining(), Some(0));
+            }
+        }
+    }
+
+    #[test]
+    fn pyramid_double_click_assistance_matches_only_exposed_cards() {
+        for mode in Variant::Pyramid.deal_modes() {
+            let mut game = Game::with_mode(*mode, 18);
+            game.layout.fill(None);
+            game.layout[15] = Some(spade(7));
+            game.layout[21] = Some(heart(6));
+            game.waste.push(spade(7));
+            let from = Place::Layout(21);
+            let expected = (*mode != DealMode::Pyramid).then_some(Move::Transfer {
+                from,
+                to: Place::Waste,
+            });
+            assert_eq!(game.double_click_move(from), expected);
+            if let Some(action) = expected {
+                assert!(game.play(action));
+                assert_eq!(game.layout[21], None);
+                assert_eq!(game.layout[15], Some(spade(7)));
+            }
+        }
     }
 
     #[test]
