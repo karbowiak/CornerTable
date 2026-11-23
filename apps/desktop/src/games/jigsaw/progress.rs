@@ -216,13 +216,14 @@ mod tests {
 
     #[test]
     fn existing_painting_saves_start_with_their_already_placed_moves() {
+        let gallery = Gallery::default();
         let key = PuzzleKey {
             painting: 1,
             size: Size::Twelve,
         };
         let mut round = Round::new(key.size, 7);
         round.assembly.place(5, 5);
-        let mut saved = serde_json::to_value(SavedRound::new(key, &round)).unwrap();
+        let mut saved = serde_json::to_value(SavedRound::new(key, &round, &gallery)).unwrap();
         let assembly = saved["assembly"].as_object_mut().unwrap();
         assembly.remove("attempt");
         assembly.remove("moves");
@@ -230,7 +231,7 @@ mod tests {
 
         let (loaded_key, loaded) = serde_json::from_value::<SavedRound>(saved)
             .unwrap()
-            .restore()
+            .restore(&gallery)
             .unwrap();
         assert!(loaded_key == key);
         assert_eq!(loaded.assembly.placements(), &[5]);
