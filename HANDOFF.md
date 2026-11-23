@@ -12,7 +12,7 @@ Corner Table is an offline desktop games collection built in Rust and GPUI. The 
 | Sudoku | 9×9 and 6×6 practice, daily clean solves, deduction hints, notes, undo, and saved rounds. |
 | Jigsaw | Five original paintings plus a local photo gallery. Interlocking assembly and square swaps at three sizes, drag and keyboard controls, filters, hints, and gallery saves. |
 | Word Games | Letter Grove, Letter Rack, two crossword sizes, and Word Search with 96 themed layouts. Collection, daily puzzles, hints, and separate saves. |
-| Match Three | Animated swaps and cascades, four stages, hints, keyboard controls, and saved rounds. |
+| Match Three | Seven campaign stages with points, collection, chains, and marked-cell objectives. Animated cascades, hints, keyboard controls, and exact resume. |
 | Block Puzzle | Accurate tray dragging, click and keyboard placement, animated line clears, Ten Trays, and saved progress and bests. |
 | Mine Trails | Five rooms, branching routes, illustrated excavation, a finale, and saved expeditions. |
 | Bubble Shooter | Animated bank shots, six stages, keyboard fine aim, challenge scoring, and resumable progress. |

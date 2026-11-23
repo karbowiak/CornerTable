@@ -393,7 +393,7 @@ impl Guide {
                 sections: &[
                     (
                         "Meet the stage goals",
-                        "Match rows or columns of three or more identical jewels. Check the stage meters for targets such as points, specific jewels, or a chain. Falling jewels can set off another match.",
+                        "Match rows or columns of three or more identical jewels. Check the stage meters for targets such as points, collected jewels, chains, or marked cells. To clear a marked cell, include its jewel in a match.",
                     ),
                     (
                         "Swap neighbors",
