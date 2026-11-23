@@ -1,134 +1,20 @@
+mod daily_challenge;
 mod guide;
 mod library;
 mod records;
 mod solitaire;
 
+pub use daily_challenge::{DailyCalendar, daily_challenge};
 pub use guide::GuideOverlay;
 pub use library::{LibraryFilter, library, matching_games};
 pub use records::{RecordAction, Records, records};
 pub use solitaire::solitaire;
 
-use gpui::{AnyView, Context, Div, Role, div, prelude::*, px, rgb};
+use gpui::{AnyView, Context, Div, div, prelude::*, px, rgb};
 
-use crate::app::{Action, Desktop, Page};
+use crate::app::{Action, Desktop};
 use crate::games::{GameEntry, GameLaunch};
 use crate::{daily, theme as t, widgets};
-
-pub fn daily_challenge(app: &Desktop, cx: &Context<Desktop>) -> Div {
-    let today = daily::today();
-    let palette = t::colors(cx);
-    let completed = daily::completed_days(app.records.history.as_deref().unwrap_or_default());
-    let streak = daily::current_streak(today.date, &completed);
-    let won_today = completed.contains(&today.date);
-    div()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(t::display_type("Daily Challenge", 36.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .when(streak != 0, |details| {
-                            let label = format!("{streak}-day streak");
-                            details.child(
-                                div()
-                                    .id("daily-streak")
-                                    .role(Role::Label)
-                                    .aria_label(label.clone())
-                                    .text_color(rgb(palette.success))
-                                    .child(label),
-                            )
-                        })
-                        .child(
-                            div()
-                                .text_color(rgb(palette.muted))
-                                .child(today.date.format("%A, %B %-d").to_string()),
-                        ),
-                ),
-        )
-        .child(widgets::hero(
-            today.title,
-            widgets::challenge_art(today.game),
-            widgets::button(
-                "launch-daily",
-                if won_today {
-                    "Open completed puzzle"
-                } else {
-                    "Play today’s puzzle"
-                },
-                Action::Navigate(Page::Game(today.launch())),
-                true,
-                cx,
-            ),
-        ))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_3()
-                .child(div().text_color(rgb(palette.muted)).child(today.objective))
-                .when(won_today, |status| {
-                    status.child(
-                        div()
-                            .id("daily-completed")
-                            .role(Role::Label)
-                            .aria_label("Completed")
-                            .text_color(rgb(palette.success))
-                            .child("Completed"),
-                    )
-                }),
-        )
-        .child(
-            t::panel(cx)
-                .p_4()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(t::display_type("Previous puzzles", 22.))
-                .children(daily::previous(today.date).map(|puzzle| {
-                    let date = puzzle.date.format("%a, %b %-d").to_string();
-                    let won = completed.contains(&puzzle.date);
-                    let status = if won {
-                        format!("{date} · Completed")
-                    } else {
-                        date.clone()
-                    };
-                    widgets::clickable(
-                        gpui::SharedString::from(format!("daily-archive-{}", puzzle.date)),
-                        Action::Navigate(Page::Game(puzzle.launch())),
-                        cx,
-                    )
-                    .aria_label(format!("Play {} from {status}", puzzle.title))
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .border_1()
-                    .border_color(rgb(palette.border))
-                    .hover(|style| style.bg(rgb(palette.hover)))
-                    .focus_visible(|style| style.border_color(rgb(palette.ink)))
-                    .child(puzzle.title)
-                    .child(
-                        div()
-                            .text_color(rgb(if won { palette.success } else { palette.muted }))
-                            .child(status),
-                    )
-                })),
-        )
-}
 
 pub fn game(
     app: &Desktop,
@@ -186,20 +72,7 @@ pub fn game(
                     .items_center()
                     .gap(px(if compact_daily { 6. } else { 8. }))
                     .children(daily.map(|puzzle| {
-                        let date = puzzle.date.format("%b %-d, %Y");
-                        let full_label = format!("Daily puzzle · {date}");
-                        let label = if compact {
-                            format!("Daily · {}", puzzle.date.format("%b %-d"))
-                        } else {
-                            full_label.clone()
-                        };
-                        div()
-                            .id("game-daily-date")
-                            .role(Role::Label)
-                            .aria_label(full_label)
-                            .text_size(px(if compact_daily { 12. } else { 13. }))
-                            .text_color(rgb(t::colors(cx).muted))
-                            .child(label)
+                        daily_challenge::game_calendar_button(puzzle.date, compact, cx)
                     }))
                     .children(
                         app.guide

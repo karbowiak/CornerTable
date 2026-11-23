@@ -40,6 +40,7 @@ pub enum Page {
 pub enum Action {
     Navigate(Page),
     History(NavigationDirection),
+    ReturnToDailyCalendar,
     OpenGame(GameId),
     Record(pages::RecordAction),
     ToggleFavorite(GameId),
@@ -59,6 +60,7 @@ pub struct Desktop {
     pub api: FixtureApi,
     pub page: Page,
     pub records: pages::Records,
+    pub daily_calendar: pages::DailyCalendar,
     pub search: Entity<SearchInput>,
     pub recent: Option<GameLaunch>,
     pub favorites: Vec<GameId>,
@@ -103,6 +105,7 @@ impl Desktop {
             api,
             page: Page::Library,
             records: pages::Records::default(),
+            daily_calendar: pages::DailyCalendar::new(cx),
             search,
             recent,
             favorites,
@@ -152,6 +155,22 @@ impl Desktop {
         match action {
             Action::Navigate(page) => self.navigate(page),
             Action::History(direction) => self.step_history(direction),
+            Action::ReturnToDailyCalendar => {
+                if self
+                    .back
+                    .last()
+                    .is_some_and(|visit| visit.page == Page::DailyChallenge)
+                {
+                    self.step_history(NavigationDirection::Back);
+                } else {
+                    self.navigate(Page::DailyChallenge);
+                }
+                cx.on_next_frame(window, |desktop, window, cx| {
+                    if desktop.page == Page::DailyChallenge {
+                        desktop.daily_calendar.focus(window, cx);
+                    }
+                });
+            }
             Action::OpenGame(id) if id.0 == "solitaire" => self.navigate(Page::Solitaire),
             Action::OpenGame(game) => self.navigate(Page::Game(GameLaunch {
                 game,
@@ -286,13 +305,20 @@ impl Desktop {
 
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let narrow = window.viewport_size().width < px(1080.);
+        let viewport = window.viewport_size();
+        let narrow = viewport.width < px(1080.);
         let playing = matches!(self.page, Page::Game(_));
+        let compact_daily = viewport.width < px(900.) || viewport.height < px(630.);
+        let page_padding = if playing || (self.page == Page::DailyChallenge && compact_daily) {
+            16.
+        } else {
+            27.
+        };
         let palette = theme::colors(cx);
         let content = match &self.page {
             Page::Library => pages::library(self, window.viewport_size().width.into(), cx),
             Page::Solitaire => pages::solitaire(self, narrow, cx),
-            Page::DailyChallenge => pages::daily_challenge(self, cx),
+            Page::DailyChallenge => pages::daily_challenge(self, compact_daily, cx),
             Page::Records => pages::records(self, narrow, cx),
             Page::Game(launch) => {
                 if !self.games.contains_key(launch)
@@ -393,7 +419,7 @@ impl Render for Desktop {
                             .max_w(px(1440.))
                             .mx_auto()
                             .px(px(if narrow { 22. } else { 34. }))
-                            .py(px(if playing { 16. } else { 27. }))
+                            .py(px(page_padding))
                             .child(content),
                     ),
             )
