@@ -63,9 +63,33 @@ impl WordSearch {
         Self::layout(index, layout, ((mixed >> 32) & 7) as u8)
     }
 
-    fn layout(index: usize, layout: usize, transform: u8) -> Self {
+    /// Generate a reproducible board for one collection theme. This generator
+    /// is part of the v1 generated-save format, along with the theme indices.
+    pub fn generated(index: usize, seed: u64) -> Self {
+        let index = index % THEMES.len();
         let theme = THEMES[index];
+        let seed = seed ^ 0xc401_7b94_2e16_0f85 ^ ((index as u64) << 32);
+        match crate::search_generate::generate(theme, seed) {
+            Some(layout) => Self::from_layout(theme, &layout.grid, &layout.paths, 0),
+            None => Self::layout(
+                index,
+                (seed % LAYOUTS_PER_THEME as u64) as usize,
+                (seed >> 32) as u8 & 7,
+            ),
+        }
+    }
+
+    fn layout(index: usize, layout: usize, transform: u8) -> Self {
         let (template, paths) = BOARDS[index][layout];
+        Self::from_layout(THEMES[index], template, paths, transform)
+    }
+
+    fn from_layout(
+        theme: SearchTheme,
+        template: &[u8],
+        paths: &[(usize, usize)],
+        transform: u8,
+    ) -> Self {
         let mut letters = vec![0; template.len()];
         let map = |i| transform_cell(theme.side, i, transform);
         for (i, &letter) in template.iter().enumerate() {
@@ -236,6 +260,21 @@ mod tests {
                 .len()
                 > 10
         );
+    }
+
+    #[test]
+    fn live_generation_repeats_by_seed_and_uses_all_collection_themes() {
+        for (index, theme) in THEMES.iter().enumerate() {
+            let mut board = WordSearch::generated(index, 21);
+            assert_eq!(board.theme(), *theme);
+            assert_eq!(board.letters(), WordSearch::generated(index, 21).letters());
+            assert_ne!(board.letters(), WordSearch::generated(index, 22).letters());
+            for word in 0..theme.words.len() {
+                let line = board.line(word);
+                assert_eq!(board.submit(line.end, line.start), Ok(word));
+            }
+            assert!(board.complete());
+        }
     }
 
     #[test]

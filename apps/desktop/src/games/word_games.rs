@@ -21,7 +21,7 @@ use self::board::{CHECK_INK, HINT_INK, PAPER, PRESS_INK, SOLVED_PAPER, TileState
 use self::state::{
     CrosswordPlay, Navigation, Play, PuzzleKey, Shelf, Source, Variant, WordPlay, plural, utc_day,
 };
-use super::{GameEntry, GameLaunch, board_space, round_result};
+use super::{GameEntry, GameLaunch, board_space, fresh_seed, round_result};
 use crate::{
     audio::{self, Effect},
     motion,
@@ -75,6 +75,7 @@ enum Action {
     CancelReveal,
     ConfirmReveal,
     SearchHint,
+    NewSearchLayout,
     Replay,
 }
 
@@ -119,7 +120,11 @@ impl GameView {
         if let Play::Search(play) = self.play_mut() {
             play.cancel_selection();
         }
-        self.current = self.navigation.resume(utc_day(), self.challenge);
+        let next = self.navigation.resume(utc_day(), self.challenge);
+        if next != self.current && matches!(self.current.source, Source::Generated { .. }) {
+            self.puzzles.remove(&self.current);
+        }
+        self.current = next;
         self.puzzles
             .entry(self.current)
             .or_insert_with(|| load_puzzle(&self.launch, self.current));
@@ -202,6 +207,10 @@ impl GameView {
                 let cursor = self.navigation.edit();
                 cursor.index = index;
                 cursor.shelf = Shelf::Collection;
+                self.switch();
+            }
+            Action::NewSearchLayout => {
+                self.navigation.generate_search(fresh_seed());
                 self.switch();
             }
             Action::TogglePicker => {
@@ -333,6 +342,7 @@ impl GameView {
         let count = variant.puzzle_count();
         let collection = matches!(self.current.source, Source::Collection(_));
         let daily = matches!(self.current.source, Source::Daily(_));
+        let generated = matches!(self.current.source, Source::Generated { .. });
         let mut modes = div().flex().flex_wrap().gap_2();
         for (index, option) in Variant::TABS.into_iter().enumerate() {
             let target = if option == Variant::Mini {
@@ -413,7 +423,7 @@ impl GameView {
                 line.child(button(
                     "word-challenge",
                     "Challenge",
-                    Button::selected(!collection && !daily),
+                    Button::selected(matches!(self.current.source, Source::Challenge(_))),
                     Action::Shelf(Shelf::Challenge),
                     cx,
                 ))
@@ -438,7 +448,21 @@ impl GameView {
                     .items_center()
                     .gap_2()
                     .children(size)
-                    .when(collection, |line| line.child(archive))
+                    .when(collection || generated, |line| {
+                        line.child(archive)
+                            .when(variant == Variant::Search, |line| {
+                                line.child(
+                                    button(
+                                        "word-search-new-layout",
+                                        "New layout",
+                                        Button::enabled(true),
+                                        Action::NewSearchLayout,
+                                        cx,
+                                    )
+                                    .debug_selector(|| "word-search-new-layout".into()),
+                                )
+                            })
+                    })
                     .when(daily, |line| {
                         let message = match self.current.source {
                             Source::Daily(day) if day != utc_day() => {
@@ -1512,6 +1536,7 @@ fn completion_actions(key: PuzzleKey, focus: &FocusHandle, cx: &Context<GameView
         Source::Daily(_) | Source::Challenge(_) => {
             Some(("Browse collection", Action::Shelf(Shelf::Collection)))
         }
+        Source::Generated { .. } => Some(("New layout", Action::NewSearchLayout)),
         _ => None,
     };
     div()

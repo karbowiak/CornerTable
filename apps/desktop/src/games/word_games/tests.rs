@@ -235,3 +235,52 @@ fn search_result_and_next_puzzle_work_after_a_reversed_drag(cx: &mut TestAppCont
     click(&mut ui, "word-replay");
     assert!(ui.debug_bounds("word-replay").is_none());
 }
+
+#[gpui::test]
+fn generated_search_layout_resumes_with_its_theme_and_progress(cx: &mut TestAppContext) {
+    let window = open(cx, "word-search");
+    let mut ui = VisualTestContext::from_window(window.into(), cx);
+    let theme = WordSearch::themes().len() - 1;
+    act(window, &mut ui, Action::Puzzle(theme));
+    click(&mut ui, "word-search-new-layout");
+    act(window, &mut ui, Action::SearchHint);
+    let (key, letters) = window
+        .read_with(&ui, |view, _| {
+            let Play::Search(play) = view.play() else { unreachable!() };
+            assert!(matches!(view.current.source, Source::Generated { theme: index, .. } if theme == index));
+            assert_eq!(play.board.theme(), WordSearch::themes()[theme]);
+            assert_eq!(play.hints_used, 1);
+            (view.current, play.board.letters().to_vec())
+        })
+        .unwrap();
+    let reopened = open(cx, "word-search");
+    let mut ui = VisualTestContext::from_window(reopened.into(), cx);
+    reopened
+        .read_with(&ui, |view, _| {
+            let Play::Search(play) = view.play() else {
+                unreachable!()
+            };
+            assert_eq!(view.current, key);
+            assert_eq!(play.board.letters(), letters);
+            assert!(play.hint.is_some());
+        })
+        .unwrap();
+    click(&mut ui, "word-search-new-layout");
+    reopened
+        .read_with(&ui, |view, _| {
+            let Play::Search(play) = view.play() else {
+                unreachable!()
+            };
+            assert_ne!(view.current, key);
+            assert_eq!(play.board.theme(), WordSearch::themes()[theme]);
+            assert_ne!(play.board.letters(), letters);
+            assert_eq!(play.hints_used, 0);
+        })
+        .unwrap();
+    act(reopened, &mut ui, Action::Shelf(Shelf::Collection));
+    reopened
+        .read_with(&ui, |view, _| {
+            assert_eq!(view.current.source, Source::Collection(theme));
+        })
+        .unwrap();
+}

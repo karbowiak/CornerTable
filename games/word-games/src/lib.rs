@@ -3,6 +3,7 @@
 mod crossword;
 mod search;
 mod search_catalog;
+mod search_generate;
 
 pub use crossword::{Clue, Crossword, CrosswordPuzzle, GridSize};
 pub use search::{SearchLine, SearchRejection, WordSearch};

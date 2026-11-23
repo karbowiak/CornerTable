@@ -28,6 +28,7 @@ impl SearchPlay {
         let board = match key.source {
             Source::Collection(index) => WordSearch::collection(index),
             Source::Daily(_) | Source::Challenge(_) => WordSearch::seeded(key.seed()),
+            Source::Generated { theme, seed } => WordSearch::generated(theme, seed),
         };
         let mut play = Self {
             board,

@@ -89,6 +89,7 @@ pub(super) enum Shelf {
     Collection,
     Daily,
     Challenge,
+    GeneratedV1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -96,6 +97,7 @@ pub(super) enum Source {
     Collection(usize),
     Daily(u64),
     Challenge(u64),
+    Generated { theme: usize, seed: u64 },
 }
 
 impl Source {
@@ -117,6 +119,7 @@ impl PuzzleKey {
             Source::Collection(index) => format!("collection-{index}"),
             Source::Daily(day) => format!("daily-{day}"),
             Source::Challenge(seed) => format!("challenge-{seed}"),
+            Source::Generated { theme, seed } => format!("generated-v1-{theme}-{seed}"),
         };
         format!("word-games-v1-{}-{source}", self.variant.slug())
     }
@@ -125,7 +128,7 @@ impl PuzzleKey {
         match self.source {
             Source::Collection(index) => index as u64,
             Source::Daily(day) => day.wrapping_add(19 * (self.variant.slot() as u64 + 1)),
-            Source::Challenge(seed) => seed,
+            Source::Challenge(seed) | Source::Generated { seed, .. } => seed,
         }
     }
 
@@ -149,6 +152,9 @@ impl PuzzleKey {
                 format!("Challenge {seed:016x}")
             }
             Source::Challenge(_) => "Challenge".to_owned(),
+            Source::Generated { theme, .. } => {
+                format!("{} · Generated", WordSearch::themes()[theme].title)
+            }
         };
         format!("{title} · {source}")
     }
@@ -166,6 +172,8 @@ pub(super) struct Cursor {
     pub shelf: Shelf,
     #[serde(default)]
     day: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generated_seed: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -235,6 +243,13 @@ impl Navigation {
         }
     }
 
+    pub fn generate_search(&mut self, seed: u64) {
+        if self.variant == Variant::Search {
+            self.search.shelf = Shelf::GeneratedV1;
+            self.search.generated_seed = Some(seed);
+        }
+    }
+
     pub fn resume(&mut self, today: u64, challenge: Option<u64>) -> PuzzleKey {
         let cursor = self.edit();
         if cursor.shelf == Shelf::Daily {
@@ -248,6 +263,12 @@ impl Navigation {
         let source = match (cursor.shelf, challenge) {
             (Shelf::Daily, _) => Source::Daily(cursor.day.unwrap_or(day)),
             (Shelf::Challenge, Some(seed)) => Source::Challenge(seed),
+            (Shelf::GeneratedV1, _) if self.variant == Variant::Search => cursor
+                .generated_seed
+                .map_or(Source::Collection(cursor.index), |seed| Source::Generated {
+                    theme: cursor.index,
+                    seed,
+                }),
             _ => Source::Collection(cursor.index),
         };
         PuzzleKey {
