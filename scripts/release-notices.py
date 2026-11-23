@@ -56,7 +56,6 @@ def collect(target, destination):
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", target],
         cwd=ROOT,
-        text=True,
     ))
     destination.mkdir(parents=True, exist_ok=True)
     asset_dir = destination / "assets-and-data"

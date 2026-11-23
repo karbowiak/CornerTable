@@ -113,8 +113,9 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $binary))
           $pe = [BitConverter]::ToInt32($bytes, 0x3c)
           if ([BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550 -or
-              [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) {
-            throw 'Expected a Windows x64 executable'
+              [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664 -or
+              [BitConverter]::ToUInt16($bytes, $pe + 24 + 68) -ne 2) {
+            throw 'Expected a Windows x64 GUI executable'
           }
           Copy-Item $binary, README.md -Destination $stage
           Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip"
