@@ -5,11 +5,8 @@ use gpui::{
 };
 
 use super::issue_message;
-use crate::games::sudoku::{ERROR, PLAYER_INK, t};
+use crate::games::sudoku::paper::Paper;
 
-pub(in crate::games::sudoku) const CAGE_ACTIVE_SURFACE: u32 = 0xe0eee5;
-pub(in crate::games::sudoku) const CAGE_ERROR_SURFACE: u32 = 0xfbeee5;
-const CAGE_LINE: u32 = 0x647770;
 const CAGE_INSET: f32 = 3.;
 
 #[derive(Clone, Copy)]
@@ -52,18 +49,22 @@ impl Cell {
         self,
         cell: Stateful<gpui::Div>,
         unit: f32,
-        notes: u16,
-        value: u8,
+        game: &Game,
         selected: bool,
-        unit_conflict: bool,
+        paper: Paper,
+        stock: u32,
     ) -> Stateful<gpui::Div> {
+        let notes = game.notes(self.index);
+        let value = game.value(self.index);
+        let unit_conflict = game.has_conflict(self.index);
         let ink = if self.has_issue() {
-            ERROR
+            paper.error_ink
         } else if self.active {
-            PLAYER_INK
+            paper.entry
         } else {
-            CAGE_LINE
+            paper.cage
         };
+        let total_size = (unit * 0.28).round().clamp(11., 14.);
         let sum = self.cage.sum();
         let label = format!(
             "Row {}, column {}, {}, cage sum {sum}",
@@ -100,11 +101,17 @@ impl Cell {
                     div()
                         .debug_selector(move || format!("killer-total-{}", self.index))
                         .absolute()
-                        .left(px(6.))
-                        .top(px(3.))
-                        .text_color(rgb(if self.has_issue() { ERROR } else { t::INK }))
-                        .text_size(px((unit * 0.28).clamp(10., 14.)))
-                        .line_height(px((unit * 0.28).clamp(10., 14.)))
+                        .left(px(5.))
+                        .top(px(2.))
+                        .px(px(2.))
+                        .bg(rgb(stock))
+                        .text_color(rgb(if self.has_issue() {
+                            paper.error_ink
+                        } else {
+                            paper.ink
+                        }))
+                        .text_size(px(total_size))
+                        .line_height(px(total_size))
                         .font_weight(FontWeight::BOLD)
                         .child(sum.to_string()),
                 )
@@ -113,7 +120,7 @@ impl Cell {
                 cell.child(
                     div()
                         .absolute()
-                        .top(px(unit * 0.29))
+                        .top(px(unit * 0.32))
                         .left_0()
                         .right_0()
                         .bottom(px(3.))
@@ -134,27 +141,31 @@ impl Cell {
                     Some(issue) => format!("{} Notes {digits}.", issue_message(issue, sum)),
                     None => format!("Notes {digits}."),
                 };
-                cell.aria_description(description)
-                    .child(self.notes(unit, notes))
+                cell.aria_description(description).child(self.notes(
+                    unit,
+                    total_size + 3.,
+                    notes,
+                    paper.pencil,
+                ))
             })
     }
 
-    fn notes(self, unit: f32, notes: u16) -> gpui::Div {
-        let row_height = px(unit * 0.18);
+    fn notes(self, unit: f32, top: f32, notes: u16, ink: u32) -> gpui::Div {
+        let row_height = px(((unit - top - 4.) / 3.).min(unit * 0.21));
         let column_width = px(unit * 0.22);
         div()
             .debug_selector(move || format!("killer-notes-{}", self.index))
             .absolute()
-            .top(px(unit * 0.36))
+            .top(px(top))
             .left_0()
             .right_0()
             .flex()
             .flex_col()
             .items_center()
-            .text_size(px(unit * 0.22))
+            .text_size(px((unit * 0.21).round().max(9.)))
             .line_height(row_height)
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(t::MUTED))
+            .text_color(rgb(ink))
             .children((0..3).map(|row| {
                 div().flex().h(row_height).children((1..=3).map(|column| {
                     let digit = row * 3 + column;

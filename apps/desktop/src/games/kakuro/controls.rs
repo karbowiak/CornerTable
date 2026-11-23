@@ -86,9 +86,11 @@ impl GameView {
         };
         let status_line = div()
             .flex()
+            .flex_wrap()
             .justify_between()
             .items_center()
-            .gap_2()
+            .gap_x_2()
+            .gap_y_1()
             .child(div().font_weight(FontWeight::BOLD).child(status))
             .when(game.has_conflicts(), |line| {
                 line.child(

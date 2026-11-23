@@ -52,7 +52,11 @@ impl GameView {
         let top = top_slots as f32 * top_slot + 1.;
         let visible_rows =
             (((height_budget - top) / step).floor() as usize).clamp(3.min(height), height);
-        let font = if step < 24. { 12. } else { 14. };
+        let font = if step < 24. {
+            (step * 0.73).floor().clamp(9., 12.)
+        } else {
+            14.
+        };
         let plot_size = size(px(step * width as f32), px(step * height as f32));
         let focused = self.board_focus.is_focused(window);
         let active = self.hover.or_else(|| focused.then_some(play.cursor));
@@ -77,7 +81,7 @@ impl GameView {
                     .items_center()
                     .justify_end()
                     .border_r_1()
-                    .border_color(rgb(paint.rule))
+                    .border_color(rgb(clue_rule(column, width, paint)))
                     .when(col_focus == Some(column), |gutter| {
                         gutter.bg(rgb(paint.track))
                     })
@@ -103,7 +107,7 @@ impl GameView {
                     .justify_end()
                     .items_center()
                     .border_b_1()
-                    .border_color(rgb(paint.rule))
+                    .border_color(rgb(clue_rule(row, height, paint)))
                     .when(row_focus == Some(row), |gutter| gutter.bg(rgb(paint.track)))
                     .children(
                         clue_values(runs, rows_met[row], paint, font)
@@ -182,7 +186,7 @@ impl GameView {
                     move |bounds, (), window, _| {
                         for col in 1..=width {
                             let major = col % 5 == 0 && col < width;
-                            let thickness = if major { 1.5 } else { 1. };
+                            let thickness = if major { 2. } else { 1. };
                             window.paint_quad(fill(
                                 gpui::Bounds {
                                     origin: point(
@@ -196,7 +200,7 @@ impl GameView {
                         }
                         for row in 1..=height {
                             let major = row % 5 == 0 && row < height;
-                            let thickness = if major { 1.5 } else { 1. };
+                            let thickness = if major { 2. } else { 1. };
                             window.paint_quad(fill(
                                 gpui::Bounds {
                                     origin: point(
@@ -249,6 +253,12 @@ fn tile(
     state: TileState,
     paint: Colors,
 ) -> Stateful<Div> {
+    let edge = (step * 0.04).round().clamp(1., 2.);
+    let ink = if state.conflict {
+        paint.alert
+    } else {
+        paint.fill
+    };
     div()
         .id(("picture-square", index))
         .role(Role::GridCell)
@@ -267,11 +277,12 @@ fn tile(
         .size(px(step))
         .bg(rgb(background))
         .when(cell == Cell::Filled, |cell| {
-            cell.child(div().absolute().inset(px(2.)).bg(rgb(if state.conflict {
-                paint.alert
+            let inset = if state.conflict || state.hint || state.cursor {
+                edge + if step < 20. { 2. } else { 3. }
             } else {
-                paint.fill
-            })))
+                edge + 1.
+            };
+            cell.child(pencil_fill(index, ink, paint.stock, step, inset))
         })
         .when(cell == Cell::Marked, |cell| {
             cell.child(cross(
@@ -280,29 +291,76 @@ fn tile(
                 } else {
                     paint.mark
                 },
-                0.30,
+                if step < 24. { 0.43 } else { 0.33 },
             ))
         })
         .when(state.hint || state.cursor || state.conflict, |cell| {
-            let color = if state.conflict {
-                paint.alert
-            } else if state.hint {
+            let color = if state.hint {
                 paint.hint
-            } else {
+            } else if state.cursor && state.conflict {
+                paint.ink
+            } else if state.cursor {
                 paint.select
+            } else {
+                paint.alert
             };
             cell.child(
                 div()
                     .absolute()
-                    .inset(px(if state.conflict && !state.cursor {
-                        1.
-                    } else {
-                        2.
-                    }))
+                    .inset(px(edge))
                     .border_2()
                     .border_color(rgb(color)),
             )
         })
+}
+
+fn pencil_fill(index: usize, ink: u32, paper: u32, step: f32, inset: f32) -> Div {
+    div()
+        .absolute()
+        .inset(px(inset))
+        .bg(rgb(ink))
+        .when(step >= 24., |mark| {
+            mark.child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), window, _| {
+                        // Lightly exposed paper between passes of a broad pencil stroke.
+                        let mut tooth = PathBuilder::stroke(px(0.65));
+                        let shift = (index % 7) as f32 * 0.013;
+                        for (x, y, length) in [
+                            (0.07, 0.54, 0.46),
+                            (0.12, 0.75, 0.64),
+                            (0.19, 0.88, 0.69),
+                            (0.35, 0.92, 0.58),
+                            (0.55, 0.88, 0.38),
+                        ] {
+                            let start =
+                                point(bounds.size.width * x, bounds.size.height * (y - shift));
+                            let stroke = point(
+                                bounds.size.width * length,
+                                -bounds.size.height * length * 0.83,
+                            );
+                            tooth.move_to(bounds.origin + start);
+                            tooth.line_to(bounds.origin + start + stroke);
+                        }
+                        if let Ok(path) = tooth.build() {
+                            window.paint_path(path, rgb(paper).opacity(0.15));
+                        }
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+        })
+}
+
+fn clue_rule(index: usize, count: usize, paint: Colors) -> u32 {
+    let boundary = index + 1;
+    if boundary.is_multiple_of(5) && boundary < count {
+        paint.major
+    } else {
+        paint.rule
+    }
 }
 
 fn clue_label(axis: Axis, index: usize, runs: &[u8], met: bool) -> Stateful<Div> {

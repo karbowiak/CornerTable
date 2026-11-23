@@ -1,4 +1,5 @@
 mod killer;
+mod paper;
 mod persistence;
 
 use std::collections::HashMap;
@@ -8,7 +9,8 @@ use chrono::NaiveDate;
 use corner_table_sudoku::{Difficulty, Format, Game, Hint, HintReason, KillerPuzzle, Unit};
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Div, FocusHandle, FontWeight, KeyDownEvent,
-    SharedString, Stateful, Window, div, ease_in_out, prelude::*, px, relative, rgb, rgba,
+    ObjectFit, SharedString, Stateful, StyledImage, Window, div, ease_in_out, img, prelude::*, px,
+    relative, rgb, rgba,
 };
 
 use super::{GameEntry, GameLaunch, board_space, round_result};
@@ -18,13 +20,9 @@ use crate::{
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme as t,
 };
+use paper::Paper;
 use persistence::PracticeModes;
 
-const GRID_LINE: u32 = 0xd0d6c7;
-const PLAYER_INK: u32 = 0x23695e;
-const ERROR: u32 = 0x9d3f37;
-const ERROR_SURFACE: u32 = 0xf9e3db;
-const HINT_INK: u32 = 0x80551c;
 const HINT_SURFACE: u32 = 0xfcf0d3;
 const GROUP_GAP: f32 = 2.;
 const BOARD_EDGE: f32 = 2.;
@@ -414,6 +412,7 @@ impl GameView {
         size: f32,
         solved: bool,
         pulsing: bool,
+        paper: Paper,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let round = self.round();
@@ -444,35 +443,35 @@ impl GameView {
         });
 
         let fill = if conflict {
-            ERROR_SURFACE
+            paper.error
         } else if cage.is_some_and(|cell| cell.has_issue()) {
-            killer::CAGE_ERROR_SURFACE
+            paper.cage_error
         } else if hint_target {
-            0xf9dfa3
+            paper.hint_target
         } else if selected {
-            0xc3dfbd
+            paper.focus
         } else if hint_source {
-            0xf7e6bd
+            paper.hint_source
         } else if hint_evidence {
-            HINT_SURFACE
+            paper.hint_evidence
         } else if same_digit {
-            0xd6e9d7
+            paper.match_digit
         } else if cage.is_some_and(|cell| cell.is_active()) {
-            killer::CAGE_ACTIVE_SURFACE
+            paper.cage_focus
         } else if !solved && format.related(round.selected, index) {
-            0xeef2e4
+            paper.peer
         } else if given {
-            0xf7f3e9
+            paper.givens
         } else {
-            t::SURFACE
+            paper.ground
         };
 
         let foreground = if conflict {
-            ERROR
+            paper.error_ink
         } else if given {
-            t::INK
+            paper.ink
         } else {
-            PLAYER_INK
+            paper.entry
         };
 
         div()
@@ -486,14 +485,15 @@ impl GameView {
             .justify_center()
             .bg(rgb(fill))
             .text_color(rgb(foreground))
-            .text_size(px(size * 0.51))
-            .line_height(px(size * 0.9))
+            .font_family(if given { t::DISPLAY } else { t::BODY })
+            .text_size(px((size * 0.50).round()))
+            .line_height(px((size * 0.64).round()))
             .font_weight(if given {
                 FontWeight::BOLD
             } else {
                 FontWeight::SEMIBOLD
             })
-            .border_color(rgb(GRID_LINE))
+            .border_color(rgb(paper.rule))
             .when(
                 column % format.box_columns() + 1 < format.box_columns(),
                 |cell| cell.border_r_1(),
@@ -510,7 +510,7 @@ impl GameView {
                             && !hint_source
                             && !hint_evidence
                             && !cage.is_some_and(|cell| cell.has_issue()),
-                        |cell| cell.hover(|style| style.bg(rgb(0xe4ead8))),
+                        |cell| cell.hover(move |style| style.bg(rgb(paper.hover))),
                     )
                     .on_click(cx.listener(move |view, _, window, cx| {
                         view.round_mut().selected = index;
@@ -518,6 +518,17 @@ impl GameView {
                         view.focus.focus(window, cx);
                         cx.notify();
                     }))
+            })
+            .when(!selected && !hint_target && !conflict, |cell| {
+                cell.child(
+                    img(paper::grain(cx))
+                        .absolute()
+                        .inset_0()
+                        .w_full()
+                        .h_full()
+                        .object_fit(ObjectFit::Fill)
+                        .opacity(paper.grain_alpha),
+                )
             })
             .when(pulsing, |cell| {
                 cell.child(
@@ -533,13 +544,13 @@ impl GameView {
                 )
             })
             .when_some(cage, |cell, cage| {
-                cage.render(cell, size, game.notes(index), value, selected, conflict)
+                cage.render(cell, size, game, selected, paper, fill)
             })
             .when(cage.is_none(), |cell| {
                 cell.children((value != 0).then(|| value.to_string()))
                     .children(
                         (game.notes(index) != 0)
-                            .then(|| notes_grid(format, size, game.notes(index))),
+                            .then(|| notes_grid(format, size, game.notes(index), paper.pencil)),
                     )
             })
             .when(conflict, |cell| {
@@ -551,21 +562,22 @@ impl GameView {
                         .w(px(size * 0.26))
                         .h(px(2.))
                         .rounded_full()
-                        .bg(rgb(ERROR)),
+                        .bg(rgb(paper.error_ink)),
                 )
             })
             .when(selected || hint_target, |cell| {
-                cell.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .border_2()
-                        .border_color(rgb(if hint_target { HINT_INK } else { PLAYER_INK })),
-                )
+                cell.child(div().absolute().inset_0().border_2().border_color(rgb(
+                    if hint_target {
+                        paper.hint_ink
+                    } else {
+                        paper.focus_rule
+                    },
+                )))
             })
     }
 
     fn board(&self, size: f32, cx: &Context<Self>) -> Stateful<Div> {
+        let paper = Paper::current(cx);
         let round = self.round();
         let game = &round.game;
         let format = game.format();
@@ -589,8 +601,8 @@ impl GameView {
             .items_start()
             .gap(px(GROUP_GAP))
             .p(px(BOARD_EDGE))
-            .bg(rgb(if solved { PLAYER_INK } else { t::INK }))
-            .rounded_md()
+            .bg(rgb(if solved { paper.entry } else { paper.frame }))
+            .rounded_sm()
             .overflow_hidden()
             .children((0..boxes_high).map(|band| {
                 div()
@@ -612,6 +624,7 @@ impl GameView {
                                             size,
                                             solved,
                                             pulse_cell == Some(index),
+                                            paper,
                                             cx,
                                         )
                                     }))
@@ -1010,14 +1023,16 @@ fn utc_day() -> u64 {
         .map_or(0, |duration| duration.as_secs() / 86_400)
 }
 
-fn notes_grid(format: Format, size: f32, notes: u16) -> Div {
-    let unit = px(size * 0.29);
+fn notes_grid(format: Format, size: f32, notes: u16, ink: u32) -> Div {
+    let unit = px((size * 0.29).round());
     div()
         .flex()
         .flex_col()
         .text_size(px((size * 0.22).max(8.)))
         .line_height(unit)
-        .text_color(rgb(t::MUTED))
+        .font_family(t::BODY)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(rgb(ink))
         .children((0..format.size() / 3).map(|row| {
             div().flex().h(unit).children((1..=3).map(|column| {
                 let digit = row * 3 + column;

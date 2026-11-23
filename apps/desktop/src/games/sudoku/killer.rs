@@ -10,7 +10,7 @@ use super::{
     hint_count, t, unit_name,
 };
 
-pub(super) use board::{CAGE_ACTIVE_SURFACE, CAGE_ERROR_SURFACE, Cell};
+pub(super) use board::Cell;
 
 const GAP: f32 = 12.;
 const GRID_GUTTERS: f32 = 2. * (BOARD_EDGE + GROUP_GAP);
