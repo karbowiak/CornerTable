@@ -53,6 +53,26 @@ fn compact_summit_routes_pointer_and_keyboard_to_the_same_cells(cx: &mut TestApp
         })
         .unwrap();
 
+    let before_hint = window
+        .read_with(cx, |view, _| view.round.board.checkpoint())
+        .unwrap();
+    visual.simulate_keystrokes("h");
+    window
+        .read_with(cx, |view, _| {
+            assert_eq!(view.round.board.checkpoint(), before_hint);
+            let (column, row) = view.round.selected;
+            assert_eq!(view.hint.target(column, row), Some(false));
+        })
+        .unwrap();
+    visual.simulate_keystrokes("escape");
+    window
+        .update(cx, |view, _, cx| {
+            assert!(matches!(view.hint, HintState::Hidden));
+            view.round.selected = (2, 0);
+            cx.notify();
+        })
+        .unwrap();
+
     visual.simulate_keystrokes("left enter");
     window
         .read_with(cx, |view, _| {
@@ -70,4 +90,5 @@ fn compact_summit_routes_pointer_and_keyboard_to_the_same_cells(cx: &mut TestApp
             assert!(view.impact.is_none());
         })
         .unwrap();
+    assert!(visual.debug_bounds("minesweeper-result").is_some());
 }

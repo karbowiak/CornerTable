@@ -25,6 +25,7 @@ pub fn round_result(
     let detail = detail.into();
     let card = theme::panel(cx)
         .id(id)
+        .debug_selector(move || id.into())
         .role(Role::Group)
         .aria_label(title.clone())
         .w_full()
