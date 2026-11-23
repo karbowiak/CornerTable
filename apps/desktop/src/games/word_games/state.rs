@@ -1,9 +1,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::NaiveDate;
-use corner_table_word_games::{Crossword, GridSize, Mode, Rejection, WORD_GOAL, WordRound};
+use corner_table_word_games::{
+    Crossword, GridSize, Mode, Rejection, WORD_GOAL, WordRound, WordSearch,
+};
 use serde::{Deserialize, Serialize};
 
+use super::search_play::SearchPlay;
 use crate::{
     audio::Effect,
     games::GameEntry,
@@ -18,16 +21,18 @@ pub(super) enum Variant {
     Rack,
     Mini,
     Large,
+    Search,
 }
 
 impl Variant {
-    pub const LETTERS_AND_CROSSWORD: [Self; 3] = [Self::Grove, Self::Rack, Self::Mini];
+    pub const TABS: [Self; 4] = [Self::Grove, Self::Rack, Self::Mini, Self::Search];
 
     pub fn title(self) -> &'static str {
         match self {
             Self::Grove => "Letter Grove",
             Self::Rack => "Letter Rack",
             Self::Mini | Self::Large => "Mini Crossword",
+            Self::Search => "Word Search",
         }
     }
 
@@ -37,15 +42,17 @@ impl Variant {
             Self::Rack => "rack",
             Self::Mini => "mini",
             Self::Large => "large",
+            Self::Search => "search",
         }
     }
 
-    pub fn slot(self) -> usize {
+    fn slot(self) -> usize {
         match self {
             Self::Grove => 0,
             Self::Rack => 1,
             Self::Mini => 2,
             Self::Large => 3,
+            Self::Search => 4,
         }
     }
 
@@ -53,7 +60,7 @@ impl Variant {
         match self {
             Self::Mini => Some(GridSize::Mini),
             Self::Large => Some(GridSize::Large),
-            Self::Grove | Self::Rack => None,
+            Self::Grove | Self::Rack | Self::Search => None,
         }
     }
 
@@ -61,13 +68,17 @@ impl Variant {
         match self {
             Self::Grove => Mode::Grove,
             Self::Rack => Mode::Rack,
-            _ => unreachable!("crosswords use their own board"),
+            _ => unreachable!("grid puzzles use their own boards"),
         }
     }
 
     pub fn puzzle_count(self) -> usize {
-        self.grid()
-            .map_or_else(|| self.word_mode().puzzle_count(), GridSize::puzzle_count)
+        match self {
+            Self::Search => WordSearch::themes().len(),
+            _ => self
+                .grid()
+                .map_or_else(|| self.word_mode().puzzle_count(), GridSize::puzzle_count),
+        }
     }
 }
 
@@ -110,7 +121,7 @@ impl PuzzleKey {
         format!("word-games-v1-{}-{source}", self.variant.slug())
     }
 
-    fn seed(self) -> u64 {
+    pub(super) fn seed(self) -> u64 {
         match self.source {
             Source::Collection(index) => index as u64,
             Source::Daily(day) => day.wrapping_add(19 * (self.variant.slot() as u64 + 1)),
@@ -126,11 +137,17 @@ impl PuzzleKey {
             self.variant.title().to_owned()
         };
         let source = match self.source {
+            Source::Collection(index) if self.variant == Variant::Search => {
+                WordSearch::themes()[index].title.to_owned()
+            }
             Source::Collection(index) => format!("Puzzle {}", index + 1),
             Source::Daily(_) => self
                 .source
                 .daily_date()
                 .map_or_else(|| "Daily".to_owned(), |date| format!("Daily {date}")),
+            Source::Challenge(seed) if self.variant == Variant::Search => {
+                format!("Challenge {seed:016x}")
+            }
             Source::Challenge(_) => "Challenge".to_owned(),
         };
         format!("{title} · {source}")
@@ -156,6 +173,8 @@ pub(super) struct Navigation {
     pub variant: Variant,
     large: bool,
     cursors: [Cursor; 4],
+    #[serde(default)]
+    search: Cursor,
 }
 
 impl Navigation {
@@ -166,6 +185,7 @@ impl Navigation {
                 "rack" | "letter-rack" => nav.select(Variant::Rack),
                 "crossword" | "mini-crossword" => nav.select(Variant::Mini),
                 "large-crossword" => nav.select(Variant::Large),
+                "search" | "word-search" => nav.select(Variant::Search),
                 _ => {}
             },
             GameEntry::Challenge(_) => nav.edit().shelf = Shelf::Challenge,
@@ -190,13 +210,21 @@ impl Navigation {
     }
 
     pub fn cursor(&self) -> Cursor {
-        let mut cursor = self.cursors[self.variant.slot()];
+        let mut cursor = if self.variant == Variant::Search {
+            self.search
+        } else {
+            self.cursors[self.variant.slot()]
+        };
         cursor.index = cursor.index.min(self.variant.puzzle_count() - 1);
         cursor
     }
 
     pub fn edit(&mut self) -> &mut Cursor {
-        &mut self.cursors[self.variant.slot()]
+        if self.variant == Variant::Search {
+            &mut self.search
+        } else {
+            &mut self.cursors[self.variant.slot()]
+        }
     }
 
     pub fn select_shelf(&mut self, shelf: Shelf, today: u64) {
@@ -252,6 +280,13 @@ pub(super) enum Saved {
         attempt: AttemptId,
         #[serde(default)]
         moves: Option<u64>,
+    },
+    Search {
+        found: Vec<String>,
+        hint: Option<String>,
+        hints_used: u32,
+        moves: u64,
+        attempt: AttemptId,
     },
 }
 
@@ -502,11 +537,14 @@ impl CrosswordPlay {
 pub(super) enum Play {
     Words(WordPlay),
     Crossword(CrosswordPlay),
+    Search(SearchPlay),
 }
 
 impl Play {
     pub fn load(key: PuzzleKey, saved: Option<Saved>) -> Self {
-        if let Some(size) = key.variant.grid() {
+        if key.variant == Variant::Search {
+            Self::Search(SearchPlay::load(key, saved))
+        } else if let Some(size) = key.variant.grid() {
             let mut play = CrosswordPlay {
                 board: Crossword::with_size(size, key.seed()),
                 cursor: 0,
@@ -577,6 +615,7 @@ impl Play {
         match self {
             Self::Words(play) => play.round.finished(),
             Self::Crossword(play) => play.board.complete(),
+            Self::Search(play) => play.board.complete(),
         }
     }
 
@@ -590,6 +629,9 @@ impl Play {
                 Some((play.attempt, outcome, ResultMetric::Points(score.into())))
             }
             Self::Crossword(play) if play.board.complete() && !play.board.revealed() => {
+                Some((play.attempt, Outcome::Won, ResultMetric::Moves(play.moves)))
+            }
+            Self::Search(play) if play.board.complete() => {
                 Some((play.attempt, Outcome::Won, ResultMetric::Moves(play.moves)))
             }
             _ => None,
@@ -622,6 +664,7 @@ impl Play {
                 attempt: play.attempt,
                 moves: Some(play.moves),
             },
+            Self::Search(play) => play.save(),
         }
     }
 }
@@ -633,6 +676,81 @@ pub(super) fn plural<'a>(count: u32, singular: &'a str, plural: &'a str) -> &'a 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_navigation_keeps_the_four_cursors_and_adds_an_independent_search_cursor() {
+        let old = r#"{
+            "variant":"large", "large":true,
+            "cursors":[
+                {"index":7,"shelf":"collection"},
+                {"index":5,"shelf":"daily","day":300},
+                {"index":3,"shelf":"collection"},
+                {"index":2,"shelf":"collection"}
+            ]
+        }"#;
+        let mut nav: Navigation = serde_json::from_str(old).unwrap();
+        assert_eq!(nav.crossword(), Variant::Large);
+        assert_eq!(nav.resume(301, None).source, Source::Collection(2));
+        nav.select(Variant::Search);
+        assert_eq!(nav.resume(301, None).source, Source::Collection(0));
+        nav.edit().index = 9;
+        nav.select(Variant::Rack);
+        assert_eq!(nav.resume(301, None).source, Source::Daily(300));
+        nav.select(Variant::Grove);
+        assert_eq!(nav.resume(301, None).source, Source::Collection(7));
+        nav.select(Variant::Search);
+        let saved = serde_json::to_string(&nav).unwrap();
+        let mut restored: Navigation = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.resume(301, None).source, Source::Collection(9));
+        assert_eq!(
+            Navigation::initial(&GameEntry::Mode("word-search".into())).variant,
+            Variant::Search,
+        );
+    }
+
+    #[test]
+    fn search_resumes_words_and_hint_and_records_the_same_completed_attempt() {
+        let key = PuzzleKey {
+            variant: Variant::Search,
+            source: Source::Collection(0),
+        };
+        let Play::Search(mut play) = Play::load(key, None) else {
+            panic!("expected Word Search");
+        };
+        let attempt = play.attempt;
+        let line = play.board.line(1);
+        play.click(line.end);
+        assert!(matches!(play.click(line.start), Some(Effect::Clear)));
+        assert!(matches!(play.hint(), Some(Effect::Move)));
+        assert!(play.hint().is_none());
+        let saved = serde_json::to_string(&play.save()).unwrap();
+        let Play::Search(mut restored) = Play::load(key, serde_json::from_str(&saved).unwrap())
+        else {
+            panic!("expected Word Search");
+        };
+        assert!(restored.board.found(1));
+        assert_eq!(restored.board.line(1), line);
+        assert_eq!(restored.hint, Some(0));
+        assert_eq!(restored.hints_used, 1);
+        assert_eq!(restored.moves, 2);
+        let total = restored.board.theme().words.len();
+        for index in (0..total).filter(|&i| i != 1) {
+            let line = restored.board.line(index);
+            restored.click(line.start);
+            assert!(matches!(restored.click(line.end), Some(Effect::Clear)));
+        }
+        assert_eq!(restored.hint, None);
+
+        let play = Play::Search(restored);
+        let result = play.result().unwrap();
+        assert!(result.0 == attempt);
+        assert_eq!(result.1, Outcome::Won);
+        assert_eq!(result.2, ResultMetric::Moves(total as u64 + 1));
+        let reopened = Play::load(key, Some(play.save()));
+        assert!(reopened.is_finished());
+        assert!(reopened.result().unwrap().0 == attempt);
+        assert!(Play::load(key, None).result().is_none());
+    }
 
     #[test]
     fn switching_variants_and_daily_play_remembers_collection_choices() {

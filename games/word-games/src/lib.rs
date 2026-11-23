@@ -1,8 +1,12 @@
-//! Seeded, offline rules for Letter Grove, Letter Rack, and Mini Crossword.
+//! Seeded, offline rules for Letter Grove, Letter Rack, Mini Crossword, and Word Search.
 
 mod crossword;
+mod search;
+mod search_catalog;
 
 pub use crossword::{Clue, Crossword, CrosswordPuzzle, GridSize};
+pub use search::{SearchLine, SearchRejection, WordSearch};
+pub use search_catalog::SearchTheme;
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;

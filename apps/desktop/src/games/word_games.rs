@@ -1,8 +1,10 @@
+mod search;
+mod search_play;
 mod state;
 
 use std::collections::HashMap;
 
-use corner_table_word_games::{WORD_BONUS, WORD_GOAL};
+use corner_table_word_games::{WORD_BONUS, WORD_GOAL, WordSearch};
 use gpui::{
     Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, Role, SharedString, Stateful,
     Window, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgb,
@@ -64,6 +66,7 @@ enum Action {
     RevealCrossword,
     CancelReveal,
     ConfirmReveal,
+    SearchHint,
     Replay,
 }
 
@@ -78,11 +81,10 @@ impl GameView {
         if matches!(current.source, Source::Daily(_)) {
             navigation_session.save(&navigation);
         }
-        let saved = puzzle_session(launch, current).load();
         Self {
             navigation,
             current,
-            puzzles: HashMap::from([(current, Play::load(current, saved))]),
+            puzzles: HashMap::from([(current, load_puzzle(launch, current))]),
             launch: launch.clone(),
             navigation_session,
             challenge,
@@ -103,13 +105,13 @@ impl GameView {
     }
 
     fn switch(&mut self) {
+        if let Play::Search(play) = self.play_mut() {
+            play.cancel_selection();
+        }
         self.current = self.navigation.resume(utc_day(), self.challenge);
-        self.puzzles.entry(self.current).or_insert_with(|| {
-            Play::load(
-                self.current,
-                puzzle_session(&self.launch, self.current).load(),
-            )
-        });
+        self.puzzles
+            .entry(self.current)
+            .or_insert_with(|| load_puzzle(&self.launch, self.current));
         self.navigation_session.save(&self.navigation);
         self.picker = None;
     }
@@ -185,6 +187,8 @@ impl GameView {
                 let effect = match self.play_mut() {
                     Play::Words(play) => act_words(play, action),
                     Play::Crossword(play) => act_crossword(play, action),
+                    Play::Search(play) if matches!(action, Action::SearchHint) => play.hint(),
+                    Play::Search(_) => None,
                 };
                 self.save_action(was_finished, effect, cx);
             }
@@ -206,6 +210,10 @@ impl GameView {
         }
         let key = key.key.as_str();
         let held = event.is_held;
+        if self.current.variant == Variant::Search {
+            self.search_key_down(key, held, cx);
+            return;
+        }
         let was_finished = self.play().is_finished();
         let mut effect = None;
         let handled = match self.play_mut() {
@@ -278,7 +286,7 @@ impl GameView {
         let collection = matches!(self.current.source, Source::Collection(_));
         let daily = matches!(self.current.source, Source::Daily(_));
         let mut modes = div().flex().flex_wrap().gap_2();
-        for (index, option) in Variant::LETTERS_AND_CROSSWORD.into_iter().enumerate() {
+        for (index, option) in Variant::TABS.into_iter().enumerate() {
             let target = if option == Variant::Mini {
                 self.navigation.crossword()
             } else {
@@ -444,14 +452,25 @@ impl GameView {
                     .flex_wrap()
                     .gap_1()
                     .children((start..end).map(|index| {
+                        let label = if self.current.variant == Variant::Search {
+                            let theme = WordSearch::themes()[index];
+                            format!("{} · {} × {}", theme.title, theme.side, theme.side)
+                        } else {
+                            (index + 1).to_string()
+                        };
+                        let accessible = if self.current.variant == Variant::Search {
+                            format!("Open puzzle {}, {label}", index + 1)
+                        } else {
+                            format!("Open puzzle {}", index + 1)
+                        };
                         button(
                             ("word-pick-number", index),
-                            (index + 1).to_string(),
+                            label,
                             Button::selected(selected == index),
                             Action::Puzzle(index),
                             cx,
                         )
-                        .aria_label(format!("Open puzzle {}", index + 1))
+                        .aria_label(accessible)
                         .min_w(px(38.))
                     })),
             )
@@ -1128,6 +1147,7 @@ impl Render for GameView {
             .child(match self.play() {
                 Play::Words(play) => self.words(play, wide, cx),
                 Play::Crossword(play) => self.crossword(play, wide, cx),
+                Play::Search(play) => self.search(play, window, cx),
             })
     }
 }
@@ -1190,6 +1210,19 @@ fn puzzle_session(launch: &GameLaunch, key: PuzzleKey) -> Session {
         game: launch.game.clone(),
         entry: GameEntry::Mode(key.storage_id()),
     })
+}
+
+fn load_puzzle(launch: &GameLaunch, key: PuzzleKey) -> Play {
+    let session = puzzle_session(launch, key);
+    let play = Play::load(key, session.load());
+    // Recover a completion if the app closed between saving the solved grid
+    // and writing its result. Re-recording the same attempt is idempotent.
+    if key.variant == Variant::Search
+        && let Some((attempt, outcome, metric)) = play.result()
+    {
+        session.record_result(attempt, key.result_mode(), outcome, metric);
+    }
+    play
 }
 
 fn key_letter(key: &str, held: bool) -> Option<char> {
