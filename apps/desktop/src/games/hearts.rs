@@ -25,7 +25,6 @@ pub struct GameView {
     timer: Option<Task<()>>,
     revision: usize,
     arrival: Option<PlayedCard>,
-    show_help: bool,
     confirm_new: bool,
 }
 
@@ -40,7 +39,6 @@ impl GameView {
             timer: None,
             revision: 0,
             arrival: None,
-            show_help: false,
             confirm_new: false,
         }
     }

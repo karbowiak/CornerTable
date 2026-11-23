@@ -83,93 +83,44 @@ impl GameView {
                         )
                     }),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(
-                        themed_control(
-                            cx,
-                            "hearts-rules",
-                            if self.show_help {
-                                "Hide rules"
-                            } else {
-                                "How to play"
-                            },
-                            true,
-                        )
+            .child(div().flex().flex_wrap().gap_2().when(!finished, |row| {
+                let paused = self.session.pause_tricks();
+                row.child(
+                    themed_control(cx, "hearts-trick-pacing", "Pause after each trick", true)
+                        .aria_toggled(if paused {
+                            Toggled::True
+                        } else {
+                            Toggled::False
+                        })
+                        .when(paused, |button| {
+                            button
+                                .bg(rgb(palette.hover))
+                                .border_color(rgb(palette.success))
+                        })
                         .on_click(cx.listener(|view, _, _, cx| {
-                            view.show_help = !view.show_help;
+                            view.session.toggle_pause();
+                            view.timer = None;
                             cx.notify();
                         })),
-                    )
-                    .when(!finished, |row| {
-                        row.child(
-                            themed_control(cx, "hearts-new-match", "New match", !self.confirm_new)
-                                .when(!self.confirm_new, |button| {
-                                    button.on_click(cx.listener(|view, _, window, cx| {
-                                        view.confirm_new = true;
-                                        view.timer = None;
-                                        cx.on_next_frame(window, |view, window, cx| {
-                                            if view.confirm_new {
-                                                view.cancel_focus.focus(window, cx);
-                                            }
-                                        });
-                                        cx.notify();
-                                    }))
-                                }),
-                        )
-                    }),
-            )
-    }
-
-    pub(super) fn rules(&self, cx: &Context<Self>) -> Div {
-        let palette = theme::colors(cx);
-        let paused = self.session.pause_tricks();
-        theme::panel(cx)
-            .p_4()
-            .flex()
-            .flex_col()
-            .items_start()
-            .gap_2()
-            .text_size(px(13.))
-            .line_height(px(20.))
-            .children(
-                [
-                    ("Goal", "Keep your score low. When any player reaches 100, the lowest score wins. A tie for lowest goes to another hand."),
-                    ("Pass", "Choose three cards to pass left, right, then across. On the fourth hand, keep your cards. The cycle repeats."),
-                    ("Play", "The 2 of clubs opens each hand. Follow the led suit if you can. The highest card in that suit takes the trick and leads next."),
-                    ("Hearts", "On the first trick, discard a card worth no points if possible. You can lead hearts once a heart has been played, or if your hand contains only hearts."),
-                    ("Score", "Each heart is 1 point and the queen of spades is 13. Take all 26 to shoot the moon and give each opponent 26 points."),
-                    ("Keyboard", "Tab to the table. Use ← and → to choose a card and Space to select or play it. Return passes three selected cards or continues."),
-                ]
-                .into_iter()
-                .map(|(label, explanation)| {
-                    div()
-                        .child(div().font_weight(FontWeight::BOLD).child(label))
-                        .child(div().text_color(rgb(palette.muted)).child(explanation))
-                }),
-            )
-            .child(
-                themed_control(
-                    cx,
-                    "hearts-trick-pacing",
-                    if paused {
-                        "Resume automatic tricks"
-                    } else {
-                        "Pause after each trick"
-                    },
-                    true,
                 )
-                .aria_label("Pause after each trick")
-                .aria_toggled(if paused { Toggled::True } else { Toggled::False })
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.session.toggle_pause();
-                    view.timer = None;
-                    cx.notify();
-                })),
-            )
+                .child(
+                    themed_control(cx, "hearts-new-match", "New match", !self.confirm_new).when(
+                        !self.confirm_new,
+                        |button| {
+                            button.on_click(cx.listener(|view, _, window, cx| {
+                                view.confirm_new = true;
+                                view.timer = None;
+                                cx.on_next_frame(window, |view, window, cx| {
+                                    if view.confirm_new {
+                                        view.cancel_focus.focus(window, cx);
+                                    }
+                                });
+                                cx.notify();
+                            }))
+                        },
+                    ),
+                )
+            }))
     }
 
     pub(super) fn confirmation(&self, cx: &Context<Self>) -> Div {

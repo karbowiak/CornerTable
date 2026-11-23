@@ -312,11 +312,15 @@ impl Guide {
                     ),
                     (
                         "Follow suit",
-                        "Play a card in the suit led if you have one. The highest card of that suit takes the trick. You can lead with a heart once someone has discarded one, or when your hand only holds hearts. Use Left and Right to select a card, Space to mark passes, and Enter to pass or play.",
+                        "Play a card in the suit led if you have one. The highest card of that suit takes the trick and leads next. On the first trick, avoid point cards if possible. You can lead with a heart once someone has played one, or when your hand only holds hearts.",
                     ),
                     (
                         "Keep your score low",
-                        "Each captured heart adds one point, and the queen of spades adds thirteen. If one player takes every penalty card, each other player adds 26. The lowest score wins when someone reaches 100.",
+                        "Each captured heart adds one point, and the queen of spades adds thirteen. If one player takes every penalty card, each other player adds 26. The lowest score wins when someone reaches 100. A tie for lowest goes to another hand.",
+                    ),
+                    (
+                        "Controls and pacing",
+                        "Tab to the table and use Left and Right to choose a card. Space selects or plays it. Enter passes the three selected cards, plays the focused card, or continues. Turn on Pause after each trick to advance at your own pace.",
                     ),
                 ],
             },

@@ -44,7 +44,7 @@ impl Layout {
         let short = window.viewport_size().height < px(690.);
         let inset = if compact || short { 13. } else { 22. };
         let inner = width - 2. * inset - 4.;
-        let card_gap = if compact { 6. } else { 8. };
+        let card_gap = if compact { 5. } else { 8. };
         let hand_cols = if inner < 13. * 44. + 12. * card_gap {
             7
         } else {
@@ -142,7 +142,6 @@ impl GameView {
             .flex_col()
             .gap_3()
             .child(self.toolbar(cx))
-            .when(self.show_help, |root| root.child(self.rules(cx)))
             .when(self.confirm_new, |root| root.child(self.confirmation(cx)))
             .when_some(result, |root, result| root.child(self.hand_result(result, cx)))
             .child(
