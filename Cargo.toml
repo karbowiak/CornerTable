@@ -12,6 +12,7 @@ members = [
     "games/match-three",
     "games/mine-trails",
     "games/minesweeper",
+    "games/reversi",
     "games/solitaire",
     "games/sudoku",
     "games/word-games",

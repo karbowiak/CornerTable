@@ -371,6 +371,23 @@ impl Guide {
                     ),
                 ],
             },
+            "reversi" => Self {
+                title: "Reversi",
+                sections: &[
+                    (
+                        "Trap a line of discs",
+                        "Place a disc in an empty square so it brackets an unbroken line of your opponent’s discs between two of yours. Any line bracketed horizontally, vertically, or diagonally flips to your color.",
+                    ),
+                    (
+                        "Choose a square",
+                        "Click a legal square, or move the board cursor with the arrow keys and press Enter or Space. Play against the computer or share the board with another person.",
+                    ),
+                    (
+                        "Count the discs",
+                        "A player without a legal move passes automatically. When neither player can move, whoever has more discs wins. Use Undo to take back the previous turn.",
+                    ),
+                ],
+            },
             "solitaire" => return Some(Self::solitaire(launch)),
             "sudoku" => Self {
                 title: "Sudoku",

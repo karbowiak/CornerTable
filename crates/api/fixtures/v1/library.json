@@ -11,7 +11,8 @@
     {"id": "mine-trails", "title": "Mine Trails", "description": "Follow number clues through a network of underground rooms."},
     {"id": "block-puzzle", "title": "Block Puzzle", "description": "Fit shapes into the grid and make space for the next piece."},
     {"id": "gem-cascade", "title": "Gem Cascade", "description": "Drop gems into place and plan a chain reaction."},
-    {"id": "mahjong-cubes", "title": "Mahjong Cubes", "description": "Turn a stack of cubes to uncover matching pairs."}
+    {"id": "mahjong-cubes", "title": "Mahjong Cubes", "description": "Turn a stack of cubes to uncover matching pairs."},
+    {"id": "reversi", "title": "Reversi", "description": "Surround your opponent’s discs and turn the board in your favor."}
   ],
   "solitaire_modes": [
     {"id": "klondike", "title": "Klondike", "description": "Build four foundations, starting with the aces."},
