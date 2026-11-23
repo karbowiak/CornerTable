@@ -79,7 +79,12 @@ impl TableGeometry {
         outcome: Option<Outcome>,
         window: &Window,
     ) -> Self {
-        let chrome = if daily { 148. } else { 196. };
+        // Practice keeps the deal buttons below the table, including on results.
+        let chrome = match (daily, outcome) {
+            (true, _) => 148.,
+            (false, None) => 210.,
+            (false, Some(_)) => 237.,
+        };
         let height = f32::from(window.viewport_size().height) - chrome;
         // Make room for recovery while keeping the remaining tiles visible.
         let height = match outcome {
@@ -374,6 +379,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[gpui::test]
     fn click_hits_the_visible_tile_where_koi_layers_overlap(cx: &mut gpui::TestAppContext) {
+        use super::super::Feedback;
         use corner_table_api::GameId;
         use gpui::{Modifiers, VisualTestContext, point, size};
 
@@ -416,14 +422,16 @@ mod tests {
         window
             .read_with(cx, |view, _| {
                 assert_eq!(view.board.selected(), Some(top));
-                assert!(view.status.contains("selected"));
+                assert!(
+                    matches!(&view.status, Feedback::Play(status) if status.contains("selected"))
+                );
             })
             .unwrap();
         visual.simulate_click(exposed, Modifiers::none());
         window
             .read_with(cx, |view, _| {
                 assert_eq!(view.board.selected(), Some(top));
-                assert_eq!(view.status, "Clear the tiles above this one first.");
+                assert!(matches!(&view.status, Feedback::Play(status) if status == "Clear the tiles above this one first."));
             })
             .unwrap();
     }

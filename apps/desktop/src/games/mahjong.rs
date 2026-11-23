@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use corner_table_mahjong::{Board, DAILY_SEED, Layout, MoveResult, Tile, TileState};
 use gpui::{
-    Context, Div, FocusHandle, FontWeight, KeyDownEvent, Render, Role, Stateful, Toggled, Window,
-    div, prelude::*, px, rgb,
+    ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, Render, Role, Stateful,
+    Toggled, Window, div, prelude::*, px, rgb,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,9 @@ use art::face_name;
 use table::{TableColors, TableGeometry, TilePosition};
 
 const INSTRUCTION: &str = "Match two free tiles with the same face.";
+// V1 identifies the current 2D rules, layout definitions, and face generator.
+// Future generator changes must preserve V1 or use a new code version.
+const DEAL_CODE_PREFIX: &str = "mahjong:v1:";
 
 #[derive(Deserialize, Serialize)]
 struct SavedRound {
@@ -47,6 +50,11 @@ struct Departure {
     sequence: usize,
 }
 
+enum Feedback {
+    Play(String),
+    Share(&'static str),
+}
+
 pub struct GameView {
     board: Board,
     session: Session,
@@ -57,7 +65,7 @@ pub struct GameView {
     highlighted: Option<[usize; 2]>,
     departure: Option<Departure>,
     sequence: usize,
-    status: String,
+    status: Feedback,
     focus: FocusHandle,
     focus_board: bool,
     cursor: Option<usize>,
@@ -82,7 +90,7 @@ impl GameView {
             highlighted: None,
             departure: None,
             sequence: 0,
-            status: INSTRUCTION.into(),
+            status: Feedback::Play(INSTRUCTION.into()),
             focus: cx.focus_handle().tab_stop(true),
             focus_board: true,
             cursor: None,
@@ -118,7 +126,7 @@ impl GameView {
         self.seed = saved.seed;
         self.attempt = saved.attempt;
         self.clean_clear = saved.clean_clear;
-        self.status = "Deal resumed.".into();
+        self.status = Feedback::Play("Deal resumed.".into());
         true
     }
 
@@ -206,7 +214,7 @@ impl GameView {
                 ("Pair matched.".into(), Some(effect))
             }
         };
-        self.status = status;
+        self.status = Feedback::Play(status);
         if let Some(effect) = effect {
             audio::play(cx, effect);
         }
@@ -214,11 +222,35 @@ impl GameView {
     }
 
     fn new_deal(&mut self, layout: Layout) {
-        self.seed = new_seed();
-        self.board = Board::with_layout(layout, self.seed);
+        self.start_deal(layout, new_seed());
+    }
+
+    fn start_deal(&mut self, layout: Layout, seed: u64) {
+        self.seed = seed;
+        self.board = Board::with_layout(layout, seed);
         self.attempt = AttemptId::default();
         self.reset_feedback();
         self.save();
+    }
+
+    fn copy_deal(&mut self, cx: &mut Context<Self>) {
+        let code = encode_deal(self.board.layout(), self.seed);
+        cx.write_to_clipboard(ClipboardItem::new_string(code));
+        self.status = Feedback::Share("Deal code copied.");
+    }
+
+    fn play_copied_deal(&mut self, cx: &mut Context<Self>) {
+        let deal = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .and_then(|code| decode_deal(&code));
+        let Some((layout, seed)) = deal else {
+            self.status = Feedback::Share("No valid Mahjong deal code in the clipboard.");
+            return;
+        };
+        self.start_deal(layout, seed);
+        self.focus_board = true;
+        self.status = Feedback::Share("Deal started from clipboard.");
     }
 
     fn restart(&mut self) {
@@ -232,7 +264,7 @@ impl GameView {
         self.cursor = None;
         self.highlighted = None;
         self.departure = None;
-        self.status = INSTRUCTION.into();
+        self.status = Feedback::Play(INSTRUCTION.into());
     }
 
     fn hint(&mut self) {
@@ -244,7 +276,7 @@ impl GameView {
             } else {
                 first
             });
-            self.status = "Highlighted tiles form a free pair.".into();
+            self.status = Feedback::Play("Highlighted tiles form a free pair.".into());
             if !had_assistance {
                 self.save();
             }
@@ -255,7 +287,7 @@ impl GameView {
         if self.board.undo() {
             self.highlighted = None;
             self.departure = None;
-            self.status = "Last pair restored.".into();
+            self.status = Feedback::Play("Last pair restored.".into());
             self.save();
             audio::play(cx, Effect::CeramicPair);
         }
@@ -263,14 +295,14 @@ impl GameView {
 
     fn toggle_clean_clear(&mut self) {
         self.clean_clear = !self.clean_clear;
-        self.status = if !self.clean_clear {
+        let status = if !self.clean_clear {
             INSTRUCTION
         } else if self.board.used_assistance() {
             "Restart to begin a clean run."
         } else {
             "Clear the board without Hint or Undo."
-        }
-        .into();
+        };
+        self.status = Feedback::Play(status.into());
         self.save();
     }
 
@@ -322,7 +354,7 @@ impl GameView {
         if key == "escape" {
             self.board.clear_selection();
             self.highlighted = None;
-            self.status = INSTRUCTION.into();
+            self.status = Feedback::Play(INSTRUCTION.into());
         } else {
             let direction = match key {
                 "left" => Some((-1., 0.)),
@@ -543,36 +575,45 @@ impl GameView {
         round_result(cx, "mahjong-result", outcome, title, detail, actions)
     }
 
-    fn feedback(&self, cx: &Context<Self>) -> Div {
+    fn feedback(&self, outcome: Option<Outcome>, cx: &Context<Self>) -> Div {
         let palette = theme::colors(cx);
         let assistance = if self.board.used_assistance() {
             "Assisted run"
         } else {
             "Clean run"
         };
-        let status = &self.status;
+        let status = match &self.status {
+            Feedback::Play(status) if outcome.is_none() => Some(status.as_str()),
+            Feedback::Share(status) => Some(*status),
+            Feedback::Play(_) => None,
+        };
         div()
             .flex()
             .justify_between()
             .items_start()
+            .when(!self.daily(), |row| row.items_center())
             .gap_2()
             .text_size(px(13.))
             .line_height(px(19.))
             .text_color(rgb(palette.muted))
-            .child(
-                div()
-                    .id("mahjong-status")
-                    .role(Role::Status)
-                    .aria_label(status.clone())
-                    .when(self.clean_clear, |status| {
-                        status.aria_description(assistance)
-                    })
-                    .child(status.clone()),
-            )
-            .when(self.clean_clear, |row| {
+            .when_some(status, |row, status| {
+                row.child(
+                    div()
+                        .id("mahjong-status")
+                        .role(Role::Status)
+                        .aria_label(status.to_owned())
+                        .when(!self.daily(), |status| status.flex_1().min_w_0())
+                        .when(self.clean_clear, |status| {
+                            status.aria_description(assistance)
+                        })
+                        .child(status.to_owned()),
+                )
+            })
+            .when(self.clean_clear && outcome.is_none(), |row| {
                 row.child(
                     div()
                         .whitespace_nowrap()
+                        .flex_shrink_0()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(if self.board.used_assistance() {
                             palette.gold_text
@@ -582,7 +623,52 @@ impl GameView {
                         .child(assistance),
                 )
             })
+            .when(!self.daily(), |row| row.child(self.deal_controls(cx)))
     }
+
+    fn deal_controls(&self, cx: &Context<Self>) -> Div {
+        div()
+            .ml_auto()
+            .flex()
+            .flex_shrink_0()
+            .gap_1()
+            .child(
+                control(
+                    "mahjong-copy-deal",
+                    "Copy deal code",
+                    true,
+                    Self::copy_deal,
+                    cx,
+                )
+                .aria_description("Copy a code for the starting layout and tiles."),
+            )
+            .child(
+                control(
+                    "mahjong-play-copied",
+                    "Play from clipboard",
+                    true,
+                    Self::play_copied_deal,
+                    cx,
+                )
+                .aria_description("Start a fresh deal using a copied Mahjong deal code."),
+            )
+    }
+}
+
+fn encode_deal(layout: Layout, seed: u64) -> String {
+    format!("{DEAL_CODE_PREFIX}{}:{seed:016x}", layout.id())
+}
+
+fn decode_deal(code: &str) -> Option<(Layout, u64)> {
+    let (layout, seed) = code
+        .trim()
+        .strip_prefix(DEAL_CODE_PREFIX)?
+        .split_once(':')?;
+    let layout = Layout::from_id(layout)?;
+    if seed.len() != 16 || !seed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((layout, u64::from_str_radix(seed, 16).ok()?))
 }
 
 fn new_seed() -> u64 {
@@ -691,7 +777,9 @@ impl Render for GameView {
                         .child(self.result(outcome, cx)),
                 )
             })
-            .when(outcome.is_none(), |root| root.child(self.feedback(cx)))
+            .when(outcome.is_none() || !self.daily(), |root| {
+                root.child(self.feedback(outcome, cx))
+            })
             .when(!self.daily(), |root| root.child(self.layout_picker(cx)))
     }
 }
