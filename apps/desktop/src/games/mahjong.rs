@@ -1,183 +1,520 @@
-use corner_table_mahjong::{Board, DAILY_SEED, Face, Layout, MoveResult, Tile};
-use gpui::{
-    Context, Div, FontWeight, IntoElement, Render, Stateful, Window, div, prelude::*, px, rgb,
-};
+mod table;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{GameEntry, GameLaunch};
-use crate::theme;
+use corner_table_mahjong::{Board, DAILY_SEED, Layout, MoveResult, Tile};
+use gpui::{
+    BoxShadow, Context, Div, FocusHandle, FontWeight, KeyDownEvent, Render, Role, Stateful,
+    Toggled, Window, div, prelude::*, px, rgb,
+};
+use serde::{Deserialize, Serialize};
 
-const INSTRUCTION: &str = "Match identical tiles with no tile above and at least one open side.";
-const NO_MATCHES: &str = "No free matches remain. Undo a move or restart the deal.";
-const MAT_INSET: f32 = 15.;
-const TILE_RATIO: f32 = 1.15;
+use super::{GameEntry, GameLaunch, themed_control};
+use crate::{storage::Session, theme};
+use table::{TableColors, TilePosition, face_name};
+
+const INSTRUCTION: &str = "Match two free tiles with the same face.";
+const NO_MATCHES: &str = "No free pairs remain. Undo a move or restart.";
+const LAYOUTS: [(Layout, &str, &str); 4] = [
+    (Layout::Terrace, "terrace", "Terrace"),
+    (Layout::Atrium, "atrium", "Atrium"),
+    (Layout::Crown, "crown", "Crown"),
+    (Layout::Lantern, "lantern", "Lantern"),
+];
+
+#[derive(Deserialize, Serialize)]
+struct SavedRound {
+    layout: String,
+    seed: u64,
+    matches: Vec<[usize; 2]>,
+    assisted: bool,
+    clean_clear: bool,
+}
+
+struct Departure {
+    tiles: [Tile; 2],
+    sequence: usize,
+}
 
 pub struct GameView {
     board: Board,
-    daily: bool,
+    session: Option<Session>,
+    seed: u64,
     clean_clear: bool,
     highlighted: Option<[usize; 2]>,
-    status: &'static str,
+    departure: Option<Departure>,
+    sequence: usize,
+    status: String,
+    help_open: bool,
+    focus: FocusHandle,
+    focus_on_open: bool,
+    cursor: Option<usize>,
 }
 
 impl GameView {
-    pub fn new(launch: &GameLaunch, _cx: &mut Context<Self>) -> Self {
-        let seed = match &launch.entry {
-            GameEntry::Challenge(id) if id == "fixture-mahjong-001" => DAILY_SEED,
-            GameEntry::Challenge(id) => id.bytes().fold(DAILY_SEED, |seed, byte| {
-                seed.wrapping_mul(1099511628211) ^ u64::from(byte)
-            }),
-            _ => new_seed(),
+    pub fn new(launch: &GameLaunch, cx: &mut Context<Self>) -> Self {
+        let (seed, session) = match &launch.entry {
+            GameEntry::Challenge(id) => {
+                let seed = if id == "fixture-mahjong-001" {
+                    DAILY_SEED
+                } else {
+                    id.bytes().fold(DAILY_SEED, |seed, byte| {
+                        seed.wrapping_mul(1099511628211) ^ u64::from(byte)
+                    })
+                };
+                (seed, None)
+            }
+            _ => (new_seed(), Some(Session::new(launch))),
         };
-        Self {
+        let mut view = Self {
             board: Board::new(seed),
-            daily: matches!(&launch.entry, GameEntry::Challenge(_)),
+            session,
+            seed,
             clean_clear: false,
             highlighted: None,
-            status: INSTRUCTION,
+            departure: None,
+            sequence: 0,
+            status: INSTRUCTION.into(),
+            help_open: false,
+            focus: cx.focus_handle().tab_stop(true),
+            focus_on_open: true,
+            cursor: None,
+        };
+        if let Some(saved) = view.session.as_ref().and_then(Session::load::<SavedRound>) {
+            view.resume(saved);
+        }
+        view
+    }
+
+    fn resume(&mut self, saved: SavedRound) {
+        let Some(&(layout, _, _)) = LAYOUTS.iter().find(|(_, key, _)| *key == saved.layout) else {
+            return;
+        };
+        let Some(board) = Board::resume(layout, saved.seed, &saved.matches, saved.assisted) else {
+            return;
+        };
+        self.board = board;
+        self.seed = saved.seed;
+        self.clean_clear = saved.clean_clear;
+        self.status = self.idle_status("Deal resumed.").into();
+    }
+
+    fn save(&self) {
+        if let Some(session) = &self.session {
+            let (_, key, _) = LAYOUTS
+                .into_iter()
+                .find(|(layout, _, _)| *layout == self.board.layout())
+                .expect("every layout has a save key");
+            session.save(&SavedRound {
+                layout: key.into(),
+                seed: self.seed,
+                matches: self.board.matched_pairs().to_vec(),
+                assisted: self.board.used_assistance(),
+                clean_clear: self.clean_clear,
+            });
+        }
+    }
+
+    fn daily(&self) -> bool {
+        self.session.is_none()
+    }
+
+    fn cleared_title(&self) -> &'static str {
+        if self.clean_clear && !self.board.used_assistance() {
+            "Clean Clear complete!"
+        } else {
+            "Board cleared!"
+        }
+    }
+
+    fn idle_status(&self, otherwise: &'static str) -> &'static str {
+        if self.board.remaining() == 0 {
+            self.cleared_title()
+        } else if self.board.hint().is_none() {
+            NO_MATCHES
+        } else {
+            otherwise
         }
     }
 
     fn choose(&mut self, id: usize, cx: &mut Context<Self>) {
-        self.highlighted = None;
+        self.help_open = false;
+        let face = face_name(self.board.tile(id).expect("tile is from this deal").face);
+        if self.board.is_free(id) {
+            self.cursor = Some(id);
+            if self.highlighted.is_some_and(|pair| !pair.contains(&id)) {
+                self.highlighted = None;
+            }
+        }
         self.status = match self.board.select(id) {
-            MoveResult::Blocked => "That tile is covered or has tiles on both sides.",
-            MoveResult::Selected => "Choose another free tile with the same face.",
-            MoveResult::Deselected => INSTRUCTION,
-            MoveResult::DifferentFace => "Those tiles differ. Your last choice is selected.",
-            MoveResult::Matched if self.board.remaining() == 0 => "Board cleared!",
-            MoveResult::Matched if self.board.hint().is_none() => NO_MATCHES,
-            MoveResult::Matched => "Pair matched.",
+            MoveResult::Blocked => "A free tile needs an open side and a clear top.".into(),
+            MoveResult::Selected => format!("{face} selected. Choose its match."),
+            MoveResult::Deselected => self.idle_status(INSTRUCTION).into(),
+            MoveResult::DifferentFace => format!("Faces differ. {face} is selected."),
+            MoveResult::Matched => {
+                self.highlighted = None;
+                let pair = *self
+                    .board
+                    .matched_pairs()
+                    .last()
+                    .expect("just matched a pair");
+                self.sequence = self.sequence.wrapping_add(1);
+                self.departure = Some(Departure {
+                    tiles: pair.map(|id| *self.board.tile(id).expect("matched tile exists")),
+                    sequence: self.sequence,
+                });
+                self.cursor = self.nearest_tile(id, None);
+                self.save();
+                self.idle_status("Pair matched.").into()
+            }
         };
         cx.notify();
     }
 
     fn new_deal(&mut self, layout: Layout) {
-        self.board = Board::with_layout(layout, new_seed());
+        self.seed = new_seed();
+        self.board = Board::with_layout(layout, self.seed);
+        self.reset_feedback();
+        self.save();
+    }
+
+    fn restart(&mut self) {
+        self.board.restart();
+        self.reset_feedback();
+        self.save();
+    }
+
+    fn reset_feedback(&mut self) {
+        self.help_open = false;
+        self.cursor = None;
         self.highlighted = None;
-        self.status = INSTRUCTION;
+        self.departure = None;
+        self.status = INSTRUCTION.into();
+    }
+
+    fn hint(&mut self) {
+        self.help_open = false;
+        let had_assistance = self.board.used_assistance();
+        self.highlighted = self.board.reveal_hint();
+        if let Some([first, second]) = self.highlighted {
+            self.cursor = Some(if self.board.selected() == Some(first) {
+                second
+            } else {
+                first
+            });
+            self.status = "Highlighted tiles form a free pair.".into();
+            if !had_assistance {
+                self.save();
+            }
+        } else {
+            self.status = self.idle_status(INSTRUCTION).into();
+        }
+    }
+
+    fn undo(&mut self) {
+        if self.board.undo() {
+            self.help_open = false;
+            self.highlighted = None;
+            self.departure = None;
+            self.status = "Last pair restored.".into();
+            self.save();
+        }
+    }
+
+    fn toggle_clean_clear(&mut self) {
+        self.clean_clear = !self.clean_clear;
+        self.status = self
+            .idle_status(if !self.clean_clear {
+                INSTRUCTION
+            } else if self.board.used_assistance() {
+                "Restart to begin a clean run."
+            } else {
+                "Clear the board without Hint or Undo."
+            })
+            .into();
+        self.save();
+    }
+
+    fn focused_tile(&self) -> Option<usize> {
+        self.cursor
+            .filter(|&id| self.board.is_free(id))
+            .or_else(|| self.board.selected())
+            .or_else(|| {
+                self.board
+                    .tiles()
+                    .find(|(id, _)| self.board.is_free(*id))
+                    .map(|(id, _)| id)
+            })
+    }
+
+    fn nearest_tile(&self, from: usize, direction: Option<(f32, f32)>) -> Option<usize> {
+        let (x, y) = TilePosition::relative(self.board.tile(from)?);
+        self.board
+            .tiles()
+            .filter(|&(id, _)| id != from && self.board.is_free(id))
+            .filter_map(|(id, tile)| {
+                let (tx, ty) = TilePosition::relative(tile);
+                let (dx, dy) = (tx - x, ty - y);
+                let score = if let Some((vx, vy)) = direction {
+                    let ahead = dx * vx + dy * vy;
+                    if ahead <= 0.15 {
+                        return None;
+                    }
+                    let across = dx * vy - dy * vx;
+                    ahead.powi(2) + 4. * across.powi(2)
+                } else {
+                    dx.powi(2) + dy.powi(2)
+                };
+                Some((id, score))
+            })
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(id, _)| id)
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let stroke = &event.keystroke;
+        if stroke.modifiers.control || stroke.modifiers.platform || stroke.modifiers.alt {
+            return;
+        }
+        let key = stroke.key.as_str();
+        if key == "escape" && (self.help_open || self.focus.is_focused(window)) {
+            if self.help_open {
+                self.help_open = false;
+            } else {
+                self.board.clear_selection();
+                self.highlighted = None;
+                self.status = self.idle_status(INSTRUCTION).into();
+            }
+        } else if self.focus.is_focused(window) {
+            let direction = match key {
+                "left" => Some((-1., 0.)),
+                "right" => Some((1., 0.)),
+                "up" => Some((0., -1.)),
+                "down" => Some((0., 1.)),
+                _ => None,
+            };
+            if let Some(direction) = direction {
+                self.help_open = false;
+                if let Some(id) = self.focused_tile() {
+                    self.cursor = self.nearest_tile(id, Some(direction)).or(Some(id));
+                }
+            } else {
+                match key {
+                    "enter" | "space" if !event.is_held => {
+                        if let Some(id) = self.focused_tile() {
+                            self.choose(id, cx);
+                        }
+                    }
+                    "h" if !event.is_held && self.board.remaining() > 0 => self.hint(),
+                    "u" if !event.is_held => self.undo(),
+                    "f1" if !event.is_held => self.help_open = !self.help_open,
+                    _ => return,
+                }
+            }
+        } else {
+            return;
+        }
+        cx.stop_propagation();
+        cx.notify();
     }
 
     fn deal_options(&self, cx: &Context<Self>) -> Div {
-        let layout = self.board.layout();
+        let palette = theme::colors(cx);
         div()
             .flex()
             .flex_wrap()
             .justify_between()
-            .gap_3()
+            .items_center()
+            .gap_2()
             .child(
-                option_group("Layout", cx).children(
-                    [
-                        ("mahjong-terrace", "Terrace", Layout::Terrace),
-                        ("mahjong-atrium", "Atrium", Layout::Atrium),
-                        ("mahjong-crown", "Crown", Layout::Crown),
-                        ("mahjong-lantern", "Lantern", Layout::Lantern),
-                    ]
-                    .map(|(id, label, option)| {
-                        choice(
-                            id,
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .mr_2()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(palette.muted))
+                            .child("Layout"),
+                    )
+                    .children(LAYOUTS.map(|(layout, key, label)| {
+                        toggle(
+                            key,
                             label,
-                            layout == option,
+                            self.board.layout() == layout,
                             move |view| {
-                                if view.board.layout() != option {
-                                    view.new_deal(option);
+                                if view.board.layout() != layout {
+                                    view.new_deal(layout);
                                 }
                             },
                             cx,
                         )
-                    }),
-                ),
+                    })),
             )
             .child(
-                option_group("Objective", cx)
-                    .child(choice(
-                        "mahjong-classic",
-                        "Classic",
-                        !self.clean_clear,
-                        |view| view.clean_clear = false,
-                        cx,
-                    ))
-                    .child(choice(
-                        "mahjong-clean-clear",
-                        "Clean Clear",
-                        self.clean_clear,
-                        |view| view.clean_clear = true,
-                        cx,
-                    )),
+                toggle(
+                    "mahjong-clean-clear",
+                    "Clean Clear",
+                    self.clean_clear,
+                    Self::toggle_clean_clear,
+                    cx,
+                )
+                .aria_description("Clear all tiles without using Hint or Undo."),
             )
     }
 
-    fn tile(
-        &self,
-        id: usize,
-        tile: &Tile,
-        width: f32,
-        height: f32,
-        cx: &Context<Self>,
-    ) -> Stateful<Div> {
-        let free = self.board.is_free(id);
-        let selected = self.board.selected() == Some(id);
-        let hinted = self.highlighted.is_some_and(|pair| pair.contains(&id));
-        let emphasis = selected || hinted;
-        let background = if emphasis {
-            0xf5d78f
-        } else if free {
-            0xfff8e8
+    fn toolbar(&self, cx: &Context<Self>) -> Div {
+        let remaining = self.board.remaining();
+        let count = if self.daily() {
+            format!("Daily · {remaining} tiles left")
         } else {
-            0xe2dcc8
+            format!("{remaining} tiles left")
         };
-        let depth = f32::from(tile.level) * 2.8;
-        let (label, mark, color) = match tile.face {
-            Face::Dots(rank) => (rank.to_string(), "●", 0x254f83),
-            Face::Bamboo(rank) => (rank.to_string(), "Ⅲ", 0x286345),
-            Face::Characters(rank) => (rank.to_string(), "◆", 0x9a4439),
-            Face::Wind(direction) => (direction.to_string(), "✦", 0x335662),
-            Face::Flower => ("F".into(), "✿", 0x9a4439),
-            Face::Season => ("S".into(), "◈", 0x7c4e26),
-            Face::Dragon(color) => (
-                color.to_string(),
-                "♜",
-                match color {
-                    'R' => 0x9a4439,
-                    'G' => 0x286345,
-                    _ => 0x5e5368,
-                },
-            ),
-        };
-
         div()
-            .id(("mahjong-tile", id))
-            .absolute()
-            .left(px(f32::from(tile.x) * (width * 0.5) + MAT_INSET + depth))
-            .top(px(f32::from(tile.y) * (height * 0.5) + MAT_INSET - depth))
-            .w(px(width - 1.))
-            .h(px(height - 1.))
-            .border_1()
-            .border_b_4()
-            .border_color(rgb(if emphasis { 0xc68f37 } else { 0xa99b7e }))
-            .rounded_md()
-            .bg(rgb(background))
-            .text_color(rgb(color))
             .flex()
-            .flex_col()
+            .flex_wrap()
+            .justify_between()
             .items_center()
-            .justify_center()
-            .line_height(px(height * 0.36))
-            .when(free, |div| {
-                div.tab_index(0)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(0xffe9aa)))
-                    .focus(|style| style.border_color(rgb(0xb37e24)))
-            })
-            .on_click(cx.listener(move |view, _, _, cx| view.choose(id, cx)))
+            .gap_2()
             .child(
                 div()
-                    .text_size(px(height * 0.37))
-                    .font_weight(FontWeight::BOLD)
-                    .child(label),
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(count),
             )
-            .child(div().text_size(px(height * 0.28)).child(mark))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .child(
+                        control("mahjong-hint", "Hint", remaining > 0, Self::hint, cx)
+                            .aria_keyshortcuts("H"),
+                    )
+                    .child(
+                        control(
+                            "mahjong-undo",
+                            "Undo",
+                            self.board.can_undo(),
+                            Self::undo,
+                            cx,
+                        )
+                        .aria_keyshortcuts("U"),
+                    )
+                    .child(control(
+                        "mahjong-restart",
+                        "Restart",
+                        true,
+                        Self::restart,
+                        cx,
+                    ))
+                    .when(!self.daily(), |row| {
+                        row.child(control(
+                            "mahjong-new",
+                            "New deal",
+                            true,
+                            |view| view.new_deal(view.board.layout()),
+                            cx,
+                        ))
+                    })
+                    .child(
+                        control(
+                            "mahjong-help",
+                            "Help",
+                            true,
+                            |view| view.help_open = !view.help_open,
+                            cx,
+                        )
+                        .when(self.help_open, |button| {
+                            button.bg(rgb(theme::colors(cx).hover))
+                        })
+                        .aria_expanded(self.help_open)
+                        .aria_keyshortcuts("F1"),
+                    ),
+            )
+    }
+
+    fn help(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let rules = "Match identical faces. A bright tile is free when its top and at least one side are open.";
+        let keys = "On the table, arrows move and Enter or Space selects. H gives a hint, U undoes a pair, and Esc clears your selection.";
+        let objective = "For a Clean Clear, finish without Hint or Undo.";
+        let description = if self.daily() {
+            format!("{rules} {keys}")
+        } else {
+            format!("{rules} {keys} {objective}")
+        };
+        let palette = theme::colors(cx);
+        theme::panel(cx)
+            .id("mahjong-help-panel")
+            .role(Role::Group)
+            .aria_label("How to play Mahjong")
+            .aria_description(description)
+            .occlude()
+            .absolute()
+            .top(px(8.))
+            .right(px(8.))
+            .w(px(371.))
+            .max_w_full()
+            .px_3()
+            .py_3()
+            .shadow(vec![
+                BoxShadow::new(px(0.), px(5.), rgb(0x12271f).opacity(0.32).into())
+                    .blur_radius(px(14.)),
+            ])
+            .flex()
+            .flex_col()
+            .gap_2()
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("How to play"))
+            .child(rules)
+            .child(div().text_color(rgb(palette.muted)).child(keys))
+            .when(!self.daily(), |panel| panel.child(objective))
+    }
+
+    fn feedback(&self, cx: &Context<Self>) -> Div {
+        let palette = theme::colors(cx);
+        let assistance = if self.board.used_assistance() {
+            "Assisted run"
+        } else {
+            "Clean run"
+        };
+        let status = &self.status;
+        div()
+            .flex()
+            .justify_between()
+            .items_start()
+            .gap_2()
+            .text_size(px(13.))
+            .line_height(px(19.))
+            .text_color(rgb(palette.muted))
+            .child(
+                div()
+                    .id("mahjong-status")
+                    .role(Role::Status)
+                    .aria_label(status.clone())
+                    .when(self.clean_clear, |status| {
+                        status.aria_description(assistance)
+                    })
+                    .child(status.clone()),
+            )
+            .when(self.clean_clear, |row| {
+                row.child(
+                    div()
+                        .whitespace_nowrap()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(if self.board.used_assistance() {
+                            palette.gold_text
+                        } else {
+                            palette.success
+                        }))
+                        .child(assistance),
+                )
+            })
     }
 }
 
@@ -196,164 +533,62 @@ fn control(
     action: impl Fn(&mut GameView) + 'static,
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
-    super::themed_control(cx, id, label, enabled).when(enabled, |button| {
-        button.on_click(cx.listener(move |view, _, _, cx| {
-            action(view);
-            cx.notify();
-        }))
-    })
+    themed_control(cx, id, label, enabled)
+        .min_h(px(33.))
+        .px(px(10.))
+        .whitespace_nowrap()
+        .when(enabled, |button| {
+            button.on_click(cx.listener(move |view, _, _, cx| {
+                action(view);
+                cx.notify();
+            }))
+        })
 }
 
-fn choice(
+fn toggle(
     id: &'static str,
     label: &'static str,
     selected: bool,
     action: impl Fn(&mut GameView) + 'static,
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
-    control(id, label, true, action, cx).when(selected, |button| {
-        let palette = theme::colors(cx);
-        button
-            .bg(rgb(palette.hover))
-            .border_color(rgb(palette.muted))
-    })
-}
-
-fn option_group(label: &'static str, cx: &Context<GameView>) -> Div {
-    div().flex().flex_wrap().items_center().gap_2().child(
-        div()
-            .text_size(px(13.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(theme::colors(cx).muted))
-            .child(label),
-    )
+    let palette = theme::colors(cx);
+    control(id, label, true, action, cx)
+        .aria_toggled(if selected {
+            Toggled::True
+        } else {
+            Toggled::False
+        })
+        .when(selected, |button| {
+            button
+                .bg(rgb(palette.hover))
+                .border_color(rgb(palette.muted))
+        })
 }
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (extent_x, extent_y) = self.board.dimensions();
-        let (columns, rows) = (f32::from(extent_x) * 0.5, f32::from(extent_y) * 0.5);
-        let padding = MAT_INSET * 2.;
-        let fit_width = (super::board_space(window) - padding - 2.) / columns;
-        // Reserve space for the game page header, controls, and objective text.
-        let fit_height =
-            (f32::from(window.viewport_size().height) - 247. - padding) / (rows * TILE_RATIO);
-        let width = fit_width.min(fit_height.max(30.)).clamp(22., 49.).floor();
-        let height = width * TILE_RATIO;
-        let remaining = self.board.remaining();
-        let mut controls = div()
-            .flex()
-            .flex_wrap()
-            .gap_2()
-            .child(control(
-                "mahjong-hint",
-                "Hint",
-                remaining > 0,
-                |view| {
-                    view.highlighted = view.board.reveal_hint();
-                    view.status = if view.highlighted.is_some() {
-                        "The highlighted tiles form a free pair."
-                    } else {
-                        NO_MATCHES
-                    };
-                },
-                cx,
-            ))
-            .child(control(
-                "mahjong-undo",
-                "Undo",
-                self.board.can_undo(),
-                |view| {
-                    view.board.undo();
-                    view.highlighted = None;
-                    view.status = "Last pair restored.";
-                },
-                cx,
-            ))
-            .child(control(
-                "mahjong-restart",
-                "Restart",
-                true,
-                |view| {
-                    view.board.restart();
-                    view.highlighted = None;
-                    view.status = INSTRUCTION;
-                },
-                cx,
-            ));
-
-        if !self.daily {
-            controls = controls.child(control(
-                "mahjong-new",
-                "New deal",
-                true,
-                |view| view.new_deal(view.board.layout()),
-                cx,
-            ));
+        if self.focus_on_open {
+            self.focus_on_open = false;
+            self.focus.focus(window, cx);
         }
-
-        let objective = if self.board.used_assistance() {
-            "Assisted run. Restart to try for a Clean Clear."
-        } else {
-            "Clear every tile without using Hint or Undo."
-        };
-        let status = if self.clean_clear && remaining == 0 && !self.board.used_assistance() {
-            "Clean Clear complete!"
-        } else {
-            self.status
-        };
-
+        let palette = theme::colors(cx);
         div()
+            .id("mahjong-game")
+            .on_key_down(cx.listener(Self::key_down))
             .flex()
             .flex_col()
-            .gap_3()
-            .when(!self.daily, |root| root.child(self.deal_options(cx)))
+            .gap_2()
+            .when(!self.daily(), |root| root.child(self.deal_options(cx)))
+            .child(self.toolbar(cx))
             .child(
                 div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("{remaining} tiles left")),
-                    )
-                    .child(controls),
+                    .relative()
+                    .child(self.table(TableColors::from(palette), window, cx))
+                    .when(self.help_open, |table| table.child(self.help(cx))),
             )
-            .child(
-                div()
-                    .text_color(rgb(theme::colors(cx).muted))
-                    .child(status)
-                    .when(
-                        self.clean_clear && (remaining > 0 || self.board.used_assistance()),
-                        |group| {
-                            group.child(div().font_weight(FontWeight::SEMIBOLD).child(objective))
-                        },
-                    ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_center()
-                    .overflow_hidden()
-                    .rounded_xl()
-                    .bg(rgb(0x204b3d))
-                    .border_1()
-                    .border_color(rgb(0x285246))
-                    .child(
-                        div()
-                            .relative()
-                            .w(px(width * columns + padding))
-                            .h(px(height * rows + padding))
-                            .children(
-                                self.board
-                                    .tiles()
-                                    .map(|(id, tile)| self.tile(id, tile, width, height, cx)),
-                            ),
-                    ),
-            )
+            .when(self.board.remaining() > 0, |root| {
+                root.child(self.feedback(cx))
+            })
     }
 }

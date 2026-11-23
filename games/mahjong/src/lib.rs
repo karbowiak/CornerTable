@@ -129,6 +129,28 @@ impl Board {
         Self::deal(layout, seed).0
     }
 
+    /// Restore a seeded deal by replaying its surviving matches in order.
+    pub fn resume(
+        layout: Layout,
+        seed: u64,
+        matches: &[[usize; 2]],
+        assisted: bool,
+    ) -> Option<Self> {
+        let mut board = Self::with_layout(layout, seed);
+        if matches.len() > board.remaining() / 2 {
+            return None;
+        }
+        for &[first, second] in matches {
+            if board.select(first) != MoveResult::Selected
+                || board.select(second) != MoveResult::Matched
+            {
+                return None;
+            }
+        }
+        board.used_assistance = assisted;
+        Some(board)
+    }
+
     fn deal(layout: Layout, seed: u64) -> (Self, Vec<[usize; 2]>) {
         let tiles = layout.tiles();
         let pair_count = tiles.len() / 2;
@@ -242,6 +264,19 @@ impl Board {
 
     pub fn can_undo(&self) -> bool {
         !self.history.is_empty()
+    }
+
+    pub fn matched_pairs(&self) -> &[[usize; 2]] {
+        &self.history
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
+    }
+
+    /// Look up a tile by stable ID, including after it has been matched.
+    pub fn tile(&self, id: usize) -> Option<&Tile> {
+        self.tiles.get(id)
     }
 
     pub fn is_free(&self, id: usize) -> bool {
@@ -449,5 +484,30 @@ mod tests {
         assert!(!board.used_assistance());
         assert!(board.reveal_hint().is_some());
         assert!(board.used_assistance());
+    }
+
+    #[test]
+    fn resumed_matches_preserve_order_undo_and_assistance() {
+        let layout = Layout::Lantern;
+        let (mut board, solution) = Board::deal(layout, DAILY_SEED);
+        for &[first, second] in &solution[..3] {
+            board.select(first);
+            assert_eq!(board.select(second), MoveResult::Matched);
+        }
+        assert!(board.undo());
+        let mut restored = Board::resume(
+            layout,
+            DAILY_SEED,
+            board.matched_pairs(),
+            board.used_assistance(),
+        )
+        .unwrap();
+        assert_eq!(restored.matched_pairs(), &solution[..2]);
+        assert_eq!(restored.hint(), board.hint());
+        assert!(restored.used_assistance());
+        assert!(restored.undo());
+        assert_eq!(restored.matched_pairs(), &solution[..1]);
+        assert!(Board::resume(layout, DAILY_SEED, &[solution[0]; 2], false).is_none());
+        assert!(Board::resume(layout, DAILY_SEED, &[[usize::MAX, 0]], false).is_none());
     }
 }
