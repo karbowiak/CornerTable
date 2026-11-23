@@ -15,11 +15,52 @@ use super::{GameLaunch, board_space, themed_control};
 
 const CELL_GAP: f32 = 3.;
 const BOARD_EDGE: f32 = 12.;
-const PANEL_MAX: f32 = 760.;
+const PANEL_EDGE: f32 = 17.;
 const WALNUT: u32 = 0x4e3125;
 const PREVIEW_FITS: u32 = 0xffdb86;
 const PREVIEW_BLOCKED: u32 = 0xffa39a;
 const CLEAR_DURATION: f32 = 0.5;
+
+struct PlayLayout {
+    cell: f32,
+    board: f32,
+    controls: f32,
+    gap: f32,
+    stacked: bool,
+}
+
+impl PlayLayout {
+    fn fit(width: f32, viewport_height: f32) -> Self {
+        let gap = if width < 560. { 14. } else { 22. };
+        let gutters = 2. * BOARD_EDGE + (SIDE - 1) as f32 * CELL_GAP;
+        let rail = (width * 0.42).clamp(200., 268.);
+        let beside = width - rail - gap;
+        let stacked = beside < 26. * SIDE as f32 + gutters;
+        let board_room = if stacked { width } else { beside };
+        // Leave room for the page title and spacing as the window grows vertically.
+        let height = (viewport_height * 0.74).min(viewport_height - 112.);
+        let cell = ((board_room.min(height) - gutters) / SIDE as f32)
+            .floor()
+            .max(20.);
+        let board = cell * SIDE as f32 + gutters;
+        Self {
+            cell,
+            board,
+            controls: if stacked { board } else { rail },
+            gap,
+            stacked,
+        }
+    }
+
+    fn panel_width(&self) -> f32 {
+        let content = if self.stacked {
+            self.board
+        } else {
+            self.board + self.gap + self.controls
+        };
+        content + 2. * PANEL_EDGE
+    }
+}
 
 #[derive(Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -683,8 +724,9 @@ impl GameView {
             }))
     }
 
-    fn tray(&self, cell: f32, cx: &Context<Self>) -> Div {
-        let tray_cell = (cell * 0.39).clamp(11., 17.);
+    fn tray(&self, cell: f32, width: f32, cx: &Context<Self>) -> Div {
+        let card_width = (width - 16.) / TRAY_SIZE as f32;
+        let tray_cell = (cell * 0.39).clamp(11., 19.).min((card_width - 11.) / 4.);
         div().flex().gap_2().children(
             self.round()
                 .game
@@ -924,7 +966,7 @@ impl GameView {
                                     .child("Drag or click a piece"),
                             ),
                     )
-                    .child(self.tray(cell, cx)),
+                    .child(self.tray(cell, width, cx)),
             )
             .child(self.status(status, palette, compact))
             .child(
@@ -1006,7 +1048,8 @@ impl GameView {
                 Feedback::Invalid => ("The piece needs more space.".to_owned(), palette.danger),
                 Feedback::Undone => ("Placement undone.".to_owned(), palette.ink),
             };
-            panel = panel.aria_label(format!("{label}. {status}")).child(
+            let announcement = format!("{}. {status}", label.trim_end_matches('.'));
+            panel = panel.aria_label(announcement).child(
                 div()
                     .relative()
                     .rounded_sm()
@@ -1052,36 +1095,22 @@ impl Render for GameView {
                 self.clear = None;
             }
         }
-        let available = board_space(window).min(PANEL_MAX - 34.);
-        let gap = if available < 560. { 14. } else { 22. };
-        let side_by_side = available >= 440.;
-        let controls_width = (available * 0.42).clamp(200., 268.);
-        let board_width = if side_by_side {
-            available - controls_width - gap
-        } else {
-            available
-        };
-        let gutters = 2. * BOARD_EDGE + (SIDE - 1) as f32 * CELL_GAP;
-        let cell = ((board_width - gutters) / SIDE as f32)
-            .floor()
-            .clamp(20., 48.);
-        let controls_width = if side_by_side {
-            controls_width
-        } else {
-            cell * SIDE as f32 + gutters
-        };
+        let layout = PlayLayout::fit(board_space(window), window.viewport_size().height.into());
         t::panel(cx)
             .id("block-puzzle-game")
             .on_key_down(cx.listener(Self::key_down))
             .w_full()
-            .max_w(px(PANEL_MAX))
-            .p_4()
+            .max_w(px(layout.panel_width()))
+            .p(px(PANEL_EDGE - 1.))
             .flex()
-            .when(!side_by_side, |panel| panel.flex_col())
-            .gap(px(gap))
+            .when(layout.stacked, |panel| panel.flex_col())
+            .gap(px(layout.gap))
             .items_start()
-            .child(self.board(cell, window, cx))
-            .child(self.controls(controls_width, cell, cx))
+            .when(!layout.stacked && layout.board >= 520., |panel| {
+                panel.items_center()
+            })
+            .child(self.board(layout.cell, window, cx))
+            .child(self.controls(layout.controls, layout.cell, cx))
     }
 }
 
@@ -1196,6 +1225,27 @@ fn piece_shape(piece: Piece, cell: f32, gap: f32) -> Div {
 mod tests {
     use super::*;
     use gpui::{point, size};
+
+    #[test]
+    fn play_layout_fits_the_board_and_tray_in_supported_windows() {
+        let roomy = PlayLayout::fit(1056., 900.);
+        assert!((600. ..=670.).contains(&roomy.board));
+        assert!(!roomy.stacked);
+        assert!(roomy.panel_width() <= 1092.);
+
+        let short = PlayLayout::fit(1056., 540.);
+        assert!(short.board + 112. <= 540.);
+
+        let compact = PlayLayout::fit(506., 540.);
+        assert!(!compact.stacked);
+        assert!(compact.cell >= 28.);
+        assert!(compact.controls < 230.);
+        assert!(compact.panel_width() <= 542.);
+
+        let stacked = PlayLayout::fit(420., 540.);
+        assert!(stacked.stacked);
+        assert_eq!(stacked.controls, stacked.board);
+    }
 
     #[test]
     fn original_replay_restores_score_tray_and_undo() {
