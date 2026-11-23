@@ -10,14 +10,15 @@ use std::{
 
 use corner_table_minesweeper::{Board, Clue, Difficulty, Hint, HintReason, Status, Tile};
 use gpui::{
-    App, Context, Div, FocusHandle, FontFeatures, FontWeight, KeyDownEvent, MouseButton, Render,
-    Role, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
+    AnyElement, Context, Div, FocusHandle, FontFeatures, FontWeight, KeyDownEvent, MouseButton,
+    Render, Role, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
 };
 
 use crate::{
     audio::{self, Effect},
     daily,
-    games::{GameEntry, GameLaunch, themed_control},
+    games::{GameEntry, GameLaunch, round_result, themed_control},
+    motion,
     storage::{Outcome, ResultMetric, Session},
     theme as t,
 };
@@ -330,7 +331,7 @@ impl GameView {
                 };
                 self.clock = Clock::Finished(elapsed);
                 self.clock_task = None;
-                if status == Status::Lost && impact_motion_enabled(cx) {
+                if status == Status::Lost && motion::enabled(cx) {
                     self.impact = Some(Instant::now());
                 }
                 if self.challenge_seed.is_none() {
@@ -559,11 +560,7 @@ impl GameView {
         let palette = t::colors(cx);
         let difficulty = self.round.board.difficulty();
         let mode = self.round.mode;
-        let reset_label = if self.challenge_seed.is_some() {
-            "Restart"
-        } else {
-            "New field"
-        };
+        let ended = matches!(self.round.board.status(), Status::Won | Status::Lost);
         let actions = div()
             .flex()
             .flex_wrap()
@@ -585,21 +582,6 @@ impl GameView {
             } else {
                 themed_control(cx, "minesweeper-flag-mode", "Flag mode", false)
             })
-            .when(
-                matches!(self.round.board.status(), Status::Won | Status::Lost),
-                |actions| {
-                    actions.child(
-                        themed_control(cx, "minesweeper-replay", "Replay field", true)
-                            .aria_description("Play the same mines and opening again as practice.")
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                if let Some(round) = view.round.replay() {
-                                    view.replace_round(round, cx);
-                                    view.focus.focus(window, cx);
-                                }
-                            })),
-                    )
-                },
-            )
             .when(self.round.board.status() == Status::Playing, |actions| {
                 actions.child(
                     themed_control(cx, "minesweeper-hint", "Hint", true)
@@ -607,14 +589,7 @@ impl GameView {
                         .on_click(cx.listener(|view, _, window, cx| view.show_hint(window, cx))),
                 )
             })
-            .child(
-                themed_control(cx, "minesweeper-reset", reset_label, true).on_click(cx.listener(
-                    |view, _, window, cx| {
-                        view.reset(view.round.board.difficulty(), view.round.mode, cx);
-                        view.focus.focus(window, cx);
-                    },
-                )),
-            );
+            .child(self.reset_control(cx));
 
         div()
             .flex()
@@ -661,15 +636,25 @@ impl GameView {
                             })),
                     )
             })
-            .child(actions)
+            .children((!ended).then_some(actions))
     }
 
-    fn status(
-        &self,
-        elapsed: Duration,
-        limit: Option<Duration>,
-        palette: t::Palette,
-    ) -> Stateful<Div> {
+    fn reset_control(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let reset_label = if self.challenge_seed.is_some() {
+            "Restart"
+        } else {
+            "New field"
+        };
+        themed_control(cx, "minesweeper-reset", reset_label, true).on_click(cx.listener(
+            |view, _, window, cx| {
+                view.reset(view.round.board.difficulty(), view.round.mode, cx);
+                view.focus.focus(window, cx);
+            },
+        ))
+    }
+
+    fn status(&self, elapsed: Duration, limit: Option<Duration>, cx: &Context<Self>) -> AnyElement {
+        let palette = t::colors(cx);
         let difficulty = self.round.board.difficulty();
         let (width, height) = difficulty.dimensions();
         let field = format!("{} · {width} × {height}", difficulty.label());
@@ -759,6 +744,29 @@ impl GameView {
             ),
         };
         let (title, detail, ink) = self.hint.feedback(palette).unwrap_or((title, detail, ink));
+        let outcome = match self.round.board.status() {
+            Status::Won => Some(Outcome::Won),
+            Status::Lost => Some(Outcome::Lost),
+            _ => None,
+        };
+        if let Some(outcome) = outcome {
+            let actions = div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .child(self.reset_control(cx))
+                .child(
+                    themed_control(cx, "minesweeper-replay", "Replay field", true)
+                        .aria_description("Play the same mines and opening again as practice.")
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            if let Some(round) = view.round.replay() {
+                                view.replace_round(round, cx);
+                                view.focus.focus(window, cx);
+                            }
+                        })),
+                );
+            return round_result(cx, "minesweeper-result", outcome, title, detail, actions);
+        }
 
         div()
             .id("minesweeper-status")
@@ -781,6 +789,7 @@ impl GameView {
                     .text_color(rgb(palette.muted))
                     .child(detail),
             )
+            .into_any_element()
     }
 
     fn field(
@@ -959,7 +968,7 @@ impl Render for GameView {
         let impact = self
             .impact
             .map(|started| started.elapsed())
-            .filter(|&elapsed| elapsed < IMPACT_DURATION && impact_motion_enabled(cx))
+            .filter(|&elapsed| elapsed < IMPACT_DURATION && motion::enabled(cx))
             .map(|elapsed| elapsed.as_secs_f32() / IMPACT_DURATION.as_secs_f32());
         if impact.is_some() {
             window.request_animation_frame();
@@ -974,7 +983,7 @@ impl Render for GameView {
             .items_start()
             .gap_3()
             .child(self.toolbar(cx))
-            .child(self.status(elapsed, limit, palette))
+            .child(self.status(elapsed, limit, cx))
             .child(self.field(window, elapsed, limit, art, impact, cx))
             .when(matches!(self.round.board.status(), Status::Ready | Status::Playing), |game| {
                 game.child(
@@ -1082,27 +1091,6 @@ fn tile_label(tile: Tile) -> SharedString {
         Tile::Detonated => "Detonated mine".into(),
         Tile::Misflagged => "Misplaced flag".into(),
     }
-}
-
-#[cfg(target_os = "macos")]
-fn impact_motion_enabled(cx: &App) -> bool {
-    use objc2::{
-        MainThreadMarker, class, msg_send,
-        runtime::{AnyObject, Bool},
-    };
-
-    if cx.reduce_motion() || MainThreadMarker::new().is_none() {
-        return false;
-    }
-    // GPUI's app preference is independent of the macOS accessibility setting.
-    let workspace: &AnyObject = unsafe { msg_send![class!(NSWorkspace), sharedWorkspace] };
-    let reduced: Bool = unsafe { msg_send![workspace, accessibilityDisplayShouldReduceMotion] };
-    !reduced.as_bool()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn impact_motion_enabled(_: &App) -> bool {
-    false
 }
 
 fn format_time(seconds: u64) -> String {

@@ -4,6 +4,7 @@ pub mod audio;
 mod daily;
 mod games;
 mod library_search;
+mod motion;
 mod pages;
 mod storage;
 mod theme;

@@ -19,6 +19,7 @@ mod mine_trails;
 mod minesweeper;
 mod picture_logic;
 mod reversi;
+mod round_result;
 mod solitaire;
 mod sudoku;
 mod word_games;
@@ -37,6 +38,7 @@ use crate::{
 };
 
 pub use host::GameHost;
+pub use round_result::round_result;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case", tag = "kind", content = "id")]
