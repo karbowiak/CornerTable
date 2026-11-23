@@ -83,6 +83,18 @@ pub(super) fn available(game: &Game, place: Place) -> Option<Card> {
         .then_some(card)
 }
 
+fn adjacent(first: Card, second: Card) -> bool {
+    matches!(first.rank.abs_diff(second.rank), 1 | 12)
+}
+
+pub(super) fn has_clear(game: &Game) -> bool {
+    game.waste.last().is_some_and(|&top| {
+        (0..game.layout.len())
+            .filter_map(|index| available(game, Place::Layout(index)))
+            .any(|card| adjacent(card, top))
+    })
+}
+
 pub(super) fn play(game: &mut Game, action: Move) -> bool {
     match action {
         Move::Draw => game.draw_waste(1, false),
@@ -90,7 +102,7 @@ pub(super) fn play(game: &mut Game, action: Move) -> bool {
             let (Some(card), Some(top)) = (available(game, place), game.waste.last()) else {
                 return false;
             };
-            if !matches!(card.rank.abs_diff(top.rank), 1 | 12) {
+            if !adjacent(card, *top) {
                 return false;
             }
             game.layout[index] = None;

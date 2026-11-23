@@ -18,6 +18,21 @@ pub(super) fn available(game: &Game, place: Place) -> Option<Card> {
     (row == 6 || (game.layout[child].is_none() && game.layout[child + 1].is_none())).then_some(card)
 }
 
+pub(super) fn has_clear(game: &Game) -> bool {
+    let mut ranks = [false; 14];
+    std::iter::once(Place::Waste)
+        .chain((0..game.layout.len()).map(Place::Layout))
+        .filter_map(|place| available(game, place))
+        .any(|card| {
+            let rank = usize::from(card.rank);
+            if rank == 13 || ranks[13 - rank] {
+                return true;
+            }
+            ranks[rank] = true;
+            false
+        })
+}
+
 pub(super) fn play(game: &mut Game, action: Move) -> bool {
     match action {
         Move::Draw => game.draw_waste(1, false),

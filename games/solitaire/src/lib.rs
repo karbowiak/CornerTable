@@ -199,6 +199,18 @@ impl Game {
         }
     }
 
+    /// The stock is exhausted and neither a clear nor a pair is possible.
+    /// Only Pyramid and TriPeaks have these layout rules.
+    pub fn layout_stalled(&self) -> bool {
+        self.stock.is_empty()
+            && !self.won()
+            && match self.variant {
+                Variant::Pyramid => !pyramid::has_clear(self),
+                Variant::TriPeaks => !tripeaks::has_clear(self),
+                _ => false,
+            }
+    }
+
     pub fn foundation_count(&self) -> usize {
         self.foundations.iter().map(Vec::len).sum()
     }
@@ -510,5 +522,46 @@ mod tests {
             assert!(game.play(Move::Clear(Place::Layout(index))));
         }
         assert_eq!(game.waste.last(), Some(&spade(11)));
+    }
+
+    #[test]
+    fn pyramid_stalls_only_without_a_draw_king_or_available_pair() {
+        let mut game = Game::new(Variant::Pyramid, 18);
+        game.layout.fill(None);
+        game.layout[21] = Some(spade(6));
+        assert!(!game.layout_stalled());
+
+        game.stock.clear();
+        assert!(game.layout_stalled());
+
+        game.layout[22] = Some(heart(7));
+        assert!(!game.layout_stalled());
+        game.layout[22] = None;
+        game.waste.push(heart(7));
+        assert!(!game.layout_stalled());
+
+        game.waste.clear();
+        game.layout[15] = Some(spade(13));
+        assert!(game.layout_stalled());
+        game.layout[21] = None;
+        assert!(!game.layout_stalled());
+    }
+
+    #[test]
+    fn tripeaks_stalls_only_without_a_draw_or_available_adjacent_rank() {
+        let mut game = Game::new(Variant::TriPeaks, 18);
+        game.layout.fill(None);
+        game.layout[0] = Some(heart(13));
+        game.layout[3] = Some(spade(4));
+        game.waste = vec![spade(1)];
+        assert!(!game.layout_stalled());
+
+        game.stock.clear();
+        assert!(game.layout_stalled());
+        game.layout[3] = None;
+        assert!(!game.layout_stalled());
+        assert!(game.play(Move::Clear(Place::Layout(0))));
+        assert!(game.won());
+        assert!(!game.layout_stalled());
     }
 }
