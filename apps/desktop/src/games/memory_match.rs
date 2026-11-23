@@ -2,7 +2,7 @@ mod art;
 mod persistence;
 mod table;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use corner_table_memory_match::{Board, Card, Face, Flip, Layout, Turn};
 use gpui::{Context, FocusHandle, KeyDownEvent, Task, Window};
@@ -17,6 +17,7 @@ use art::CardArt;
 use persistence::{Round, Saved};
 
 const REVEAL_TIME: Duration = Duration::from_millis(1_600);
+const FLIP_TIME: Duration = Duration::from_millis(138);
 
 #[derive(Clone, Copy)]
 enum Notice {
@@ -35,7 +36,7 @@ pub struct GameView {
     focus: [FocusHandle; Layout::MAX_CARDS],
     cursor: usize,
     revision: usize,
-    last_flip: Option<usize>,
+    last_flip: Option<(usize, Instant)>,
     confirm_new_deal: bool,
     notice: Option<Notice>,
 }
@@ -155,7 +156,7 @@ impl GameView {
             _ => None,
         };
         self.cursor = index;
-        self.last_flip = Some(index);
+        self.last_flip = Some((index, Instant::now()));
         self.revision = self.revision.wrapping_add(1);
         self.confirm_new_deal = false;
         self.schedule_conceal(cx);
@@ -270,5 +271,69 @@ fn resume_cursor(board: &Board) -> usize {
         Turn::Ready => (0..board.layout().card_count())
             .find(|&index| board.card(index) == Some(Card::Hidden))
             .unwrap_or(0),
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use corner_table_api::GameId;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, px, size};
+
+    use super::*;
+
+    #[gpui::test]
+    fn perfect_challenge_still_replays_with_reduce_motion(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId(format!("memory-match-result-{}", std::process::id())),
+            entry: GameEntry::Challenge("memory-match-replay".to_owned()),
+        };
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let window = cx.open_window(size(px(760.), px(540.)), |_, cx| GameView::new(&launch, cx));
+        let initial = window
+            .update(cx, |view, window, cx| {
+                let initial = view.board().checkpoint();
+                let mut positions = vec![Vec::new(); Face::ALL.len()];
+                for index in 0..view.layout.card_count() {
+                    let mut probe = Board::restore(initial).unwrap();
+                    let Flip::First(face) = probe.flip(index).unwrap() else {
+                        unreachable!()
+                    };
+                    positions[Face::ALL.iter().position(|&item| item == face).unwrap()].push(index);
+                }
+                let mut pairs = positions
+                    .into_iter()
+                    .filter(|pair| !pair.is_empty())
+                    .peekable();
+                while let Some(pair) = pairs.next() {
+                    view.flip(pair[0], cx);
+                    if pairs.peek().is_none() {
+                        view.focus[pair[1]].focus(window, cx);
+                    } else {
+                        view.flip(pair[1], cx);
+                    }
+                }
+                initial
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut ui = VisualTestContext::from_window(window.into(), cx);
+        ui.simulate_keystrokes("space");
+        ui.run_until_parked();
+        window
+            .read_with(&ui, |view, _| {
+                assert!(view.board().is_complete());
+                assert_eq!(view.board().pairs(), 8);
+                assert_eq!(view.board().attempts(), 8);
+            })
+            .unwrap();
+        let replay = ui.debug_bounds("memory-match-new").unwrap().center();
+        ui.simulate_mouse_move(replay, None, Modifiers::default());
+        ui.simulate_click(replay, Modifiers::default());
+        window
+            .read_with(&ui, |view, _| {
+                assert_eq!(view.board().checkpoint(), initial);
+                assert_eq!(view.round().best, Some(8));
+            })
+            .unwrap();
     }
 }

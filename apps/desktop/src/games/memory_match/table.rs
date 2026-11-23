@@ -1,14 +1,16 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use corner_table_memory_match::{Card, Layout, Turn};
 use gpui::{
-    Animation, AnimationExt, App, BoxShadow, Context, Div, FontWeight, ObjectFit, Render,
+    Animation, AnimationExt, AnyElement, BoxShadow, Context, Div, FontWeight, ObjectFit, Render,
     RenderImage, Role, Stateful, StyledImage as _, Window, div, img, prelude::*, px, rgb, rgba,
 };
 
-use super::{GameView, Notice, art};
+use super::{FLIP_TIME, GameEntry, GameView, Notice, art};
 use crate::{
-    games::{board_space, styled_control, themed_control},
+    games::{board_space, round_result, styled_control, themed_control},
+    motion,
+    storage::Outcome,
     theme,
 };
 
@@ -41,6 +43,7 @@ impl Render for GameView {
             (height - reserved_height - gap * (rows - 1) as f32) / (rows as f32 * CARD_ASPECT);
         let size = width_limit.min(height_limit.clamp(56., 112.)).floor();
         let palette = theme::colors(cx);
+        let complete = self.board().is_complete();
 
         div()
             .id("memory-match")
@@ -56,6 +59,7 @@ impl Render for GameView {
                 }
             }))
             .child(self.toolbar(cx))
+            .when(complete, |page| page.child(self.completion(cx)))
             .child(
                 div()
                     .w_full()
@@ -68,7 +72,7 @@ impl Render for GameView {
                     .shadow(vec![
                         BoxShadow::new(px(0.), px(4.), rgba(0x0c232936).into()).blur_radius(px(14.)),
                     ])
-                    .child(self.counter(compact))
+                    .when(!complete, |table| table.child(self.counter(compact)))
                     .child(
                         div()
                             .bg(rgb(FIELD))
@@ -79,9 +83,9 @@ impl Render for GameView {
                             .justify_center()
                             .child(self.grid(size, gap, window, cx)),
                     )
-                    .child(self.status_bar(compact, cx)),
+                    .when(!complete, |table| table.child(self.status_bar(compact, cx))),
             )
-            .child(
+            .when(!complete, |page| page.child(
                 div()
                     .text_size(px(12.))
                     .line_height(px(17.))
@@ -91,7 +95,7 @@ impl Render for GameView {
                     } else {
                         "Tab to the board · Arrow keys move · Enter or Space turns a card"
                     }),
-            )
+            ))
     }
 }
 
@@ -155,50 +159,78 @@ impl GameView {
                                     }))
                             })),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                themed_control(
-                                    cx,
-                                    "memory-match-new",
-                                    if self.confirm_new_deal {
-                                        "Deal new cards"
-                                    } else {
-                                        "New deal"
-                                    },
-                                    true,
-                                )
-                                .min_h(px(34.))
-                                .on_click(cx.listener(
-                                    |view, _, window, cx| {
-                                        view.request_new_deal(window, cx);
-                                    },
-                                )),
-                            )
-                            .children(self.confirm_new_deal.then(|| {
+                    .when(!self.board().is_complete(), |line| {
+                        line.child(div().flex().gap_2().child(self.deal_button(cx)).children(
+                            self.confirm_new_deal.then(|| {
                                 themed_control(cx, "memory-match-cancel", "Cancel", true)
                                     .min_h(px(34.))
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         view.cancel_new_deal(window, cx);
                                     }))
-                            })),
-                    ),
+                            }),
+                        ))
+                    }),
             )
             .children(self.confirm_new_deal.then(|| {
+                let message = if matches!(self.launch.entry, GameEntry::Challenge(_)) {
+                    "Restart this deal and discard the current progress?"
+                } else {
+                    "Deal new cards and discard this board’s progress?"
+                };
                 div()
                     .id("memory-match-confirm")
                     .role(Role::Status)
-                    .aria_label("Deal new cards and discard this board’s progress?")
+                    .aria_label(message)
                     .a11y_synthetic_children(|builder| {
                         builder.parent_node().set_live(accesskit::Live::Polite);
                     })
                     .text_size(px(13.))
                     .line_height(px(19.))
                     .text_color(rgb(palette.ink))
-                    .child("Deal new cards and discard this board’s progress?")
+                    .child(message)
             }))
+    }
+
+    fn deal_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let label = if matches!(self.launch.entry, GameEntry::Challenge(_)) {
+            if self.confirm_new_deal {
+                "Restart this deal"
+            } else {
+                "Replay deal"
+            }
+        } else if self.confirm_new_deal {
+            "Deal new cards"
+        } else {
+            "New deal"
+        };
+        themed_control(cx, "memory-match-new", label, true)
+            .debug_selector(|| "memory-match-new".into())
+            .min_h(px(34.))
+            .on_click(cx.listener(|view, _, window, cx| view.request_new_deal(window, cx)))
+    }
+
+    fn completion(&self, cx: &Context<Self>) -> AnyElement {
+        let attempts = self.board().attempts();
+        let pairs = self.board().pairs();
+        let title = if attempts == pairs as u64 {
+            "Perfect deal"
+        } else if self.round().best == Some(attempts) {
+            "Personal best"
+        } else {
+            "All pairs found"
+        };
+        let mut detail = format!("{pairs} pairs in {}", attempt_label(attempts));
+        if let Some(best) = self.round().best.filter(|&best| best < attempts) {
+            detail.push_str(&format!(" · Personal best {}", attempt_label(best)));
+        }
+        round_result(
+            cx,
+            "memory-match-result",
+            Outcome::Won,
+            title,
+            detail,
+            div().flex().child(self.deal_button(cx)),
+        )
     }
 
     fn cancel_new_deal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -254,7 +286,10 @@ impl GameView {
         let height = (size * CARD_ASPECT).floor();
         let focused = self.focused_card(window);
         let tab = focused.unwrap_or(self.cursor);
-        let turning = self.last_flip.filter(|_| animation_enabled(cx));
+        let turning = self
+            .last_flip
+            .filter(|(_, start)| start.elapsed() < FLIP_TIME && motion::enabled(cx))
+            .map(|(index, _)| index);
 
         div()
             .id("memory-match-board")
@@ -363,7 +398,7 @@ impl GameView {
                 let front = front.clone();
                 cell.child(div().with_animation(
                     ("memory-match-flip", self.revision),
-                    Animation::new(Duration::from_millis(138)),
+                    Animation::new(FLIP_TIME),
                     move |slot, fraction| {
                         let (front, spread) = if fraction < 0.44 {
                             (None, 1. - fraction / 0.44)
@@ -406,11 +441,7 @@ impl GameView {
                     .text_size(px(13.))
                     .line_height(px(19.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(if self.board().is_complete() {
-                        GOLD
-                    } else {
-                        CREAM
-                    }))
+                    .text_color(rgb(CREAM))
                     .child(message),
             )
             .child(
@@ -439,21 +470,6 @@ impl GameView {
 
     fn status(&self) -> String {
         let board = self.board();
-        if board.is_complete() {
-            let qualifier = if board.attempts() == board.pairs() as u64 {
-                "Perfect deal"
-            } else if Some(board.attempts()) == self.round().best {
-                "Personal best"
-            } else {
-                "All pairs found"
-            };
-            return format!(
-                "{qualifier} · {} pairs in {} attempts",
-                board.pairs(),
-                board.attempts()
-            );
-        }
-
         let name_at = |index| match board.card(index) {
             Some(Card::Revealed(face)) => art::name(face),
             _ => unreachable!("open turn positions are revealed"),
@@ -475,28 +491,6 @@ impl GameView {
 fn attempt_label(attempts: u64) -> String {
     let unit = if attempts == 1 { "attempt" } else { "attempts" };
     format!("{attempts} {unit}")
-}
-
-#[cfg(target_os = "macos")]
-fn animation_enabled(cx: &App) -> bool {
-    use objc2::{
-        class, msg_send,
-        runtime::{AnyObject, Bool},
-    };
-
-    if cx.reduce_motion() {
-        return false;
-    }
-    // The view runs on the AppKit thread. NSWorkspace owns its shared instance.
-    let workspace: &AnyObject = unsafe { msg_send![class!(NSWorkspace), sharedWorkspace] };
-    let reduce_motion: Bool =
-        unsafe { msg_send![workspace, accessibilityDisplayShouldReduceMotion] };
-    !reduce_motion.as_bool()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn animation_enabled(_: &App) -> bool {
-    false
 }
 
 fn column_letter(column: usize) -> char {

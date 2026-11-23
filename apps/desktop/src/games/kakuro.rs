@@ -2,7 +2,9 @@ mod board;
 mod controls;
 mod persistence;
 
-use corner_table_kakuro::{Cell, Edit, Game, Hint, Size};
+use std::time::{Duration, Instant};
+
+use corner_table_kakuro::{Cell, Direction, Edit, Game, Hint, Size};
 use gpui::{Context, FocusHandle, KeyDownEvent, Window, div, prelude::*, px, rgb};
 
 use super::{GameEntry, GameLaunch, board_space};
@@ -13,6 +15,14 @@ use crate::{
 };
 use persistence::SavedSession;
 
+const RUN_PULSE: Duration = Duration::from_millis(320);
+
+#[derive(Clone, Copy)]
+struct RunPulse {
+    runs: [Option<usize>; 2],
+    started: Instant,
+}
+
 struct Round {
     number: usize,
     game: Game,
@@ -21,6 +31,8 @@ struct Round {
     hint: Option<Hint>,
     moves: u64,
     attempt: AttemptId,
+    used_hint: Option<bool>,
+    pulse: Option<RunPulse>,
 }
 
 impl Round {
@@ -35,6 +47,8 @@ impl Round {
             hint: None,
             moves: 0,
             attempt: AttemptId::default(),
+            used_hint: Some(false),
+            pulse: None,
         }
     }
 
@@ -86,8 +100,26 @@ impl Round {
             return None;
         }
         self.hint = None;
+        self.pulse = None;
         if self.game.value(self.selected) != previous {
             self.moves = self.moves.saturating_add(1);
+            let puzzle = self.game.puzzle();
+            let runs = [Direction::Across, Direction::Down].map(|direction| {
+                puzzle.run_at(self.selected, direction).filter(|&index| {
+                    puzzle
+                        .run(index)
+                        .cells
+                        .iter()
+                        .all(|&cell| self.game.value(cell) != 0)
+                        && self.game.run_conflict(index).is_none()
+                })
+            });
+            if runs.iter().any(Option::is_some) {
+                self.pulse = Some(RunPulse {
+                    runs,
+                    started: Instant::now(),
+                });
+            }
         }
         Some(if self.game.is_solved() {
             Effect::Complete
@@ -100,6 +132,7 @@ impl Round {
         if let Some(hint) = self.game.hint(self.selected) {
             self.selected = hint.cell;
             self.hint = Some(hint);
+            self.used_hint = Some(true);
         }
     }
 
@@ -111,6 +144,7 @@ impl Round {
         let cell = self.game.undo()?;
         self.selected = cell;
         self.hint = None;
+        self.pulse = None;
         Some(Effect::Move)
     }
 }
@@ -170,6 +204,10 @@ impl GameView {
         {
             self.round = self.progress.open(size, number);
         }
+    }
+
+    fn replay(&mut self) {
+        self.round = Round::new(self.round.game.puzzle().size(), self.round.number);
     }
 
     fn record_completed(&self) {
@@ -276,6 +314,19 @@ impl Render for GameView {
         let board_width = cell * side + board::GRID * (side - 1.) + board::FRAME * 2.;
         let panel = if beside { panel } else { board_width };
         let field_width = board_width + margin + if beside { panel } else { 0. };
+        let solved = self.round.game.is_solved();
+        let board = self.board(cell, cx);
+        let controls = self.controls(panel, !beside, cx);
+        let layout = div()
+            .flex()
+            .items_start()
+            .gap(px(if beside { margin } else { 12. }))
+            .when(!beside, |layout| layout.flex_col());
+        let layout = if solved && !beside {
+            layout.child(controls).child(board)
+        } else {
+            layout.child(board).child(controls)
+        };
 
         div()
             .id("kakuro-game")
@@ -287,22 +338,71 @@ impl Render for GameView {
             .items_start()
             .gap_3()
             .child(self.toolbar(if beside { field_width } else { content }, cx))
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(if beside { margin } else { 12. }))
-                    .when(!beside, |layout| layout.flex_col())
-                    .child(self.board(cell, cx))
-                    .child(self.controls(panel, !beside, cx)),
-            )
-            .child(
+            .child(layout)
+            .when(!solved, |page| page.child(
                 div()
                     .w(px(field_width))
                     .text_size(px(12.))
                     .line_height(px(17.))
                     .text_color(rgb(palette.muted))
                     .child("Arrows move · Space finds the next blank · 1–9 enter · N toggles pencil · H opens a hint"),
-            )
+            ))
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use corner_table_api::GameId;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, size};
+
+    use super::*;
+
+    #[gpui::test]
+    fn completed_challenge_replays_the_same_board_as_a_fresh_attempt(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId(format!("kakuro-result-{}", std::process::id())),
+            entry: GameEntry::Challenge("kakuro-replay".to_owned()),
+        };
+        let window = cx.open_window(size(px(760.), px(540.)), |_, cx| {
+            let mut view = GameView::new(&launch, cx);
+            while view.round.game.empty_count() > 1 {
+                let hint = view.round.game.hint(view.round.selected).unwrap();
+                view.round.select(hint.cell);
+                view.round.edit(hint.digit, false);
+            }
+            view
+        });
+        cx.run_until_parked();
+        let mut ui = VisualTestContext::from_window(window.into(), cx);
+        ui.simulate_keystrokes("h enter");
+        ui.run_until_parked();
+        let (number, attempt) = window
+            .read_with(&ui, |view, _| {
+                let round = &view.round;
+                assert!(round.game.is_solved());
+                let pulse = round.pulse.unwrap();
+                assert!(pulse.runs.iter().all(Option::is_some));
+                assert_eq!(round.used_hint, Some(true));
+                assert_eq!(round.moves as usize, round.game.puzzle().entries().len());
+                (round.number, round.attempt)
+            })
+            .unwrap();
+
+        assert!(ui.debug_bounds("kakuro-result-next").is_none());
+        let replay = ui.debug_bounds("kakuro-replay").unwrap().center();
+        ui.simulate_mouse_move(replay, None, Modifiers::default());
+        ui.simulate_click(replay, Modifiers::default());
+        window
+            .read_with(&ui, |view, _| {
+                let round = &view.round;
+                assert_eq!(round.number, number);
+                assert!(round.attempt != attempt);
+                assert_eq!(
+                    round.game.empty_count(),
+                    round.game.puzzle().entries().len()
+                );
+                assert!(!round.game.can_undo());
+            })
+            .unwrap();
     }
 }

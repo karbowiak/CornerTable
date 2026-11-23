@@ -2,7 +2,7 @@ use corner_table_kakuro::{Direction, Hint, HintKind, RunConflict, Size};
 use gpui::{Context, Div, FontWeight, Role, SharedString, Stateful, div, prelude::*, px, rgb};
 
 use super::GameView;
-use crate::{audio::Effect, theme};
+use crate::{audio::Effect, games::round_result, storage::Outcome, theme};
 
 impl GameView {
     pub(super) fn toolbar(&self, width: f32, cx: &Context<Self>) -> Div {
@@ -74,12 +74,12 @@ impl GameView {
     pub(super) fn controls(&self, width: f32, stacked: bool, cx: &Context<Self>) -> Div {
         let round = &self.round;
         let game = &round.game;
-        let solved = game.is_solved();
+        if game.is_solved() {
+            return self.completion(width, cx);
+        }
         let palette = theme::colors(cx);
         let empty = game.empty_count();
-        let status = if solved {
-            "Puzzle solved".to_string()
-        } else if empty == 1 {
+        let status = if empty == 1 {
             "1 square left".to_string()
         } else {
             format!("{empty} squares left")
@@ -89,12 +89,7 @@ impl GameView {
             .justify_between()
             .items_center()
             .gap_2()
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(if solved { palette.success } else { palette.ink }))
-                    .child(status),
-            )
+            .child(div().font_weight(FontWeight::BOLD).child(status))
             .when(game.has_conflicts(), |line| {
                 line.child(
                     div()
@@ -116,18 +111,18 @@ impl GameView {
             .flex()
             .flex_col()
             .gap_3();
-        if stacked && !solved {
+        if stacked {
             panel = panel
                 .child(keypad)
                 .child(actions)
                 .child(status_line)
                 .child(clues);
         } else {
-            panel = panel.child(status_line);
-            if !solved {
-                panel = panel.child(clues).child(keypad);
-            }
-            panel = panel.child(actions);
+            panel = panel
+                .child(status_line)
+                .child(clues)
+                .child(keypad)
+                .child(actions);
         }
         panel
             .when_some(round.hint, |panel, hint| panel.child(self.hint_card(hint, cx)))
@@ -141,6 +136,60 @@ impl GameView {
                     .text_color(rgb(palette.muted))
                     .child("Digits 1–9 must add to each run’s clue without repeats. Read upper-right clues across and lower-left clues down."),
             )
+    }
+
+    fn completion(&self, width: f32, cx: &Context<Self>) -> Div {
+        let round = &self.round;
+        let puzzle = round.game.puzzle();
+        let title = match round.used_hint {
+            Some(true) => "Solved with hints",
+            Some(false) => "Clean solve",
+            None => "Puzzle solved",
+        };
+        let moves = round.moves;
+        let detail = format!(
+            "{moves} {} · {} squares filled",
+            if moves == 1 { "move" } else { "moves" },
+            puzzle.entries().len(),
+        );
+        let has_next = !self.fixed_puzzle && round.number + 1 < puzzle.size().puzzle_count();
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .when(has_next, |row| {
+                row.child(control(
+                    "kakuro-result-next",
+                    "Next puzzle",
+                    true,
+                    true,
+                    cx,
+                    |view| {
+                        view.open_neighbor(1);
+                        None
+                    },
+                ))
+            })
+            .child(control(
+                "kakuro-replay",
+                "Replay puzzle",
+                true,
+                !has_next,
+                cx,
+                |view| {
+                    view.replay();
+                    None
+                },
+            ))
+            .child(self.undo_button(cx));
+        div().w(px(width)).flex_shrink_0().child(round_result(
+            cx,
+            "kakuro-result",
+            Outcome::Won,
+            title,
+            detail,
+            actions,
+        ))
     }
 
     fn clue_summary(&self, direction: Direction, palette: theme::Palette) -> Div {
@@ -279,14 +328,7 @@ impl GameView {
             view.round.edit(0, false)
         })
         .aria_keyshortcuts("Backspace");
-        let undo = control(
-            "kakuro-undo",
-            "Undo",
-            round.game.can_undo(),
-            false,
-            cx,
-            |view| view.round.undo(),
-        );
+        let undo = self.undo_button(cx);
         let hint = control(
             "kakuro-hint",
             "Hint",
@@ -314,6 +356,17 @@ impl GameView {
                 .gap(px(5.))
                 .children([pencil, erase, undo, hint])
         }
+    }
+
+    fn undo_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+        control(
+            "kakuro-undo",
+            "Undo",
+            self.round.game.can_undo(),
+            false,
+            cx,
+            |view| view.round.undo(),
+        )
     }
 
     fn hint_card(&self, hint: Hint, cx: &Context<Self>) -> Div {
@@ -386,6 +439,7 @@ fn control(
 ) -> Stateful<Div> {
     let palette = theme::colors(cx);
     super::super::themed_control(cx, id, label, enabled)
+        .debug_selector(move || id.into())
         .justify_center()
         .min_h(px(33.))
         .px_2()

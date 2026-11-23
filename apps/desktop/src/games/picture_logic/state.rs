@@ -41,8 +41,8 @@ pub(super) struct Play {
     pub solved: bool,
     undo: Vec<String>,
     attempt: AttemptId,
-    moves: u64,
-    used_hint: bool,
+    pub(super) moves: u64,
+    pub(super) used_hint: bool,
 }
 
 impl Notebook {

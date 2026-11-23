@@ -104,3 +104,53 @@ fn killer_plays_at_minimum_size_and_restores_each_board(cx: &mut TestAppContext)
         })
         .unwrap();
 }
+
+#[gpui::test]
+fn solved_killer_exposes_assistance_and_next_at_minimum_size(cx: &mut TestAppContext) {
+    let launch = GameLaunch {
+        game: GameId(format!("sudoku-killer-result-{}", std::process::id())),
+        entry: GameEntry::Classic,
+    };
+    let viewport = size(px(760.), px(540.));
+    let window = cx.open_window(viewport, |window, cx| {
+        t::apply(t::Appearance::Dark, window, cx);
+        cx.set_reduce_motion(true);
+        let mut view = GameView::new(&launch, cx);
+        view.open(Puzzle::Killer(KillerPuzzle::FirstLight));
+        let round = view.round_mut();
+        while round.game.filled() < SIZE * SIZE - 1 {
+            let hint = round.game.hint(round.selected).unwrap();
+            round.selected = hint.index;
+            round.edit(hint.entry(), false);
+        }
+        view
+    });
+    cx.run_until_parked();
+    let mut ui = VisualTestContext::from_window(window.into(), cx);
+    ui.simulate_keystrokes("h enter");
+    ui.run_until_parked();
+    window
+        .read_with(&ui, |view, _| {
+            assert!(view.round().game.is_solved());
+            assert_eq!(view.round().moves, 81);
+            assert_eq!(view.round().hints_used, 1);
+        })
+        .unwrap();
+    let next = ui.debug_bounds("sudoku-result-next-killer").unwrap();
+    assert!(next.bottom() < viewport.height);
+    click(&mut ui, "sudoku-result-next-killer");
+    window
+        .read_with(&ui, |view, _| {
+            assert_eq!(view.puzzle, Puzzle::Killer(KillerPuzzle::Crossings));
+            assert_eq!(view.round().game.filled(), 0);
+        })
+        .unwrap();
+    click(&mut ui, "sudoku-killer-previous");
+    window
+        .read_with(&ui, |view, _| assert!(view.round().game.is_solved()))
+        .unwrap();
+    click(&mut ui, "sudoku-undo");
+    window
+        .read_with(&ui, |view, _| assert_eq!(view.round().game.filled(), 80))
+        .unwrap();
+}

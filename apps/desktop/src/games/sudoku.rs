@@ -2,19 +2,19 @@ mod killer;
 mod persistence;
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::NaiveDate;
 use corner_table_sudoku::{Difficulty, Format, Game, Hint, HintReason, KillerPuzzle, Unit};
 use gpui::{
-    Context, Div, FocusHandle, FontWeight, KeyDownEvent, SharedString, Stateful, Window, div,
-    prelude::*, px, relative, rgb,
+    Animation, AnimationExt, AnyElement, Context, Div, FocusHandle, FontWeight, KeyDownEvent,
+    SharedString, Stateful, Window, div, ease_in_out, prelude::*, px, relative, rgb, rgba,
 };
 
-use super::{GameEntry, GameLaunch, board_space};
+use super::{GameEntry, GameLaunch, board_space, round_result};
 use crate::{
     audio::{self, Effect},
-    daily,
+    daily, motion,
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme as t,
 };
@@ -30,6 +30,7 @@ const GROUP_GAP: f32 = 2.;
 const BOARD_EDGE: f32 = 2.;
 const SECTION_GAP: f32 = 18.;
 const PANEL_WIDTH: f32 = 284.;
+const ENTRY_PULSE: Duration = Duration::from_millis(230);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Puzzle {
@@ -98,6 +99,7 @@ struct Round {
     best: Option<u32>,
     attempt: AttemptId,
     moves: u64,
+    last_entry: Option<(usize, Instant)>,
 }
 
 impl Round {
@@ -118,6 +120,7 @@ impl Round {
             best: None,
             attempt: AttemptId::default(),
             moves: 0,
+            last_entry: None,
         }
     }
 
@@ -127,10 +130,17 @@ impl Round {
             return None;
         }
         self.clear_hint();
+        self.last_entry = None;
         if value == self.game.value(self.selected) {
             return None;
         }
         self.moves = self.moves.saturating_add(1);
+        if digit != 0
+            && !self.game.has_conflict(self.selected)
+            && self.game.cage_issue(self.selected).is_none()
+        {
+            self.last_entry = Some((self.selected, Instant::now()));
+        }
         self.update_best();
         Some(if self.game.is_solved() {
             Effect::Complete
@@ -151,6 +161,7 @@ impl Round {
         if !self.game.undo() {
             return None;
         }
+        self.last_entry = None;
         self.clear_hint();
         values_changed.then_some(Effect::Move)
     }
@@ -266,7 +277,8 @@ impl GameView {
         }
         self.rounds
             .entry(puzzle)
-            .or_insert_with(|| Round::load(puzzle, &puzzle.session(&self.launch)));
+            .or_insert_with(|| Round::load(puzzle, &puzzle.session(&self.launch)))
+            .last_entry = None;
         self.puzzle = puzzle;
         self.modes.select(puzzle);
         self.session.save(&self.modes);
@@ -396,7 +408,14 @@ impl GameView {
             })
     }
 
-    fn cell(&self, index: usize, size: f32, solved: bool, cx: &Context<Self>) -> Stateful<Div> {
+    fn cell(
+        &self,
+        index: usize,
+        size: f32,
+        solved: bool,
+        pulsing: bool,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
         let round = self.round();
         let game = &round.game;
         let format = game.format();
@@ -500,6 +519,19 @@ impl GameView {
                         cx.notify();
                     }))
             })
+            .when(pulsing, |cell| {
+                cell.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x63ad8266))
+                        .with_animation(
+                            ("sudoku-entry-pulse", round.moves as usize),
+                            Animation::new(ENTRY_PULSE).with_easing(ease_in_out),
+                            |ink, progress| ink.opacity(1. - progress),
+                        ),
+                )
+            })
             .when_some(cage, |cell, cage| {
                 cage.render(cell, size, game.notes(index), value, selected, conflict)
             })
@@ -534,11 +566,16 @@ impl GameView {
     }
 
     fn board(&self, size: f32, cx: &Context<Self>) -> Stateful<Div> {
-        let game = &self.round().game;
+        let round = self.round();
+        let game = &round.game;
         let format = game.format();
         let boxes_wide = format.size() / format.box_columns();
         let boxes_high = format.size() / format.box_rows();
         let solved = game.is_solved();
+        let pulse_cell = round
+            .last_entry
+            .filter(|(_, start)| start.elapsed() < ENTRY_PULSE && motion::enabled(cx))
+            .map(|(index, _)| index);
         div()
             .id("sudoku-board")
             .debug_selector(|| "sudoku-board".into())
@@ -569,7 +606,14 @@ impl GameView {
                                     .children((0..format.box_columns()).map(|column| {
                                         let row = band * format.box_rows() + row;
                                         let column = stack * format.box_columns() + column;
-                                        self.cell(row * format.size() + column, size, solved, cx)
+                                        let index = row * format.size() + column;
+                                        self.cell(
+                                            index,
+                                            size,
+                                            solved,
+                                            pulse_cell == Some(index),
+                                            cx,
+                                        )
                                     }))
                             }))
                     }))
@@ -742,26 +786,89 @@ impl GameView {
         }
 
         if solved {
-            panel = panel.child(completed(round, daily, palette));
-        } else {
-            panel = panel
-                .child(progress(game, palette))
-                .when(daily, |panel| panel.child(daily_goal(round, palette)))
-                .when_some(round.best.filter(|_| !daily), |panel, best| {
-                    panel.child(best_result(best, palette))
-                })
-                .when(!compact, |panel| panel.child(self.keypad(compact, cx)));
+            return div()
+                .w(px(width))
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(self.completion(None, cx))
+                .when(matches!(self.puzzle, Puzzle::Practice(..)), |layout| {
+                    layout.child(panel)
+                });
         }
 
         panel
+            .child(progress(game, palette))
+            .when(daily, |panel| panel.child(daily_goal(round, palette)))
+            .when_some(round.best.filter(|_| !daily), |panel, best| {
+                panel.child(best_result(best, palette))
+            })
+            .when(!compact, |panel| panel.child(self.keypad(compact, cx)))
             .child(self.edit_actions(cx))
             .when_some(round.visible_hint(), |panel, hint| {
                 panel.child(self.hint_panel(hint, false, cx))
             })
-            .when(compact && !solved, |panel| {
-                panel.child(self.keypad(compact, cx))
-            })
-            .child(self.reset_button(daily, cx))
+            .when(compact, |panel| panel.child(self.keypad(compact, cx)))
+            .child(self.reset_button(daily, false, cx))
+    }
+
+    fn completion(&self, next: Option<KillerPuzzle>, cx: &Context<Self>) -> AnyElement {
+        let round = self.round();
+        let title = match (self.puzzle.is_daily(), round.hints_used) {
+            (true, 0) => "Daily goal met",
+            (false, 0) => "Clean solve",
+            _ => "Solved with hints",
+        };
+        let moves = round.moves;
+        let detail = format!(
+            "{moves} {} · {} used",
+            if moves == 1 { "move" } else { "moves" },
+            hint_count(round.hints_used).to_lowercase(),
+        );
+        let actions = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when_some(
+                round.best.filter(|&best| best < round.hints_used),
+                |row, best| row.child(best_result(best, t::colors(cx))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .when_some(next, |row, puzzle| {
+                        row.child(control(
+                            "sudoku-result-next-killer",
+                            "Next puzzle",
+                            ButtonStyle::Primary,
+                            cx,
+                            move |view| {
+                                view.open(Puzzle::Killer(puzzle));
+                                None
+                            },
+                        ))
+                    })
+                    .child(self.reset_button(
+                        self.puzzle.fixed_seed().is_some(),
+                        next.is_none(),
+                        cx,
+                    ))
+                    .child(self.undo_button(cx)),
+            );
+        round_result(cx, "sudoku-result", Outcome::Won, title, detail, actions)
+    }
+
+    fn undo_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+        control(
+            "sudoku-undo",
+            "Undo",
+            ButtonStyle::enabled(self.round().game.can_undo()),
+            cx,
+            |view| view.round_mut().undo(),
+        )
     }
 
     fn edit_actions(&self, cx: &Context<Self>) -> Div {
@@ -769,16 +876,7 @@ impl GameView {
         div()
             .flex()
             .gap_2()
-            .child(
-                control(
-                    "sudoku-undo",
-                    "Undo",
-                    ButtonStyle::enabled(round.game.can_undo()),
-                    cx,
-                    |view| view.round_mut().undo(),
-                )
-                .flex_1(),
-            )
+            .child(self.undo_button(cx).flex_1())
             .when(!round.game.is_solved(), |row| {
                 row.child(
                     control(
@@ -796,15 +894,16 @@ impl GameView {
             })
     }
 
-    fn reset_button(&self, retry_same: bool, cx: &Context<Self>) -> Stateful<Div> {
+    fn reset_button(&self, retry_same: bool, primary: bool, cx: &Context<Self>) -> Stateful<Div> {
+        let solved = self.round().game.is_solved();
         control(
             "sudoku-next",
-            if retry_same {
-                "Retry puzzle"
-            } else {
-                "New puzzle"
+            match (retry_same, solved) {
+                (true, true) => "Replay puzzle",
+                (true, false) => "Retry puzzle",
+                (false, _) => "New puzzle",
             },
-            if self.round().game.is_solved() {
+            if primary {
                 ButtonStyle::Primary
             } else {
                 ButtonStyle::Normal
@@ -896,7 +995,9 @@ impl Render for GameView {
                         .flex_col()
                         .gap_2()
                         .child(self.board(cell, cx))
-                        .child(shortcuts(size, palette)),
+                        .when(!self.round().game.is_solved(), |area| {
+                            area.child(shortcuts(size, palette))
+                        }),
                 )
                 .child(self.controls(panel_width, compact, cx)),
         )
@@ -993,37 +1094,6 @@ fn daily_goal(round: &Round, palette: t::Palette) -> Div {
         .when_some(round.best, |goal, best| {
             goal.child(best_result(best, palette))
         })
-}
-
-fn completed(round: &Round, daily: bool, palette: t::Palette) -> Div {
-    let description = if daily && round.hints_used == 0 {
-        "Daily goal met. Solved without hints.".to_owned()
-    } else if round.hints_used == 0 {
-        "Solved without hints.".to_owned()
-    } else {
-        format!(
-            "Solved with {}.",
-            hint_count(round.hints_used).to_lowercase()
-        )
-    };
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .rounded_md()
-        .bg(rgb(palette.hover))
-        .p_3()
-        .child(t::display_type("Puzzle complete", 20.))
-        .child(
-            div()
-                .text_size(px(13.))
-                .line_height(px(18.))
-                .child(description),
-        )
-        .when_some(
-            round.best.filter(|&best| best < round.hints_used),
-            |panel, best| panel.child(best_result(best, palette)),
-        )
 }
 
 fn best_result(hints: u32, palette: t::Palette) -> Div {

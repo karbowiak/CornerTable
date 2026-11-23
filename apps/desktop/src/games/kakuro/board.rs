@@ -1,10 +1,11 @@
 use corner_table_kakuro::{Cell, Direction, Game, Run};
 use gpui::{
-    AnyElement, Context, Div, FontWeight, IntoElement, PathBuilder, Role, Stateful, canvas, div,
-    point, prelude::*, px, rgb,
+    Animation, AnimationExt, AnyElement, Context, Div, FontWeight, IntoElement, PathBuilder, Role,
+    Stateful, canvas, div, ease_in_out, point, prelude::*, px, rgb, rgba,
 };
 
-use super::GameView;
+use super::{GameView, RUN_PULSE, RunPulse};
+use crate::motion;
 
 pub(super) const FRAME: f32 = 2.;
 pub(super) const GRID: f32 = 1.;
@@ -42,6 +43,10 @@ impl GameView {
         let game = &self.round.game;
         let puzzle = game.puzzle();
         let side = puzzle.size().side();
+        let pulse = self
+            .round
+            .pulse
+            .filter(|pulse| pulse.started.elapsed() < RUN_PULSE && motion::enabled(cx));
         let focus = FocusedRuns {
             across: puzzle.run_at(self.round.selected, Direction::Across),
             down: puzzle.run_at(self.round.selected, Direction::Down),
@@ -77,7 +82,7 @@ impl GameView {
                             .children(cells.iter().enumerate().map(|(column, cell)| {
                                 let index = row * side + column;
                                 match *cell {
-                                    Cell::Entry => self.entry(index, size, &focus, cx),
+                                    Cell::Entry => self.entry(index, size, &focus, pulse, cx),
                                     Cell::Block { across, down } => {
                                         block(game, index, size, across, down, &focus)
                                     }
@@ -92,6 +97,7 @@ impl GameView {
         index: usize,
         size: f32,
         focus: &FocusedRuns,
+        pulse: Option<RunPulse>,
         cx: &Context<Self>,
     ) -> AnyElement {
         let game = &self.round.game;
@@ -108,6 +114,12 @@ impl GameView {
                 .into_iter()
                 .flatten()
                 .any(|run| game.run_conflict(run).is_some());
+        let pulsing = pulse.is_some_and(|pulse| {
+            [across, down]
+                .into_iter()
+                .flatten()
+                .any(|run| pulse.runs.contains(&Some(run)))
+        });
         let background = if conflict {
             ERROR_PAPER
         } else if hinted {
@@ -178,6 +190,19 @@ impl GameView {
                         view.focus.focus(window, cx);
                         view.update_round(None, cx);
                     }))
+            })
+            .when(pulsing, |cell| {
+                cell.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x65b39380))
+                        .with_animation(
+                            ("kakuro-run-pulse", self.round.moves as usize),
+                            Animation::new(RUN_PULSE).with_easing(ease_in_out),
+                            |ink, progress| ink.opacity(1. - progress),
+                        ),
+                )
             })
             .when(value != 0, |cell| cell.child(value.to_string()))
             .when(notes != 0, |cell| cell.child(pencil_grid(size, notes)))

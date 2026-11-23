@@ -510,6 +510,65 @@ mod tests {
     use super::*;
     use crate::games::GameEntry;
 
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    fn completed_print_reports_turns_and_enter_opens_the_next_plate(cx: &mut TestAppContext) {
+        use gpui::VisualTestContext;
+
+        let launch = GameLaunch {
+            game: GameId(format!("picture-logic-result-{}", std::process::id())),
+            entry: GameEntry::Classic,
+        };
+        let viewport = size(px(760.), px(540.));
+        let window = cx.open_window(viewport, |_, cx| {
+            let mut view = GameView::new(&launch, cx);
+            view.hint(cx);
+            let play = view.book.edit();
+            let puzzle = play.board.puzzle();
+            let before = play.board.snapshot();
+            let last = (0..play.board.cells().len())
+                .find(|&index| puzzle.filled(index) && play.board.cells()[index] == Cell::Blank)
+                .unwrap();
+            for index in 0..play.board.cells().len() {
+                if puzzle.filled(index) && index != last {
+                    play.board.paint(index, Cell::Filled);
+                }
+            }
+            play.cursor = last;
+            view.commit(before, cx);
+            view
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| view.board_focus.focus(window, cx))
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        window
+            .read_with(cx, |view, _| {
+                assert!(view.book.play().solved);
+                assert!(view.reveal_at.is_some());
+                assert!(view.book.play().used_hint);
+                assert_eq!(view.book.play().moves, 3);
+            })
+            .unwrap();
+        let mut ui = VisualTestContext::from_window(window.into(), cx);
+        let artwork = ui.debug_bounds("picture-finished-print").unwrap();
+        let next = ui.debug_bounds("picture-next").unwrap();
+        assert!(next.left() > artwork.right());
+        assert!(next.right() < viewport.width);
+        assert!(next.bottom() < viewport.height);
+        ui.simulate_keystrokes("enter");
+        ui.run_until_parked();
+        window
+            .read_with(&ui, |view, _| {
+                assert_eq!(view.book.active, 1);
+                assert!(view.book.plays[0].solved);
+                assert!(view.reveal_at.is_none());
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn advancing_to_a_lower_row_scrolls_the_compact_grid(cx: &mut TestAppContext) {
         let launch = GameLaunch {

@@ -4,7 +4,7 @@ use gpui::{
     SharedString, Stateful, Window, div, prelude::*, px, relative, rgb,
 };
 
-use crate::theme;
+use crate::{games::round_result, motion, storage::Outcome, theme};
 
 use super::{
     Action, GameView, Notice, REVEAL_DURATION, Tool,
@@ -111,22 +111,16 @@ impl GameView {
                     .child(theme::display_type(plate_name(self.book.active), 23.))
                     .child(small(shape, cx)),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .when(!wide && !play.solved, |line| {
-                        line.child(guide_toggle(show_guide, cx))
-                    })
+            .child(div().flex().flex_wrap().gap_2().when(!play.solved, |line| {
+                line.when(!wide, |line| line.child(guide_toggle(show_guide, cx)))
                     .child(control(
                         "picture-gallery",
                         "Puzzle gallery",
                         Button::Normal,
                         Action::Gallery,
                         cx,
-                    )),
-            );
+                    ))
+            }));
 
         let page = div().w_full().flex().flex_col().gap_3().child(head);
         if play.solved {
@@ -434,17 +428,20 @@ impl GameView {
     }
 
     fn finished(&self, width: f32, paint: Colors, cx: &Context<Self>) -> Stateful<Div> {
-        let puzzle = self.book.play().board.puzzle();
+        let play = self.book.play();
+        let puzzle = play.board.puzzle();
         let next = self.book.next_unfinished();
-        let wide = width >= 730.;
-        let art_width = (width - 64.).clamp(185., 326.);
+        let wide = width >= 620.;
+        let art_width = if wide { width * 0.42 } else { width - 64. }.clamp(185., 326.);
         let step = (art_width / puzzle.width() as f32).floor();
         let animate = self
             .reveal_at
             .is_some_and(|at| at.elapsed() < REVEAL_DURATION)
-            && !cx.reduce_motion();
+            && motion::enabled(cx);
         let artwork = div()
+            .debug_selector(|| "picture-finished-print".into())
             .relative()
+            .flex_none()
             .p_3()
             .bg(rgb(PRINT_STOCK))
             .border_1()
@@ -454,53 +451,78 @@ impl GameView {
                 art.child(
                     div()
                         .absolute()
-                        .inset_0()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
                         .bg(rgb(PRINT_STOCK))
                         .with_animation(
                             ("picture-ink-reveal", self.book.active),
                             Animation::new(REVEAL_DURATION)
                                 .with_easing(|progress| 1. - (1. - progress).powi(3)),
-                            |wash, fade| wash.opacity(0.95 * (1. - fade)),
+                            |paper, progress| paper.h(relative(1. - progress)),
                         ),
                 )
             });
-        let details = div()
+        let moves = play.moves;
+        let detail = if moves == 0 {
+            "Plate solved".to_owned()
+        } else {
+            format!(
+                "{moves} {} · {}",
+                if moves == 1 { "turn" } else { "turns" },
+                if play.used_hint {
+                    "Solved with hints"
+                } else {
+                    "Clean solve"
+                },
+            )
+        };
+        let actions = div()
             .flex()
             .flex_col()
             .items_start()
             .gap_2()
-            .min_w_0()
-            .max_w(px(360.))
-            .child(theme::display_type(
-                puzzle.title,
-                if wide { 37. } else { 29. },
-            ))
-            .child(div().text_color(rgb(paint.ink)).child(puzzle.caption))
+            .child(div().child(puzzle.caption))
+            .when(next.is_none(), |actions| {
+                actions.child(small(format!("All {} plates complete.", PUZZLES.len()), cx))
+            })
             .child(
-                small(
-                    if next.is_some() {
-                        "Solved and saved to your gallery.".to_owned()
-                    } else {
-                        format!("All {} plates complete.", PUZZLES.len())
-                    },
-                    cx,
-                )
-                .mt_1(),
-            )
-            .child(
-                control(
-                    "picture-next",
-                    if next.is_some() {
-                        "Next unfinished puzzle"
-                    } else {
-                        "View completed gallery"
-                    },
-                    Button::Primary,
-                    Action::Next,
-                    cx,
-                )
-                .mt_2(),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .when(next.is_some(), |row| {
+                        row.child(
+                            control(
+                                "picture-next",
+                                "Next unfinished puzzle",
+                                Button::Primary,
+                                Action::Next,
+                                cx,
+                            )
+                            .debug_selector(|| "picture-next".into()),
+                        )
+                    })
+                    .child(control(
+                        "picture-result-gallery",
+                        "Puzzle gallery",
+                        if next.is_some() {
+                            Button::Normal
+                        } else {
+                            Button::Primary
+                        },
+                        Action::Gallery,
+                        cx,
+                    )),
             );
+        let details = round_result(
+            cx,
+            "picture-logic-result",
+            Outcome::Won,
+            puzzle.title,
+            detail,
+            actions,
+        );
         div()
             .id("picture-logic-complete")
             .role(Role::Group)
@@ -524,7 +546,13 @@ impl GameView {
             .border_1()
             .border_color(rgb(paint.rule))
             .child(artwork)
-            .child(details)
+            .child(
+                div()
+                    .min_w_0()
+                    .w_full()
+                    .when(wide, |panel| panel.flex_1())
+                    .child(details),
+            )
     }
 
     pub(super) fn render_gallery(

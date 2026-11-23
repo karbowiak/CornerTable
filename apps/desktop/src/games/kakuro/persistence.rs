@@ -41,6 +41,8 @@ impl SavedSession {
                 hint: None,
                 moves: saved.moves,
                 attempt: saved.attempt,
+                used_hint: saved.used_hint,
+                pulse: None,
             };
         }
         // A corrupt replay may have partly edited its board. Start a clean attempt.
@@ -69,6 +71,8 @@ struct SavedRound {
     edits: Vec<(usize, u8, bool)>,
     moves: u64,
     attempt: AttemptId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    used_hint: Option<bool>,
 }
 
 impl SavedRound {
@@ -83,6 +87,7 @@ impl SavedRound {
                 .collect(),
             moves: round.moves,
             attempt: round.attempt,
+            used_hint: round.used_hint,
         }
     }
 
@@ -165,5 +170,20 @@ mod tests {
             progress.open(Size::Compact, 1).game.value(valid.selected),
             2
         );
+    }
+
+    #[test]
+    fn older_boards_do_not_claim_a_clean_solve() {
+        let round = Round::new(Size::Compact, 0);
+        let mut saved = serde_json::to_value(SavedRound::capture(&round)).unwrap();
+        saved.as_object_mut().unwrap().remove("used_hint");
+        let mut progress = SavedSession::default();
+        progress.boards[0].insert(0, serde_json::from_value(saved).unwrap());
+        let mut restored = progress.open(Size::Compact, 0);
+        assert!(restored.attempt == round.attempt);
+        assert_eq!(restored.used_hint, None);
+        restored.hint();
+        progress.remember(&restored);
+        assert_eq!(progress.open(Size::Compact, 0).used_hint, Some(true));
     }
 }
