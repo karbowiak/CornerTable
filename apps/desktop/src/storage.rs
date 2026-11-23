@@ -237,6 +237,24 @@ pub fn set_sound_enabled(enabled: bool) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Deserialize, Serialize)]
+pub struct WindowSize {
+    pub width: f32,
+    pub height: f32,
+}
+
+pub fn window_size() -> Option<WindowSize> {
+    let size: WindowSize = read(&data_dir()?.join("window-size.json"))?;
+    (size.width.is_finite() && size.height.is_finite() && size.width > 0. && size.height > 0.)
+        .then_some(size)
+}
+
+pub fn save_window_size(size: WindowSize) {
+    if let Some(dir) = data_dir() {
+        write(&dir.join("window-size.json"), &size);
+    }
+}
+
 pub fn favorites() -> Vec<GameId> {
     data_dir()
         .and_then(|dir| read(&dir.join("favorites.json")))

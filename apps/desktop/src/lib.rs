@@ -43,6 +43,7 @@ fn install_shortcuts(cx: &mut App) {
         KeyBinding::new("shift-tab", app::FocusPrevious, None),
         KeyBinding::new("alt-left", app::NavigateBack, None),
         KeyBinding::new("alt-right", app::NavigateForward, None),
+        KeyBinding::new("f11", app::ToggleFullScreen, None),
     ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([
@@ -51,6 +52,7 @@ fn install_shortcuts(cx: &mut App) {
         KeyBinding::new("cmd-1", app::OpenLibrary, None),
         KeyBinding::new("cmd-f", app::FindGame, None),
         KeyBinding::new("cmd-q", app::Quit, None),
+        KeyBinding::new("ctrl-cmd-f", app::ToggleFullScreen, None),
     ]);
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
@@ -70,13 +72,28 @@ fn install_shortcuts(cx: &mut App) {
             MenuItem::action("Game Library", app::OpenLibrary),
             MenuItem::action("Find a Game", app::FindGame),
         ]),
+        Menu::new("View").items([MenuItem::action(
+            "Toggle Full Screen",
+            app::ToggleFullScreen,
+        )]),
     ]);
 }
 
 fn open_main_window(fixtures: FixtureApi, cx: &mut App) {
     let appearance = storage::appearance();
     cx.set_window_appearance(appearance.native());
-    let bounds = Bounds::centered(None, size(px(1380.), px(900.)), cx);
+    let preferred = storage::window_size().unwrap_or(storage::WindowSize {
+        width: 1380.,
+        height: 900.,
+    });
+    let mut width = preferred.width.max(760.);
+    let mut height = preferred.height.max(540.);
+    if let Some(display) = cx.primary_display() {
+        let area = display.bounds();
+        width = width.min((f32::from(area.size.width) - 32.).max(760.));
+        height = height.min((f32::from(area.size.height) - 72.).max(540.));
+    }
+    let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(760.), px(540.))),

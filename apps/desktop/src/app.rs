@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use corner_table_api::{FixtureApi, GameId, Period};
 use gpui::{
     AnyView, Context, Entity, FocusHandle, MouseButton, NavigationDirection, Pixels, Point,
-    ScrollHandle, Window, div, point, prelude::*, px, rgb,
+    ScrollHandle, Task, Window, div, point, prelude::*, px, rgb,
 };
 
 use crate::games::{GameEntry, GameLaunch};
@@ -19,6 +20,7 @@ gpui::actions!(
         NavigateForward,
         OpenLibrary,
         FindGame,
+        ToggleFullScreen,
         Quit,
     ]
 );
@@ -70,6 +72,8 @@ pub struct Desktop {
     back: Vec<Visit>,
     forward: Vec<Visit>,
     games: HashMap<GameLaunch, AnyView>,
+    current_size: storage::WindowSize,
+    remember_size: Option<Task<()>>,
     pub focus: FocusHandle,
 }
 
@@ -91,6 +95,8 @@ impl Desktop {
             theme::apply(desktop.appearance, window, cx);
         })
         .detach();
+        cx.observe_window_bounds(window, Self::remember_window_size)
+            .detach();
         let focus = cx.focus_handle();
         let search = cx.new(|cx| SearchInput::new(focus.clone(), window, cx));
         cx.subscribe(&search, |_, _, _: &QueryChanged, cx| cx.notify())
@@ -112,8 +118,36 @@ impl Desktop {
             back: Vec::new(),
             forward: Vec::new(),
             games: HashMap::new(),
+            current_size: Self::window_size(window),
+            remember_size: None,
             focus,
         }
+    }
+
+    fn window_size(window: &Window) -> storage::WindowSize {
+        let size = window.viewport_size();
+        storage::WindowSize {
+            width: size.width.into(),
+            height: size.height.into(),
+        }
+    }
+
+    fn remember_window_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(window.window_bounds(), gpui::WindowBounds::Windowed(_))
+            || window.is_fullscreen()
+        {
+            return;
+        }
+        let size = Self::window_size(window);
+        if size == self.current_size {
+            return;
+        }
+        self.current_size = size;
+        let executor = cx.background_executor().clone();
+        self.remember_size = Some(cx.spawn(async move |_, _| {
+            executor.timer(Duration::from_millis(250)).await;
+            storage::save_window_size(size);
+        }));
     }
 
     pub fn dispatch(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
@@ -262,6 +296,7 @@ impl Render for Desktop {
             .track_focus(&self.focus)
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
+            .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|desktop, _: &NavigateBack, window, cx| {
                 desktop.dispatch(Action::History(NavigationDirection::Back), window, cx);
             }))

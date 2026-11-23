@@ -25,7 +25,9 @@ impl GameView {
         let status = self.game.status();
         match status {
             Status::Won => (
-                if self.journal.active + 1 == STAGES.len() {
+                if self.challenge {
+                    "Daily puzzle cleared"
+                } else if self.journal.active + 1 == STAGES.len() {
                     "All stages cleared"
                 } else {
                     "Stage cleared"
@@ -39,7 +41,12 @@ impl GameView {
             ),
             Status::Lost => (
                 "Out of moves".into(),
-                "Retry this layout or deal a new board.".into(),
+                if self.challenge {
+                    "Retry today’s layout."
+                } else {
+                    "Retry this layout or deal a new board."
+                }
+                .into(),
             ),
             Status::Playing => match self.feedback {
                 Feedback::Ready if self.selected.is_some() => {
@@ -103,43 +110,52 @@ impl GameView {
             .flex()
             .flex_col()
             .gap(px(if compact { 10. } else { 15. }))
-            .child(t::display_type(stage.name, if compact { 17. } else { 25. }))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(4.))
-                    .children(STAGES.iter().enumerate().map(|(index, stage)| {
-                        let cleared = self.journal.is_cleared(index);
-                        let unlocked = self.journal.is_unlocked(index);
-                        let current = self.journal.active == index;
-                        let label = format!(
-                            "Stage {}, {}{}",
-                            index + 1,
-                            stage.name,
-                            if !unlocked {
-                                ", locked"
-                            } else if cleared {
-                                ", cleared"
-                            } else {
-                                ""
-                            },
-                        );
-                        self.button(
-                            Action::Stage(index),
-                            format!("{}", index + 1),
-                            current,
-                            unlocked && !current && !active_motion,
-                            cx,
-                        )
-                        .flex_1()
-                        .min_w_0()
-                        .aria_label(label)
-                        .aria_selected(current)
-                        .when(cleared && !current, |button| {
-                            button.bg(rgb(colors.hover)).text_color(rgb(colors.ink))
-                        })
-                    })),
-            )
+            .child(t::display_type(
+                if self.challenge {
+                    "Daily puzzle"
+                } else {
+                    stage.name
+                },
+                if compact { 17. } else { 25. },
+            ))
+            .when(!self.challenge, |hud| {
+                hud.child(
+                    div()
+                        .flex()
+                        .gap(px(4.))
+                        .children(STAGES.iter().enumerate().map(|(index, stage)| {
+                            let cleared = self.journal.is_cleared(index);
+                            let unlocked = self.journal.is_unlocked(index);
+                            let current = self.journal.active == index;
+                            let label = format!(
+                                "Stage {}, {}{}",
+                                index + 1,
+                                stage.name,
+                                if !unlocked {
+                                    ", locked"
+                                } else if cleared {
+                                    ", cleared"
+                                } else {
+                                    ""
+                                },
+                            );
+                            self.button(
+                                Action::Stage(index),
+                                format!("{}", index + 1),
+                                current,
+                                unlocked && !current && !active_motion,
+                                cx,
+                            )
+                            .flex_1()
+                            .min_w_0()
+                            .aria_label(label)
+                            .aria_selected(current)
+                            .when(cleared && !current, |button| {
+                                button.bg(rgb(colors.hover)).text_color(rgb(colors.ink))
+                            })
+                        })),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -206,15 +222,27 @@ impl GameView {
                 buttons = buttons
                     .child(self.button(Action::Hint, "Hint", false, !active_motion, cx))
                     .child(self.button(Action::Replay, "Restart", false, !active_motion, cx))
-                    .child(self.button(Action::NewBoard, "New board", false, !active_motion, cx));
+                    .when(!self.challenge, |buttons| {
+                        buttons.child(self.button(
+                            Action::NewBoard,
+                            "New board",
+                            false,
+                            !active_motion,
+                            cx,
+                        ))
+                    });
             }
             Status::Lost => {
                 buttons = buttons
                     .child(self.button(Action::Replay, "Retry", true, true, cx))
-                    .child(self.button(Action::NewBoard, "New board", false, true, cx));
+                    .when(!self.challenge, |buttons| {
+                        buttons.child(self.button(Action::NewBoard, "New board", false, true, cx))
+                    });
             }
             Status::Won => {
-                buttons = if self.journal.active + 1 < STAGES.len() {
+                buttons = if self.challenge {
+                    buttons.child(self.button(Action::Replay, "Replay", true, true, cx))
+                } else if self.journal.active + 1 < STAGES.len() {
                     buttons
                         .child(self.button(Action::NextStage, "Next stage", true, true, cx))
                         .child(self.button(Action::Replay, "Replay", false, true, cx))

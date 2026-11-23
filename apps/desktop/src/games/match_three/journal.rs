@@ -57,6 +57,14 @@ impl Journal {
         game
     }
 
+    pub fn resume_challenge(&mut self, seed: u64) -> Game {
+        if self.seed != seed || self.stages[0].layout != 0 {
+            *self = Self::new(seed);
+        }
+        self.active = 0;
+        self.resume()
+    }
+
     pub fn restart(&mut self, new_layout: bool) -> Game {
         let stage = &mut self.stages[self.active];
         if new_layout {
@@ -96,6 +104,14 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_daily_challenge_rejects_a_redealt_layout() {
+        let mut journal = Journal::new(42);
+        let original = *journal.resume().board();
+        assert_ne!(journal.restart(true).board(), &original);
+        assert_eq!(journal.resume_challenge(42).board(), &original);
+    }
 
     #[test]
     fn serde_round_trip_restores_board_progress_and_new_layouts() {

@@ -16,7 +16,7 @@ use crate::{
     theme as t,
 };
 
-use super::{GameLaunch, board_space};
+use super::{GameEntry, GameLaunch, board_space};
 use field::{Exchange, Motion, Scene};
 use journal::Journal;
 
@@ -76,6 +76,7 @@ impl Pointer {
 
 pub struct GameView {
     session: Session,
+    challenge: bool,
     journal: Journal,
     game: Game,
     selected: Option<Cell>,
@@ -93,13 +94,20 @@ pub struct GameView {
 impl GameView {
     pub fn new(launch: &GameLaunch, cx: &mut Context<Self>) -> Self {
         let session = Session::new(launch);
+        let challenge = matches!(launch.entry, GameEntry::Challenge(_));
+        let seed = launch.seed();
         let mut journal = session
             .load::<Journal>()
-            .unwrap_or_else(|| Journal::new(launch.seed()));
-        let game = journal.resume();
+            .unwrap_or_else(|| Journal::new(seed));
+        let game = if challenge {
+            journal.resume_challenge(seed)
+        } else {
+            journal.resume()
+        };
         session.save(&journal);
         Self {
             session,
+            challenge,
             journal,
             game,
             selected: None,
@@ -120,7 +128,13 @@ impl GameView {
     }
 
     fn perform(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
-        if self.motion.is_some() {
+        if self.motion.is_some()
+            || self.challenge
+                && matches!(
+                    action,
+                    Action::NewBoard | Action::Stage(_) | Action::NextStage
+                )
+        {
             return;
         }
         match action {
