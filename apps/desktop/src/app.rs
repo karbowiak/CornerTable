@@ -11,7 +11,15 @@ use crate::{pages, storage, theme, widgets};
 
 gpui::actions!(
     corner_table,
-    [FocusNext, FocusPrevious, NavigateBack, NavigateForward]
+    [
+        FocusNext,
+        FocusPrevious,
+        NavigateBack,
+        NavigateForward,
+        OpenLibrary,
+        FindGame,
+        Quit,
+    ]
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,6 +217,16 @@ impl Render for Desktop {
             }))
             .on_action(cx.listener(|desktop, _: &NavigateForward, window, cx| {
                 desktop.dispatch(Action::History(NavigationDirection::Forward), window, cx);
+            }))
+            .on_action(cx.listener(|desktop, _: &OpenLibrary, window, cx| {
+                desktop.dispatch(Action::Navigate(Page::Library), window, cx);
+            }))
+            .on_action(cx.listener(|desktop, _: &FindGame, window, cx| {
+                desktop.dispatch(Action::Navigate(Page::Library), window, cx);
+                desktop.search_select_all = true;
+                cx.on_next_frame(window, |desktop, window, cx| {
+                    desktop.search_focus.focus(window, cx);
+                });
             }))
             .capture_any_mouse_down(cx.listener(
                 |desktop, event: &gpui::MouseDownEvent, window, cx| {

@@ -9,54 +9,90 @@ mod widgets;
 
 use corner_table_api::FixtureApi;
 use gpui::{
-    App, AppContext as _, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, px,
-    size,
+    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds,
+    WindowOptions, px, size,
 };
 
 pub fn run() -> anyhow::Result<()> {
     let fixtures = FixtureApi::load().map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    gpui_platform::application()
-        .with_assets(assets::Assets)
-        .run(move |cx: &mut App| {
-            let appearance = storage::appearance();
-            cx.set_window_appearance(appearance.native());
-            if let Err(error) = assets::register_fonts(cx) {
-                eprintln!("Could not load bundled fonts: {error:#}");
+    let application = gpui_platform::application().with_assets(assets::Assets);
+    application.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            match FixtureApi::load() {
+                Ok(fixtures) => open_main_window(fixtures, cx),
+                Err(error) => eprintln!("Unable to reopen Corner Table: {error:#}"),
             }
-            cx.bind_keys([
-                KeyBinding::new("tab", app::FocusNext, None),
-                KeyBinding::new("shift-tab", app::FocusPrevious, None),
-                KeyBinding::new("alt-left", app::NavigateBack, None),
-                KeyBinding::new("alt-right", app::NavigateForward, None),
-                #[cfg(target_os = "macos")]
-                KeyBinding::new("cmd-[", app::NavigateBack, None),
-                #[cfg(target_os = "macos")]
-                KeyBinding::new("cmd-]", app::NavigateForward, None),
-            ]);
-            let bounds = Bounds::centered(None, size(px(1380.), px(900.)), cx);
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(760.), px(540.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Corner Table".into()),
-                    ..Default::default()
-                }),
-                app_id: Some("dk.karbowiak.CornerTable".into()),
-                ..Default::default()
-            };
-            match cx.open_window(options, move |window, cx| {
-                cx.new(|cx| {
-                    let desktop = app::Desktop::new(fixtures, appearance, window, cx);
-                    desktop.focus.focus(window, cx);
-                    desktop
-                })
-            }) {
-                Ok(_) => cx.activate(true),
-                Err(error) => {
-                    eprintln!("Unable to open Corner Table: {error:#}");
-                    cx.quit();
-                }
-            }
-        });
+        }
+    });
+    application.run(move |cx| {
+        if let Err(error) = assets::register_fonts(cx) {
+            eprintln!("Could not load bundled fonts: {error:#}");
+        }
+        install_shortcuts(cx);
+        open_main_window(fixtures, cx);
+    });
     Ok(())
+}
+
+fn install_shortcuts(cx: &mut App) {
+    cx.on_action(|_: &app::Quit, cx| cx.quit());
+    cx.bind_keys([
+        KeyBinding::new("tab", app::FocusNext, None),
+        KeyBinding::new("shift-tab", app::FocusPrevious, None),
+        KeyBinding::new("alt-left", app::NavigateBack, None),
+        KeyBinding::new("alt-right", app::NavigateForward, None),
+    ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-[", app::NavigateBack, None),
+        KeyBinding::new("cmd-]", app::NavigateForward, None),
+        KeyBinding::new("cmd-1", app::OpenLibrary, None),
+        KeyBinding::new("cmd-f", app::FindGame, None),
+        KeyBinding::new("cmd-q", app::Quit, None),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-1", app::OpenLibrary, None),
+        KeyBinding::new("ctrl-f", app::FindGame, None),
+        KeyBinding::new("ctrl-q", app::Quit, None),
+    ]);
+    cx.set_menus([
+        Menu::new("Corner Table").items([MenuItem::action("Quit Corner Table", app::Quit)]),
+        Menu::new("Navigate").items([
+            MenuItem::action("Back", app::NavigateBack),
+            MenuItem::action("Forward", app::NavigateForward),
+            MenuItem::separator(),
+            MenuItem::action("Game Library", app::OpenLibrary),
+            MenuItem::action("Find a Game", app::FindGame),
+        ]),
+    ]);
+}
+
+fn open_main_window(fixtures: FixtureApi, cx: &mut App) {
+    let appearance = storage::appearance();
+    cx.set_window_appearance(appearance.native());
+    let bounds = Bounds::centered(None, size(px(1380.), px(900.)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_min_size: Some(size(px(760.), px(540.))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Corner Table".into()),
+            ..Default::default()
+        }),
+        app_id: Some("dk.karbowiak.CornerTable".into()),
+        ..Default::default()
+    };
+    match cx.open_window(options, move |window, cx| {
+        cx.new(|cx| {
+            let desktop = app::Desktop::new(fixtures, appearance, window, cx);
+            desktop.focus.focus(window, cx);
+            desktop
+        })
+    }) {
+        Ok(_) => cx.activate(true),
+        Err(error) => {
+            eprintln!("Unable to open Corner Table: {error:#}");
+            cx.quit();
+        }
+    }
 }
