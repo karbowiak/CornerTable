@@ -1,7 +1,10 @@
 use corner_table_hearts::{Action, Card, Game, Pass, Phase, Seat};
 use serde::{Deserialize, Serialize};
 
-use crate::{games::GameLaunch, storage::Session};
+use crate::{
+    games::GameLaunch,
+    storage::{AttemptId, Outcome, ResultMetric, Session},
+};
 
 // A change to deals, computer passes or the move format needs a new version.
 const VERSION: u32 = 1;
@@ -23,6 +26,8 @@ struct SavedMatch {
     turns: Vec<Turn>,
     selected: Vec<u8>,
     pause_tricks: bool,
+    #[serde(default)]
+    attempt: Option<AttemptId>,
 }
 
 impl SavedMatch {
@@ -33,6 +38,7 @@ impl SavedMatch {
             turns: Vec::new(),
             selected: Vec::new(),
             pause_tricks,
+            attempt: Some(AttemptId::default()),
         }
     }
 
@@ -109,6 +115,20 @@ impl Round {
             || (action == Action::Deal && self.game.pass_direction() == Pass::Keep);
         true
     }
+
+    fn completed_result(&self) -> Option<(Outcome, ResultMetric)> {
+        let Phase::HandComplete(result) = self.game.phase() else {
+            return None;
+        };
+        // A tie for the lowest score at the match limit requires another hand.
+        let outcome = if result.winner? == Seat::You {
+            Outcome::Won
+        } else {
+            Outcome::Lost
+        };
+        let score = self.game.scores()[Seat::You.index()];
+        Some((outcome, ResultMetric::PenaltyPoints(score.into())))
+    }
 }
 
 pub(super) struct TableSession {
@@ -133,6 +153,7 @@ impl TableSession {
             round,
         };
         table.save();
+        table.record_result();
         table
     }
 
@@ -186,9 +207,11 @@ impl TableSession {
         if !self.round.apply(turn) {
             return false;
         }
+        self.saved.attempt.get_or_insert_with(AttemptId::default);
         self.saved.turns.push(turn);
         self.saved.selected.clear();
         self.save();
+        self.record_result();
         true
     }
 
@@ -200,6 +223,15 @@ impl TableSession {
 
     fn save(&self) {
         self.store.save(&self.saved);
+    }
+
+    fn record_result(&self) {
+        if let (Some(attempt), Some((outcome, metric))) =
+            (self.saved.attempt, self.round.completed_result())
+        {
+            self.store
+                .record_result(attempt, "Classic", outcome, metric);
+        }
     }
 }
 
@@ -226,6 +258,9 @@ mod tests {
         assert!(restored.ready_to_open);
         assert!(saved.selected.is_empty());
         assert_eq!(restored.game, round.game);
+        assert!(saved.attempt.is_some());
+        assert!(round_trip(&saved).1.attempt == saved.attempt);
+        assert!(SavedMatch::new(seed, true).attempt != saved.attempt);
 
         saved.turns.push(Turn::Begin);
         assert!(round.apply(Turn::Begin));
@@ -250,6 +285,65 @@ mod tests {
         let mut saved = SavedMatch::new(3, false);
         saved.turns.push(Turn::Begin);
         assert!(saved.restore().is_none());
+    }
+
+    #[test]
+    fn older_matches_resume_without_an_attempt_id() {
+        let saved: SavedMatch = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "seed": 212,
+            "turns": [],
+            "selected": [],
+            "pause_tricks": false
+        }))
+        .unwrap();
+        let (round, saved) = saved.restore().unwrap();
+        assert_eq!(round.game.phase(), Phase::Passing);
+        assert!(saved.attempt.is_none());
+    }
+
+    #[test]
+    fn only_the_final_hand_records_the_players_match_score() {
+        let mut saw_tie = false;
+        for seed in [1, 77, 94] {
+            let mut round = Round::new(seed);
+            loop {
+                let turn = if round.ready_to_open {
+                    Turn::Begin
+                } else {
+                    match round.game.phase() {
+                        Phase::Passing => {
+                            let hand = round.game.hand(Seat::You);
+                            Turn::Pass {
+                                cards: [hand[0], hand[1], hand[2]].map(Card::id),
+                            }
+                        }
+                        Phase::Playing(_) => Turn::Play {
+                            card: round.game.suggested_play().unwrap().id(),
+                        },
+                        Phase::TrickComplete(_) => Turn::Collect,
+                        Phase::HandComplete(hand) if hand.winner.is_none() => {
+                            saw_tie |= hand.tied_at_limit;
+                            Turn::Deal
+                        }
+                        Phase::HandComplete(_) => break,
+                    }
+                };
+                assert_eq!(round.completed_result(), None);
+                assert!(round.apply(turn));
+            }
+            match seed {
+                1 => assert_eq!(
+                    round.completed_result(),
+                    Some((Outcome::Lost, ResultMetric::PenaltyPoints(107)))
+                ),
+                94 => assert_eq!(
+                    round.completed_result(),
+                    Some((Outcome::Won, ResultMetric::PenaltyPoints(13)))
+                ),
+                _ => assert!(saw_tie),
+            }
+        }
     }
 
     fn round_trip(saved: &SavedMatch) -> (Round, SavedMatch) {

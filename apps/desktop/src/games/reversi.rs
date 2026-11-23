@@ -49,6 +49,9 @@ impl GameView {
                 };
                 (opponent, DisplayOptions::default(), Default::default())
             });
+        for opponent in Opponent::ALL {
+            rounds[opponent.slot()].record_result(&session, opponent);
+        }
         let cursor = starting_cursor(&rounds[opponent.slot()]);
         let mut view = Self {
             rounds,
@@ -119,13 +122,16 @@ impl GameView {
     }
 
     fn play(&mut self, square: Square, cx: &mut Context<Self>) {
-        if self.rounds[self.opponent.slot()].play(square).is_none() {
+        let round = &mut self.rounds[self.opponent.slot()];
+        if round.play(square).is_none() {
             return;
         }
+        round.remember_attempt();
         self.revision = self.revision.wrapping_add(1);
         self.animate = !cx.reduce_motion();
         self.notice = None;
         self.save();
+        self.round().record_result(&self.session, self.opponent);
         audio::play(
             cx,
             match self.position().turn() {

@@ -315,6 +315,11 @@ impl Game {
         &self.steps
     }
 
+    /// The number of completed turns, counting each jump chain as one move.
+    pub fn turn_count(&self) -> usize {
+        self.boundaries.len() - 1
+    }
+
     /// The jumps so far, or the latest complete turn when between moves.
     pub fn last_steps(&self) -> &[Step] {
         if self.continuation.is_some() {

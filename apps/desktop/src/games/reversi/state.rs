@@ -1,5 +1,7 @@
-use corner_table_reversi::{Difficulty, Disc, Played, Position, Square};
+use corner_table_reversi::{Difficulty, Disc, Outcome, Played, Position, Square, Turn};
 use serde::{Deserialize, Serialize};
+
+use crate::storage::{AttemptId, Outcome as RecordOutcome, ResultMetric, Session};
 
 const SAVE_VERSION: u8 = 1;
 
@@ -69,6 +71,8 @@ pub(super) struct Saved {
     opponent: Opponent,
     display: DisplayOptions,
     moves: [Vec<u8>; 3],
+    #[serde(default)]
+    attempts: [Option<AttemptId>; 3],
 }
 
 impl Saved {
@@ -88,6 +92,7 @@ impl Saved {
                     .map(|ply| ply.played.square.index())
                     .collect()
             }),
+            attempts: std::array::from_fn(|i| rounds[i].attempt),
         }
     }
 
@@ -95,12 +100,15 @@ impl Saved {
         if self.version != SAVE_VERSION {
             return None;
         }
-        Some((
-            self.opponent,
-            self.display,
-            self.moves
-                .map(|moves| Round::replay(&moves).unwrap_or_default()),
-        ))
+        let rounds = std::array::from_fn(|i| {
+            Round::replay(&self.moves[i])
+                .map(|mut round| {
+                    round.attempt = self.attempts[i];
+                    round
+                })
+                .unwrap_or_default()
+        });
+        Some((self.opponent, self.display, rounds))
     }
 }
 
@@ -108,6 +116,7 @@ impl Saved {
 pub(super) struct Round {
     pub(super) position: Position,
     history: Vec<Ply>,
+    attempt: Option<AttemptId>,
 }
 
 struct Ply {
@@ -132,6 +141,30 @@ impl Round {
         let played = self.position.play(square)?;
         self.history.push(Ply { before, played });
         Some(played)
+    }
+
+    pub(super) fn remember_attempt(&mut self) {
+        self.attempt.get_or_insert_with(AttemptId::default);
+    }
+
+    pub(super) fn record_result(&self, session: &Session, opponent: Opponent) {
+        let (Some(attempt), Turn::Finished(result)) = (self.attempt, self.position.turn()) else {
+            return;
+        };
+        if opponent == Opponent::Local {
+            return;
+        }
+        let outcome = match result {
+            Outcome::Won(Disc::Black) => RecordOutcome::Won,
+            Outcome::Won(Disc::White) => RecordOutcome::Lost,
+            Outcome::Draw => RecordOutcome::Draw,
+        };
+        session.record_result(
+            attempt,
+            opponent.label(),
+            outcome,
+            ResultMetric::Discs(self.position.score(Disc::Black).into()),
+        );
     }
 
     pub(super) fn last(&self) -> Option<Played> {
@@ -162,7 +195,6 @@ impl Round {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use corner_table_reversi::Turn;
 
     fn place_first(round: &mut Round, count: usize) {
         for _ in 0..count {
@@ -197,6 +229,9 @@ mod tests {
         place_first(&mut rounds[0], 3);
         place_first(&mut rounds[1], 5);
         place_first(&mut rounds[2], 10);
+        for round in &mut rounds {
+            round.remember_attempt();
+        }
         let sv = Saved::capture(Opponent::Strategist, DisplayOptions::default(), &rounds);
         let json = serde_json::to_string(&sv).unwrap();
         let de: Saved = serde_json::from_str(&json).unwrap();
@@ -206,9 +241,29 @@ mod tests {
         for (source, target) in rounds.iter().zip(&restored) {
             assert_eq!(source.position, target.position);
             assert_eq!(source.last(), target.last());
+            assert!(source.attempt.is_some() && source.attempt == target.attempt);
         }
         assert!(restored[2].undo(Opponent::Strategist));
         assert_eq!(restored[2].history.len(), 8);
+        assert!(restored[2].attempt == rounds[2].attempt);
+        restored[2] = Round::default();
+        restored[2].remember_attempt();
+        assert!(restored[2].attempt != rounds[2].attempt);
+    }
+
+    #[test]
+    fn older_rounds_resume_without_an_attempt_id() {
+        let saved: Saved = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "opponent": "casual",
+            "display": {"hints": true, "coordinates": true},
+            "moves": [[], [19], []]
+        }))
+        .unwrap();
+        let (_, _, rounds) = saved.restore().unwrap();
+        let casual = &rounds[Opponent::Casual.slot()];
+        assert_eq!(casual.position.turn(), Turn::Play(Disc::White));
+        assert!(casual.attempt.is_none());
     }
 
     #[test]

@@ -64,8 +64,8 @@ impl GameView {
             .iter()
             .find(|step| Some(step.from) == selected && step.to == square)
         {
-            let game = self.table.game_mut();
-            let effect = game.play(step).expect("a highlighted move is legal");
+            let effect = self.table.play(step).expect("a highlighted move is legal");
+            let game = self.table.game();
             self.selected = None;
             self.cursor = if keyboard { first_focus(game) } else { step.to };
             audio::play(
@@ -78,7 +78,6 @@ impl GameView {
                     audio::Effect::Move
                 },
             );
-            self.table.save();
             self.ensure_computer(cx);
         } else if self.table.game().continuation().is_some() {
             self.notice = Some("Finish the jump with the same piece.");
@@ -120,13 +119,8 @@ impl GameView {
             pace.await;
             let _ = view.update(cx, |view, cx| {
                 view.computer = None;
-                let game = view.table.game_mut();
-                for step in turn {
-                    game.play(step)
-                        .expect("computer search returns a legal turn");
-                }
-                view.cursor = first_focus(game);
-                view.table.save();
+                view.table.play_computer(turn, difficulty);
+                view.cursor = first_focus(view.table.game());
                 cx.notify();
             });
         }));
@@ -169,15 +163,8 @@ impl GameView {
 
     fn undo(&mut self, cx: &mut Context<Self>) {
         self.computer = None;
-        let vs_computer = self.table.mode == Mode::Computer;
-        let game = self.table.game_mut();
-        if game.undo_turn() {
-            // Return to the last human decision, including when a reply is still pending.
-            if vs_computer && game.side() == Side::Light {
-                game.undo_turn();
-            }
+        if self.table.undo() {
             self.reset_selection();
-            self.table.save();
             cx.notify();
         }
     }
@@ -191,9 +178,8 @@ impl GameView {
 
     fn restart(&mut self, cx: &mut Context<Self>) {
         self.computer = None;
-        *self.table.game_mut() = Game::default();
+        self.table.restart();
         self.reset_selection();
-        self.table.save();
         cx.notify();
     }
 
