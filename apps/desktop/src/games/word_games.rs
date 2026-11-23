@@ -710,30 +710,22 @@ impl GameView {
             t::colors(cx).paper != t::PAPER,
         )
         .child(tiles);
+        let board_width = size * columns as f32 + gap * (columns - 1) as f32;
+        let beside = side_panel_width(available, board_width).is_some();
         let instruction = if grove {
-            "Connect touching tiles in any direction. Use each tile once per word."
+            "Connect three or more touching letters."
         } else {
-            "Rearrange the tiles to make words. Use each tile once per word."
+            "Build words from three or more tiles."
         };
         let input = if candidate.is_empty() {
             "Type or tap letters".into()
         } else {
             candidate.clone()
         };
-        let heading = div()
-            .flex()
-            .justify_between()
-            .items_center()
-            .flex_wrap()
-            .gap_1()
-            .child(t::display_type(variant.title(), 23.))
-            .when(!finished, |heading| {
-                heading.child(caption("3+ letters · Longer words score more", cx))
-            });
         let actions = div()
             .flex()
             .flex_wrap()
-            .justify_center()
+            .when(!beside, |actions| actions.justify_center())
             .gap_1p5()
             .child(button(
                 "word-add",
@@ -769,13 +761,43 @@ impl GameView {
                     cx,
                 ))
             });
+        let entry = (!finished).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .when(!beside, |entry| entry.items_center())
+                .child(
+                    div()
+                        .id("word-entry")
+                        .role(Role::Status)
+                        .aria_label(input.clone())
+                        .text_color(rgb(if candidate.is_empty() {
+                            t::colors(cx).muted
+                        } else {
+                            t::colors(cx).ink
+                        }))
+                        .text_size(px(20.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(input),
+                )
+                .child(actions)
+                .child(status(
+                    &play.notice,
+                    "Enter adds a word · Esc clears the tiles",
+                    cx,
+                ))
+        });
+        let (under_board, beside_board) = if beside { (None, entry) } else { (entry, None) };
         let panel = t::panel(cx)
+            .id("word-play-panel")
+            .role(Role::Group)
+            .aria_label(variant.title())
             .min_w_0()
             .p_4()
             .flex()
             .flex_col()
             .gap_2()
-            .child(heading)
             .when(!finished, |panel| panel.child(caption(instruction, cx)))
             .child(
                 div()
@@ -785,34 +807,15 @@ impl GameView {
                     .gap_2()
                     .py_1()
                     .child(board)
-                    .when(!finished, |board| {
-                        board
-                            .child(
-                                div()
-                                    .id("word-entry")
-                                    .role(Role::Status)
-                                    .aria_label(input.clone())
-                                    .text_color(rgb(if candidate.is_empty() {
-                                        t::colors(cx).muted
-                                    } else {
-                                        t::colors(cx).ink
-                                    }))
-                                    .text_size(px(20.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(input),
-                            )
-                            .child(actions)
-                    }),
-            )
-            .when(!finished, |panel| {
-                panel.child(status(
-                    &play.notice,
-                    "Enter adds a word · Esc clears the tiles",
-                    cx,
-                ))
-            });
-        let board_width = size * columns as f32 + gap * (columns - 1) as f32;
-        layout(panel, self.score_panel(play, cx), available, board_width)
+                    .children(under_board),
+            );
+        let aside = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(beside_board.map(|entry| t::panel(cx).p_4().child(entry)))
+            .child(self.score_panel(play, cx));
+        layout(panel, aside, available, board_width)
     }
 
     fn score_panel(&self, play: &WordPlay, cx: &Context<Self>) -> Div {
@@ -1413,10 +1416,14 @@ fn direction(down: bool) -> &'static str {
     if down { "Down" } else { "Across" }
 }
 
-fn layout(play: Div, aside: Div, available: f32, board_width: f32) -> Div {
-    let layout = div().flex().gap_3().items_start();
+fn side_panel_width(available: f32, board_width: f32) -> Option<f32> {
     let aside_width = (available - board_width - BOARD_PANEL_INSETS - 12.).min(320.);
-    if aside_width >= 224. {
+    (aside_width >= 224.).then_some(aside_width)
+}
+
+fn layout(play: impl IntoElement + Styled, aside: Div, available: f32, board_width: f32) -> Div {
+    let layout = div().flex().gap_3().items_start();
+    if let Some(aside_width) = side_panel_width(available, board_width) {
         layout
             .child(play.flex_1())
             .child(aside.w(px(aside_width)).flex_shrink_0())
