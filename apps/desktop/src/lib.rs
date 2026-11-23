@@ -43,6 +43,7 @@ fn install_shortcuts(cx: &mut App) {
         KeyBinding::new("shift-tab", app::FocusPrevious, None),
         KeyBinding::new("alt-left", app::NavigateBack, None),
         KeyBinding::new("alt-right", app::NavigateForward, None),
+        KeyBinding::new("f1", app::ToggleGuide, None),
         KeyBinding::new("f11", app::ToggleFullScreen, None),
     ]);
     #[cfg(target_os = "macos")]
@@ -76,6 +77,7 @@ fn install_shortcuts(cx: &mut App) {
             "Toggle Full Screen",
             app::ToggleFullScreen,
         )]),
+        Menu::new("Help").items([MenuItem::action("How to Play", app::ToggleGuide)]),
     ]);
 }
 

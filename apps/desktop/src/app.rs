@@ -21,6 +21,7 @@ gpui::actions!(
         OpenLibrary,
         FindGame,
         OpenSearchResult,
+        ToggleGuide,
         ToggleFullScreen,
         Quit,
     ]
@@ -335,6 +336,14 @@ impl Render for Desktop {
                 {
                     desktop.dispatch(Action::OpenGame(game), window, cx);
                 }
+            }))
+            .on_action(cx.listener(|desktop, _: &ToggleGuide, window, cx| {
+                let action = if desktop.guide.is_open() {
+                    Action::CloseGuide
+                } else {
+                    Action::OpenGuide
+                };
+                desktop.dispatch(action, window, cx);
             }))
             .on_action(cx.listener(|desktop, _: &FindGame, window, cx| {
                 desktop.dispatch(Action::Navigate(Page::Library), window, cx);

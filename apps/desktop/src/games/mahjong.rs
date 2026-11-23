@@ -5,8 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use corner_table_mahjong::{Board, DAILY_SEED, Layout, MoveResult, Tile};
 use gpui::{
-    BoxShadow, Context, Div, FocusHandle, FontWeight, KeyDownEvent, Render, Role, Stateful,
-    Toggled, Window, div, prelude::*, px, rgb,
+    Context, Div, FocusHandle, FontWeight, KeyDownEvent, Render, Role, Stateful, Toggled, Window,
+    div, prelude::*, px, rgb,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,7 +60,6 @@ pub struct GameView {
     departure: Option<Departure>,
     sequence: usize,
     status: String,
-    help_open: bool,
     focus: FocusHandle,
     focus_on_open: bool,
     cursor: Option<usize>,
@@ -86,7 +85,6 @@ impl GameView {
             departure: None,
             sequence: 0,
             status: INSTRUCTION.into(),
-            help_open: false,
             focus: cx.focus_handle().tab_stop(true),
             focus_on_open: true,
             cursor: None,
@@ -164,7 +162,6 @@ impl GameView {
     }
 
     fn choose(&mut self, id: usize, cx: &mut Context<Self>) {
-        self.help_open = false;
         let face = face_name(self.board.tile(id).expect("tile is from this deal").face);
         if self.board.is_free(id) {
             self.cursor = Some(id);
@@ -243,7 +240,6 @@ impl GameView {
     }
 
     fn reset_feedback(&mut self) {
-        self.help_open = false;
         self.cursor = None;
         self.highlighted = None;
         self.departure = None;
@@ -251,7 +247,6 @@ impl GameView {
     }
 
     fn hint(&mut self) {
-        self.help_open = false;
         let had_assistance = self.board.used_assistance();
         self.highlighted = self.board.reveal_hint();
         if let Some([first, second]) = self.highlighted {
@@ -271,7 +266,6 @@ impl GameView {
 
     fn undo(&mut self, cx: &mut Context<Self>) {
         if self.board.undo() {
-            self.help_open = false;
             self.highlighted = None;
             self.departure = None;
             self.status = "Last pair restored.".into();
@@ -336,15 +330,14 @@ impl GameView {
             return;
         }
         let key = stroke.key.as_str();
-        if key == "escape" && (self.help_open || self.focus.is_focused(window)) {
-            if self.help_open {
-                self.help_open = false;
-            } else {
-                self.board.clear_selection();
-                self.highlighted = None;
-                self.status = self.idle_status(INSTRUCTION).into();
-            }
-        } else if self.focus.is_focused(window) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        if key == "escape" {
+            self.board.clear_selection();
+            self.highlighted = None;
+            self.status = self.idle_status(INSTRUCTION).into();
+        } else {
             let direction = match key {
                 "left" => Some((-1., 0.)),
                 "right" => Some((1., 0.)),
@@ -353,7 +346,6 @@ impl GameView {
                 _ => None,
             };
             if let Some(direction) = direction {
-                self.help_open = false;
                 if let Some(id) = self.focused_tile() {
                     self.cursor = self.nearest_tile(id, Some(direction)).or(Some(id));
                 }
@@ -366,12 +358,9 @@ impl GameView {
                     }
                     "h" if !event.is_held && self.board.remaining() > 0 => self.hint(),
                     "u" if !event.is_held => self.undo(cx),
-                    "f1" if !event.is_held => self.help_open = !self.help_open,
                     _ => return,
                 }
             }
-        } else {
-            return;
         }
         cx.stop_propagation();
         cx.notify();
@@ -484,60 +473,8 @@ impl GameView {
                             |view, _| view.new_deal(view.board.layout()),
                             cx,
                         ))
-                    })
-                    .child(
-                        control(
-                            "mahjong-help",
-                            "Help",
-                            true,
-                            |view, _| view.help_open = !view.help_open,
-                            cx,
-                        )
-                        .when(self.help_open, |button| {
-                            button.bg(rgb(theme::colors(cx).hover))
-                        })
-                        .aria_expanded(self.help_open)
-                        .aria_keyshortcuts("F1"),
-                    ),
+                    }),
             )
-    }
-
-    fn help(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let rules = "Match identical faces. A bright tile is free when its top and at least one side are open.";
-        let keys = "On the table, arrows move and Enter or Space selects. H gives a hint, U undoes a pair, and Esc clears your selection.";
-        let objective = "For a Clean Clear, finish without Hint or Undo.";
-        let description = if self.daily() {
-            format!("{rules} {keys}")
-        } else {
-            format!("{rules} {keys} {objective}")
-        };
-        let palette = theme::colors(cx);
-        theme::panel(cx)
-            .id("mahjong-help-panel")
-            .role(Role::Group)
-            .aria_label("How to play Mahjong")
-            .aria_description(description)
-            .occlude()
-            .absolute()
-            .top(px(8.))
-            .right(px(8.))
-            .w(px(371.))
-            .max_w_full()
-            .px_3()
-            .py_3()
-            .shadow(vec![
-                BoxShadow::new(px(0.), px(5.), rgb(0x12271f).opacity(0.32).into())
-                    .blur_radius(px(14.)),
-            ])
-            .flex()
-            .flex_col()
-            .gap_2()
-            .text_size(px(13.))
-            .line_height(px(18.))
-            .child(div().font_weight(FontWeight::SEMIBOLD).child("How to play"))
-            .child(rules)
-            .child(div().text_color(rgb(palette.muted)).child(keys))
-            .when(!self.daily(), |panel| panel.child(objective))
     }
 
     fn feedback(&self, cx: &Context<Self>) -> Div {
@@ -645,12 +582,7 @@ impl Render for GameView {
             .gap_2()
             .when(!self.daily(), |root| root.child(self.deal_options(cx)))
             .child(self.toolbar(cx))
-            .child(
-                div()
-                    .relative()
-                    .child(self.table(TableColors::from(palette), window, cx))
-                    .when(self.help_open, |table| table.child(self.help(cx))),
-            )
+            .child(self.table(TableColors::from(palette), window, cx))
             .when(self.board.remaining() > 0, |root| {
                 root.child(self.feedback(cx))
             })

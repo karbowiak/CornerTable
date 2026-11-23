@@ -49,11 +49,16 @@ impl GuideOverlay {
         self.return_focus = None;
     }
 
+    pub fn is_open(&self) -> bool {
+        self.return_focus.is_some()
+    }
+
     pub fn button(&self, launch: &GameLaunch, cx: &Context<Desktop>) -> Option<Stateful<Div>> {
         Guide::for_launch(launch)?;
         Some(
             widgets::button("game-guide", "How to Play", Action::OpenGuide, false, cx)
-                .aria_expanded(self.return_focus.is_some())
+                .aria_expanded(self.is_open())
+                .aria_keyshortcuts("F1")
                 .min_h(px(34.))
                 .px_3()
                 .text_size(px(13.))
@@ -317,6 +322,10 @@ impl Guide {
                     (
                         "Complete the picture",
                         "Place every piece to finish. Use Photo for a reference. In Assemble, Ghost shows the image beneath the pieces, Hint marks a fitting spot, and Undo removes the last placement. Restart starts the puzzle again.",
+                    ),
+                    (
+                        "Use your own picture",
+                        "Open My photos and choose Add Photo to turn a JPEG, PNG, or WebP into a puzzle. The gallery keeps a cropped copy on this device. Choose either puzzle mode and size as you would with a painting.",
                     ),
                 ],
             },
