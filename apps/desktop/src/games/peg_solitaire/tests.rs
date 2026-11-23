@@ -112,7 +112,7 @@ fn peg_solitaire_compact_input_resume_and_results(cx: &mut TestAppContext) {
         view.focus.focus(window, cx);
         view
     });
-    let mut ui = VisualTestContext::from_window(resumed.into(), &mut ui.cx);
+    let mut ui = VisualTestContext::from_window(resumed.into(), &ui.cx);
     ui.run_until_parked();
     resumed
         .read_with(&ui.cx, |view, _| {

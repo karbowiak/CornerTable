@@ -158,7 +158,7 @@ impl GameView {
 
         div()
             .id(("peg-solitaire-hole", usize::from(hole.index())))
-            .debug_selector(move || format!("peg-solitaire-hole-{hole}").into())
+            .debug_selector(move || format!("peg-solitaire-hole-{hole}"))
             .role(Role::GridCell)
             .aria_column_index(usize::from(hole.column()) + 1)
             .aria_label(label)
