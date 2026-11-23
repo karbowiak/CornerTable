@@ -1185,6 +1185,7 @@ dependencies = [
  "corner-table-bubble-shooter",
  "corner-table-checkers",
  "corner-table-gem-cascade",
+ "corner-table-hearts",
  "corner-table-jigsaw",
  "corner-table-mahjong",
  "corner-table-mahjong-cubes",
@@ -1240,6 +1241,10 @@ dependencies = [
 
 [[package]]
 name = "corner-table-gem-cascade"
+version = "0.1.0"
+
+[[package]]
+name = "corner-table-hearts"
 version = "0.1.0"
 
 [[package]]

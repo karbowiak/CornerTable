@@ -4,6 +4,7 @@ mod block_puzzle;
 mod bubble_shooter;
 mod checkers;
 mod gem_cascade;
+mod hearts;
 mod jigsaw;
 mod mahjong;
 mod mahjong_cubes;
@@ -60,6 +61,7 @@ pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
             .into(),
         "checkers" => cx.new(|cx| checkers::GameView::new(launch, cx)).into(),
         "gem-cascade" => cx.new(|cx| gem_cascade::GameView::new(launch, cx)).into(),
+        "hearts" => cx.new(|cx| hearts::GameView::new(launch, cx)).into(),
         "jigsaw" => cx.new(|cx| jigsaw::GameView::new(launch, cx)).into(),
         "mahjong" => cx.new(|cx| mahjong::GameView::new(launch, cx)).into(),
         "mahjong-cubes" => cx.new(|cx| mahjong_cubes::GameView::new(launch, cx)).into(),

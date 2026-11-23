@@ -7,6 +7,7 @@ members = [
     "games/bubble-shooter",
     "games/checkers",
     "games/gem-cascade",
+    "games/hearts",
     "games/jigsaw",
     "games/mahjong",
     "games/mahjong-cubes",

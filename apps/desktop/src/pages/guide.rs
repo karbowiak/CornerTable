@@ -286,6 +286,23 @@ impl Guide {
                     ),
                 ],
             },
+            "hearts" => Self {
+                title: "Hearts",
+                sections: &[
+                    (
+                        "Pass three cards",
+                        "Choose three cards to give away at the start of each passing hand. The direction changes each hand, and every fourth hand keeps its cards. The 2 of clubs opens the first trick.",
+                    ),
+                    (
+                        "Follow suit",
+                        "Play a card in the suit led if you have one. The highest card of that suit takes the trick. You can lead with a heart once someone has discarded one, or when your hand only holds hearts. Use Left and Right to select a card, Space to mark passes, and Enter to pass or play.",
+                    ),
+                    (
+                        "Keep your score low",
+                        "Each captured heart adds one point, and the queen of spades adds thirteen. If one player takes every penalty card, each other player adds 26. The lowest score wins when someone reaches 100.",
+                    ),
+                ],
+            },
             "jigsaw" => Self {
                 title: "Jigsaw",
                 sections: &[
