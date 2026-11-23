@@ -1,3 +1,4 @@
+mod board;
 mod search;
 mod search_play;
 mod state;
@@ -12,10 +13,11 @@ use std::{
 use corner_table_word_games::{WORD_BONUS, WORD_GOAL, WordSearch};
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, Div, ElementId, FocusHandle, FontWeight,
-    KeyDownEvent, Role, SharedString, Stateful, Window, div, ease_out_quint, linear_color_stop,
-    linear_gradient, prelude::*, px, relative, rgb,
+    KeyDownEvent, Role, SharedString, Stateful, Window, div, ease_out_quint, prelude::*, px,
+    relative, rgb,
 };
 
+use self::board::{CHECK_INK, HINT_INK, PAPER, PRESS_INK, SOLVED_PAPER, TileState};
 use self::state::{
     CrosswordPlay, Navigation, Play, PuzzleKey, Shelf, Source, Variant, WordPlay, plural, utc_day,
 };
@@ -27,20 +29,12 @@ use crate::{
     theme as t,
 };
 
-const WOOD: u32 = 0xfff1cc;
-const WOOD_SHADE: u32 = 0xe9cfa0;
-const WOOD_EDGE: u32 = 0xa58759;
-const CERAMIC: u32 = 0xfffbeb;
-const CLUE_WASH: u32 = 0xdce7c9;
-const HINT_WASH: u32 = 0xcadfe2;
-const HINT_EDGE: u32 = 0x376570;
-const ERROR_WASH: u32 = 0xf4d3c1;
-const ERROR_EDGE: u32 = 0x9b4c3e;
 const PAGE_SIZE: usize = 12;
 const MAX_WORD_WIDTH: f32 = 1000.;
 // Combined padding and borders around the board and its tray.
-const BOARD_PANEL_INSETS: f32 = 54.;
-const CROSSWORD_TILE: f32 = 57.;
+const BOARD_PANEL_INSETS: f32 = 62.;
+const CROSSWORD_TILE: f32 = 60.;
+const CROSSWORD_RULE: f32 = 1.;
 const CROSSWORD_SETTLE: Duration = Duration::from_millis(300);
 
 pub struct GameView {
@@ -532,27 +526,12 @@ impl GameView {
     }
 
     fn tray(&self, label: &'static str, cx: &Context<Self>) -> Stateful<Div> {
-        let palette = t::colors(cx);
         div()
             .id("word-board")
             .role(Role::Group)
             .aria_label(label)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
-            .border_2()
-            .border_color(rgb(if palette.paper == t::PAPER {
-                0x3c5748
-            } else {
-                palette.border
-            }))
-            .focus_visible(|style| style.border_color(rgb(t::GOLD)))
-            .rounded_lg()
-            .p_2()
-            .bg(rgb(if palette.paper == t::PAPER {
-                0x345344
-            } else {
-                0x12251e
-            }))
     }
 
     fn summary(&self) -> Option<(Outcome, &'static str, String)> {
@@ -635,7 +614,7 @@ impl GameView {
         ))
     }
 
-    fn words(&self, play: &WordPlay, available: f32, cx: &Context<Self>) -> Div {
+    fn words(&self, play: &WordPlay, available: f32, height: f32, cx: &Context<Self>) -> Div {
         let variant = self.current.variant;
         let round = &play.round;
         let grove = variant == Variant::Grove;
@@ -648,63 +627,89 @@ impl GameView {
             .and_then(|hint| round.path_for(&hint.word))
             .unwrap_or_default();
         let order = play.display_order();
-        let size = if grove { 60. } else { 46. };
+        // Give all four rows room in shorter windows.
+        let size = if grove {
+            (47. + (height - 540.) / 5.).clamp(47., 60.).floor()
+        } else {
+            46.
+        };
+        let gap = if grove { (size / 5.).round() } else { 7. };
         let columns = if grove { 4 } else { 7 };
-        let board = self
-            .tray(
+        let tiles = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(px(gap))
+            .when(
+                grove && (round.selection().len() > 1 || hint_path.len() > 1),
+                |tiles| {
+                    tiles.child(board::letter_trails(
+                        &order,
+                        columns,
+                        round.selection(),
+                        &hint_path,
+                        size + gap,
+                        size,
+                    ))
+                },
+            )
+            .children(order.chunks(columns).map(|row| {
+                div().flex().gap(px(gap)).children(row.iter().map(|&index| {
+                    let chosen = round.selection().iter().position(|&tile| tile == index);
+                    let hint = hint_path.iter().position(|&tile| tile == index);
+                    let letter = char::from(round.letters()[index]);
+                    let state = if chosen.is_some() {
+                        TileState::Picked
+                    } else if hint.is_some() {
+                        TileState::Hint
+                    } else {
+                        TileState::Resting
+                    };
+                    board::wood_tile(
+                        index,
+                        size,
+                        letter,
+                        state,
+                        chosen.or(hint).map(|order| order + 1),
+                    )
+                    .role(Role::Button)
+                    .aria_label(format!(
+                        "{letter}, tile {}{}",
+                        index + 1,
+                        match (chosen, hint) {
+                            (Some(order), _) => format!(", picked {}", order + 1),
+                            (None, Some(order)) => format!(", hint step {}", order + 1),
+                            _ => String::new(),
+                        }
+                    ))
+                    .aria_selected(chosen.is_some())
+                    .text_size(px(if grove { (size * 0.48).round() } else { 24. }))
+                    .when(!finished, |tile| {
+                        tile.when(round.can_choose(index), |tile| {
+                            tile.cursor_pointer()
+                                .hover(|style| style.border_color(rgb(0xd29145)))
+                                .active(|style| style.bg(rgb(t::GOLD_HOVER)))
+                        })
+                        .on_click(cx.listener(
+                            move |view, _, window, cx| {
+                                view.act(Action::Tile(index), window, cx);
+                            },
+                        ))
+                    })
+                }))
+            }));
+        let board = board::letter_bed(
+            self.tray(
                 if grove {
                     "Letter Grove tiles"
                 } else {
                     "Letter Rack tiles"
                 },
                 cx,
-            )
-            .flex()
-            .flex_col()
-            .gap_1p5()
-            .children(order.chunks(columns).map(|row| {
-                div().flex().gap_1p5().children(row.iter().map(|&index| {
-                    let chosen = round.selection().iter().position(|&tile| tile == index);
-                    let hint = hint_path.iter().position(|&tile| tile == index);
-                    let letter = char::from(round.letters()[index]);
-                    let (top, bottom, edge) = if chosen.is_some() {
-                        (t::GOLD_HOVER, t::GOLD, 0x976421)
-                    } else if hint.is_some() {
-                        (HINT_WASH, 0xb5d1d7, HINT_EDGE)
-                    } else {
-                        (WOOD, WOOD_SHADE, WOOD_EDGE)
-                    };
-                    material(("letter-tile", index), size, top, bottom, edge)
-                        .role(Role::Button)
-                        .aria_label(format!(
-                            "{letter}, tile {}{}",
-                            index + 1,
-                            chosen.map_or_else(String::new, |order| format!(
-                                ", picked {}",
-                                order + 1
-                            ))
-                        ))
-                        .aria_selected(chosen.is_some())
-                        .font_family(t::DISPLAY)
-                        .text_size(px(if grove { 27. } else { 24. }))
-                        .child(letter.to_string())
-                        .children(
-                            chosen
-                                .or(hint)
-                                .map(|order| corner_number(order + 1).right_1().top_0()),
-                        )
-                        .when(!finished, |tile| {
-                            tile.cursor_pointer()
-                                .when(round.can_choose(index), |tile| {
-                                    tile.hover(|style| style.bg(rgb(WOOD)))
-                                        .active(|style| style.bg(rgb(t::GOLD_HOVER)))
-                                })
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.act(Action::Tile(index), window, cx);
-                                }))
-                        })
-                }))
-            }));
+            ),
+            t::colors(cx).paper != t::PAPER,
+        )
+        .child(tiles);
         let instruction = if grove {
             "Connect touching tiles in any direction. Use each tile once per word."
         } else {
@@ -806,7 +811,7 @@ impl GameView {
                     cx,
                 ))
             });
-        let board_width = size * columns as f32 + 6. * (columns - 1) as f32;
+        let board_width = size * columns as f32 + gap * (columns - 1) as f32;
         layout(panel, self.score_panel(play, cx), available, board_width)
     }
 
@@ -1030,95 +1035,107 @@ impl GameView {
         let line = size.line_at(play.cursor, play.down);
         let active = board.puzzle().clues(play.down)[line];
         let solved = board.complete() && !board.revealed();
-        let squares = self
-            .tray("Crossword grid", cx)
+        let grid = div()
             .flex()
             .flex_col()
-            .gap_1()
+            .gap(px(CROSSWORD_RULE))
+            .border_2()
+            .border_color(rgb(PRESS_INK))
+            .bg(rgb(PRESS_INK))
             .children((0..side).map(|row| {
-                div().flex().gap_1().children((0..side).map(|column| {
-                    let index = row * side + column;
-                    let in_clue = !board.complete() && size.line_at(index, play.down) == line;
-                    let selected = play.cursor == index && !board.complete();
-                    let marked = play.checked & (1 << index) != 0;
-                    let hinted = board.hinted_at(index);
-                    let (face, edge) = if selected {
-                        (t::GOLD_HOVER, 0x86551d)
-                    } else if marked {
-                        (ERROR_WASH, ERROR_EDGE)
-                    } else if hinted {
-                        (HINT_WASH, HINT_EDGE)
-                    } else if in_clue {
-                        (CLUE_WASH, 0xa4b393)
-                    } else {
-                        (CERAMIC, WOOD_EDGE)
-                    };
-                    let number = size.square_number(index);
-                    let letter = board.letters()[index].map(char::from);
-                    let square = material(
-                        ("crossword-square", index),
-                        CROSSWORD_TILE,
-                        face,
-                        face,
-                        edge,
-                    );
-                    square
-                        .when(solved && !hinted, |tile| {
-                            // Carry the set glaze across the board after the last letter lands.
+                div()
+                    .flex()
+                    .gap(px(CROSSWORD_RULE))
+                    .children((0..side).map(|column| {
+                        let index = row * side + column;
+                        let in_clue = !board.complete() && size.line_at(index, play.down) == line;
+                        let selected = play.cursor == index && !board.complete();
+                        let marked = play.checked & (1 << index) != 0;
+                        let hinted = board.hinted_at(index);
+                        let face = if selected {
+                            0xf4d27d
+                        } else if marked {
+                            0xf5d5c5
+                        } else if hinted {
+                            0xcde2df
+                        } else if in_clue {
+                            0xe2e9c9
+                        } else {
+                            PAPER
+                        };
+                        let number = size.square_number(index);
+                        let letter = board.letters()[index].map(char::from);
+                        // The finishing wash still sets diagonally across the printed grid.
+                        let face = if solved && !hinted {
                             let delay = (row + column) as f32 / (2 * (side - 1)) as f32 * 0.38;
                             let value = ((settle - delay) / 0.62).clamp(0., 1.);
                             let value = 1. - (1. - value).powi(3);
-                            tile.bg(rgb(CERAMIC).blend(rgb(CLUE_WASH).opacity(value)))
-                                .border_color(rgb(WOOD_EDGE).blend(rgb(0x80976e).opacity(value)))
-                        })
-                        .role(Role::GridCell)
-                        .aria_selected(selected)
-                        .aria_row_index(row)
-                        .aria_column_index(column)
-                        .aria_label(format!(
-                            "Row {}, column {}, {}{}{}",
-                            row + 1,
-                            column + 1,
-                            letter.map_or_else(|| "blank".into(), |letter| letter.to_string()),
-                            if marked { ", check this letter" } else { "" },
-                            if hinted { ", hinted" } else { "" }
-                        ))
-                        .when(selected, |tile| tile.aria_active_descendant())
-                        .text_size(px(25.))
-                        .child(letter.map(|letter| letter.to_string()).unwrap_or_default())
-                        .children(number.map(|number| corner_number(number).top_0().left_1()))
-                        .when(marked, |tile| {
-                            tile.child(
+                            rgb(PAPER).blend(rgb(SOLVED_PAPER).opacity(value)).into()
+                        } else {
+                            rgb(face).into()
+                        };
+                        board::crossword_cell(index, face)
+                            .role(Role::GridCell)
+                            .aria_selected(selected)
+                            .aria_row_index(row)
+                            .aria_column_index(column)
+                            .aria_label(format!(
+                                "Row {}, column {}, {}{}{}",
+                                row + 1,
+                                column + 1,
+                                letter.map_or_else(|| "blank".into(), |letter| letter.to_string()),
+                                if marked { ", check this letter" } else { "" },
+                                if hinted { ", hinted" } else { "" }
+                            ))
+                            .when(selected, |tile| {
+                                tile.aria_active_descendant().border_color(rgb(0x86551d))
+                            })
+                            .text_size(px(28.))
+                            .child(letter.map(|letter| letter.to_string()).unwrap_or_default())
+                            .children(number.map(|number| {
                                 div()
                                     .absolute()
-                                    .right_1()
-                                    .bottom_1()
-                                    .w(px(9.))
-                                    .h(px(2.))
-                                    .rounded_full()
-                                    .bg(rgb(ERROR_EDGE)),
-                            )
-                        })
-                        .when(hinted, |tile| {
-                            tile.child(
-                                div()
-                                    .absolute()
-                                    .right_1()
-                                    .bottom_1()
-                                    .size(px(5.))
-                                    .rounded_full()
-                                    .bg(rgb(HINT_EDGE)),
-                            )
-                        })
-                        .when(!board.complete(), |tile| {
-                            tile.cursor_pointer()
-                                .hover(|style| style.border_color(rgb(0x825309)))
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.act(Action::CrosswordSquare(index), window, cx);
-                                }))
-                        })
-                }))
+                                    .top(px(2.))
+                                    .left(px(4.))
+                                    .font_family(t::BODY)
+                                    .text_size(px(11.))
+                                    .line_height(px(13.))
+                                    .text_color(rgb(PRESS_INK))
+                                    .child(number.to_string())
+                            }))
+                            .when(marked, |tile| {
+                                tile.child(
+                                    div()
+                                        .absolute()
+                                        .right_1()
+                                        .bottom_1()
+                                        .w(px(9.))
+                                        .h(px(2.))
+                                        .rounded_full()
+                                        .bg(rgb(CHECK_INK)),
+                                )
+                            })
+                            .when(hinted, |tile| {
+                                tile.child(
+                                    div()
+                                        .absolute()
+                                        .right(px(if marked { 17. } else { 4. }))
+                                        .bottom_1()
+                                        .size(px(5.))
+                                        .rounded_full()
+                                        .bg(rgb(HINT_INK)),
+                                )
+                            })
+                            .when(!board.complete(), |tile| {
+                                tile.cursor_pointer()
+                                    .hover(|style| style.border_color(rgb(0x94682e)))
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.act(Action::CrosswordSquare(index), window, cx);
+                                    }))
+                            })
+                    }))
             }));
+        let squares = board::folio(self.tray("Crossword grid", cx)).child(grid);
         let panel = t::panel(cx)
             .p_4()
             .min_w_0()
@@ -1277,7 +1294,7 @@ impl GameView {
                             },
                         ))
                 }));
-        let board_width = CROSSWORD_TILE * side as f32 + 4. * (side - 1) as f32;
+        let board_width = CROSSWORD_TILE * side as f32 + CROSSWORD_RULE * (side - 1) as f32 + 4.;
         layout(panel, clues, available, board_width)
     }
 }
@@ -1309,7 +1326,9 @@ impl Render for GameView {
             .child(self.selector(cx))
             .children(self.completion(cx))
             .child(match self.play() {
-                Play::Words(play) => self.words(play, available, cx),
+                Play::Words(play) => {
+                    self.words(play, available, window.viewport_size().height.into(), cx)
+                }
                 Play::Crossword(play) => self.crossword(play, available, settle, cx),
                 Play::Search(play) => self.search(play, available, window, cx),
             })
@@ -1404,43 +1423,6 @@ fn layout(play: Div, aside: Div, available: f32, board_width: f32) -> Div {
     } else {
         layout.flex_col().child(play.w_full()).child(aside.w_full())
     }
-}
-
-fn material(
-    id: (&'static str, usize),
-    size: f32,
-    top: u32,
-    bottom: u32,
-    edge: u32,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .relative()
-        .size(px(size))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .border_1()
-        .border_b_2()
-        .border_color(rgb(edge))
-        .rounded_md()
-        .bg(linear_gradient(
-            180.,
-            linear_color_stop(rgb(top), 0.),
-            linear_color_stop(rgb(bottom), 1.),
-        ))
-        .text_color(rgb(t::INK))
-        .font_weight(FontWeight::BOLD)
-}
-
-fn corner_number(text: usize) -> Div {
-    div()
-        .absolute()
-        .font_family(t::BODY)
-        .text_size(px(11.))
-        .font_weight(FontWeight::BOLD)
-        .child(text.to_string())
 }
 
 fn caption(text: impl Into<SharedString>, cx: &Context<GameView>) -> Div {

@@ -2,12 +2,16 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 
 use corner_table_word_games::SearchLine;
 use gpui::{
-    Animation, AnimationExt, Bounds, Context, Div, FontWeight, MouseButton, PathBuilder, Pixels,
-    Point, Role, Stateful, Window, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    Animation, AnimationExt, Bounds, Context, Div, FontWeight, MouseButton, Pixels, Point, Role,
+    Stateful, Window, canvas, div, point, prelude::*, px, relative, rgb,
 };
 
 use super::{
-    Action, Button, GameView, button, caption, divider, search_play::SearchPlay, state::Play,
+    Action, Button, GameView,
+    board::{self, Fibre},
+    button, caption, divider,
+    search_play::SearchPlay,
+    state::Play,
     status,
 };
 use crate::{motion, theme as t};
@@ -17,6 +21,7 @@ const KEYBOARD: &str = "Arrows move. Space or Enter picks an end. Esc cancels.";
 #[derive(Clone, Copy)]
 struct BoardColors {
     paper: u32,
+    fibre: Fibre,
     letter: u32,
     frame: u32,
     cursor: u32,
@@ -29,9 +34,10 @@ impl BoardColors {
     fn for_theme(palette: t::Palette) -> Self {
         if palette.paper == t::PAPER {
             Self {
-                paper: 0xfff7e6,
+                paper: board::PAPER,
+                fibre: Fibre::Paper,
                 letter: 0x18332d,
-                frame: 0x456350,
+                frame: 0x6c543a,
                 cursor: 0x305d69,
                 hint: 0x8d5610,
                 active: 0x95d3c0,
@@ -39,9 +45,10 @@ impl BoardColors {
             }
         } else {
             Self {
-                paper: 0x233830,
+                paper: 0x293b30,
+                fibre: Fibre::DarkPaper,
                 letter: 0xfff2d7,
-                frame: 0x12251e,
+                frame: 0x584937,
                 cursor: 0xb6e0ee,
                 hint: 0xffce74,
                 active: 0x326d61,
@@ -134,7 +141,7 @@ impl GameView {
             .child(
                 div()
                     .mx_auto()
-                    .rounded_lg()
+                    .rounded_sm()
                     .p(px(if compact { 6. } else { 8. }))
                     .bg(rgb(colors.frame))
                     .child(self.search_grid(play, step, colors, window, cx)),
@@ -252,7 +259,6 @@ impl GameView {
             .size(px(step * side as f32))
             .flex()
             .flex_col()
-            .rounded_md()
             .bg(rgb(colors.paper))
             .text_color(rgb(colors.letter))
             .font_family(t::DISPLAY)
@@ -310,6 +316,7 @@ impl GameView {
                         cx.listener(|view, _, window, cx| view.search_release(None, window, cx)),
                     )
             })
+            .child(board::grain(colors.fibre, 29))
             .child(highlights)
             .children(
                 play.board
@@ -565,21 +572,9 @@ fn paint_mark(
     };
     let start = center(line.start);
     let end = start + (center(line.end) - start) * progress;
-    let width = px(step * 0.67);
-    let radius = width / 2.;
-    let mut path = PathBuilder::stroke(width);
-    path.move_to(start);
-    path.line_to(end);
-    if let Ok(stroke) = path.build() {
-        window.paint_path(stroke, rgb(color));
-    }
-    for cap in [start, end] {
-        window.paint_quad(
-            fill(
-                Bounds::new(cap - point(radius, radius), size(width, width)),
-                rgb(color),
-            )
-            .corner_radii(radius),
-        );
-    }
+    let strike = [start, end];
+    let ink = rgb(color);
+    let edge = ink.blend(rgb(0x38281c).opacity(0.25));
+    board::ribbon(&strike, step * 0.76, edge.into(), window);
+    board::ribbon(&strike, step * 0.66, ink.into(), window);
 }
