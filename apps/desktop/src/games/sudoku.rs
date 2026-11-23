@@ -314,9 +314,13 @@ impl GameView {
         let conflict = game.has_conflict(index);
         let hint = round.visible_hint();
         let hint_target = hint.is_some_and(|hint| hint.index == index);
+        let hint_source = hint.is_some_and(|hint| {
+            matches!(hint.reason, HintReason::LockedCandidate { source, .. } if source.contains(format, index))
+        });
         let hint_evidence = hint.is_some_and(|hint| match hint.reason {
             HintReason::OnlyCandidate { .. } => format.related(hint.index, index),
             HintReason::OnlyPlace { unit, .. } => unit.contains(format, index),
+            HintReason::LockedCandidate { shared, .. } => shared.contains(format, index),
             HintReason::Duplicate { peer, .. } => peer == index,
             HintReason::IncorrectEntry { .. } | HintReason::Forced { .. } => false,
         });
@@ -327,6 +331,8 @@ impl GameView {
             0xf9dfa3
         } else if selected {
             0xc3dfbd
+        } else if hint_source {
+            0xf7e6bd
         } else if hint_evidence {
             HINT_SURFACE
         } else if same_digit {
@@ -375,7 +381,7 @@ impl GameView {
             .when(!solved, |cell| {
                 cell.cursor_pointer()
                     .when(
-                        !conflict && !selected && !hint_target && !hint_evidence,
+                        !conflict && !selected && !hint_target && !hint_source && !hint_evidence,
                         |cell| cell.hover(|style| style.bg(rgb(0xe4ead8))),
                     )
                     .on_click(cx.listener(move |view, _, window, cx| {
@@ -465,7 +471,7 @@ impl GameView {
             }))
     }
 
-    fn keypad(&self, cx: &Context<Self>) -> Div {
+    fn keypad(&self, compact: bool, cx: &Context<Self>) -> Div {
         let round = self.round();
         let game = &round.game;
         let value = game.value(round.selected);
@@ -501,7 +507,7 @@ impl GameView {
                             round.edit(digit, round.note_mode);
                         },
                     )
-                    .h(px(43.))
+                    .h(px(if compact { 36. } else { 43. }))
                     .flex_1()
                     .text_size(px(21.))
                 }))
@@ -538,7 +544,7 @@ impl GameView {
     fn hint_panel(&self, hint: Hint, cx: &Context<Self>) -> Div {
         let (title, detail) = hint_message(hint, self.round().game.format());
         let action = if hint.entry() == 0 {
-            "Clear entry".to_owned()
+            "Clear".to_owned()
         } else {
             format!("Place {}", hint.entry())
         };
@@ -582,7 +588,7 @@ impl GameView {
             )
     }
 
-    fn controls(&self, width: f32, cx: &Context<Self>) -> Div {
+    fn controls(&self, width: f32, compact: bool, cx: &Context<Self>) -> Div {
         let round = self.round();
         let game = &round.game;
         let solved = game.is_solved();
@@ -593,7 +599,8 @@ impl GameView {
             .p_4()
             .flex()
             .flex_col()
-            .gap_3();
+            .gap_3()
+            .when(compact, |panel| panel.p_3().gap_2());
 
         if let Puzzle::Practice(format, selected) = self.puzzle {
             panel = panel.child(self.difficulty(format, selected, cx));
@@ -605,7 +612,7 @@ impl GameView {
             panel = panel
                 .child(progress(game))
                 .when(daily, |panel| panel.child(daily_goal(round)))
-                .child(self.keypad(cx));
+                .when(!compact, |panel| panel.child(self.keypad(compact, cx)));
         }
 
         panel
@@ -643,6 +650,9 @@ impl GameView {
             .when_some(round.visible_hint(), |panel, hint| {
                 panel.child(self.hint_panel(hint, cx))
             })
+            .when(compact && !solved, |panel| {
+                panel.child(self.keypad(compact, cx))
+            })
             .child(control(
                 "sudoku-next",
                 if daily { "Retry puzzle" } else { "New puzzle" },
@@ -667,19 +677,25 @@ impl Render for GameView {
         let format = self.round().game.format();
         let size = format.size();
         let content = board_space(window);
-        let beside = content >= 682.;
+        let beside = content >= 500.;
+        let panel_width = if beside {
+            (content * 0.38).clamp(196., PANEL_WIDTH)
+        } else {
+            0.
+        };
         let available = if beside {
-            content - PANEL_WIDTH - SECTION_GAP
+            content - panel_width - SECTION_GAP
         } else {
             content
         };
+        let compact = window.viewport_size().height < px(700.) || (beside && panel_width < 250.);
         let gutters = GROUP_GAP * (size / format.box_columns() - 1) as f32 + BOARD_EDGE * 2.;
         let max_cell = if format == Format::Mini { 69. } else { 54. };
         let cell = ((available - gutters) / size as f32)
             .clamp(22., max_cell)
             .floor();
         let board_width = cell * size as f32 + gutters;
-        let panel_width = if beside { PANEL_WIDTH } else { board_width };
+        let panel_width = if beside { panel_width } else { board_width };
         let instruction = match self.puzzle {
             Puzzle::Practice(Format::Standard, _) => "Fill every row, column, and box with 1–9.",
             Puzzle::Practice(Format::Mini, _) => "Fill every row, column, and 2×3 box with 1–6.",
@@ -721,7 +737,7 @@ impl Render for GameView {
                             .child(self.board(cell, cx))
                             .child(shortcuts(size)),
                     )
-                    .child(self.controls(panel_width, cx)),
+                    .child(self.controls(panel_width, compact, cx)),
             )
     }
 }
@@ -891,6 +907,25 @@ fn hint_message(hint: Hint, format: Format) -> (String, String) {
                 unit_name(unit)
             ),
         ),
+        HintReason::LockedCandidate {
+            digit,
+            excluded,
+            source,
+            shared,
+        } => {
+            let detail = if matches!(source, Unit::Box(_)) {
+                format!(
+                    "In the shaded box, all spots for {excluded} lie in {}. That line has to use {excluded} inside the box, leaving only {digit} here.",
+                    unit_name(shared)
+                )
+            } else {
+                format!(
+                    "In {}, all spots for {excluded} lie in the shaded box. That box has to use {excluded} on that line, leaving only {digit} here.",
+                    unit_name(source)
+                )
+            };
+            (format!("{excluded} is locked"), detail)
+        }
         HintReason::Duplicate { digit, unit, .. } => (
             format!("A repeated {digit}"),
             format!(

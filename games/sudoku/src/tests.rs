@@ -158,8 +158,10 @@ fn hints_explain_duplicates_and_distinguish_wrong_entries_without_duplicates() {
 #[test]
 fn hints_are_non_mutating_sound_and_can_finish_both_formats() {
     let mut only_place_seen = false;
+    let mut lock_seen = false;
+    let mut forced_seen = false;
     for format in [Format::Standard, Format::Mini] {
-        for seed in [0, 1, 173, u64::MAX] {
+        for seed in [0, 1, 7, 173, u64::MAX] {
             let mut game = Game::with_format(seed, Difficulty::Hard, format);
             let count = format.cell_count() - game.filled();
             for _ in 0..count {
@@ -182,7 +184,35 @@ fn hints_are_non_mutating_sound_and_can_finish_both_formats() {
                             && game.value(other) == 0
                             && allowed(&game, other, digit)));
                     }
+                    HintReason::LockedCandidate {
+                        digit,
+                        excluded,
+                        source,
+                        shared,
+                    } => {
+                        lock_seen = true;
+                        assert!(!source.contains(format, hint.index));
+                        assert!(shared.contains(format, hint.index));
+                        let available: Vec<_> = (1..=format.size() as u8)
+                            .filter(|&candidate| allowed(&game, hint.index, candidate))
+                            .collect();
+                        assert_eq!(available.len(), 2);
+                        assert!(available.contains(&digit) && available.contains(&excluded));
+                        let source_options: Vec<_> = source
+                            .cells(format)
+                            .filter(|&index| {
+                                game.value(index) == 0 && allowed(&game, index, excluded)
+                            })
+                            .collect();
+                        assert!(source_options.len() > 1);
+                        assert!(
+                            source_options
+                                .into_iter()
+                                .all(|index| shared.contains(format, index))
+                        );
+                    }
                     HintReason::Forced { digit, candidates } => {
+                        forced_seen = true;
                         assert_ne!(candidates & (1 << digit), 0);
                         for other in (1..=format.size() as u8)
                             .filter(|&other| other != digit && candidates & (1 << other) != 0)
@@ -198,12 +228,17 @@ fn hints_are_non_mutating_sound_and_can_finish_both_formats() {
             }
             assert!(game.is_solved());
             assert_eq!(game.hint(0), None);
-            assert!(!game.enter(0, 0, false));
+            let editable = (0..format.cell_count())
+                .find(|&index| !game.is_given(index))
+                .unwrap();
+            assert!(!game.enter(editable, 0, false));
             assert!(game.undo());
             assert!(!game.is_solved());
         }
     }
     assert!(only_place_seen);
+    assert!(lock_seen);
+    assert!(forced_seen);
 }
 
 fn allowed(game: &Game, index: usize, digit: u8) -> bool {

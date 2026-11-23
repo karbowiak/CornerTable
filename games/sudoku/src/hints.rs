@@ -1,4 +1,4 @@
-use super::{CELLS, Game, Occupancy, Unit};
+use super::{CELLS, Format, Game, Occupancy, Unit};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Hint {
@@ -8,11 +8,31 @@ pub struct Hint {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HintReason {
-    OnlyCandidate { digit: u8 },
-    OnlyPlace { digit: u8, unit: Unit },
-    Duplicate { digit: u8, peer: usize, unit: Unit },
-    IncorrectEntry { digit: u8 },
-    Forced { digit: u8, candidates: u16 },
+    OnlyCandidate {
+        digit: u8,
+    },
+    OnlyPlace {
+        digit: u8,
+        unit: Unit,
+    },
+    LockedCandidate {
+        digit: u8,
+        excluded: u8,
+        source: Unit,
+        shared: Unit,
+    },
+    Duplicate {
+        digit: u8,
+        peer: usize,
+        unit: Unit,
+    },
+    IncorrectEntry {
+        digit: u8,
+    },
+    Forced {
+        digit: u8,
+        candidates: u16,
+    },
 }
 
 impl Hint {
@@ -21,6 +41,7 @@ impl Hint {
         match self.reason {
             HintReason::OnlyCandidate { digit }
             | HintReason::OnlyPlace { digit, .. }
+            | HintReason::LockedCandidate { digit, .. }
             | HintReason::Forced { digit, .. } => digit,
             HintReason::Duplicate { .. } | HintReason::IncorrectEntry { .. } => 0,
         }
@@ -103,6 +124,10 @@ impl Game {
             }
         }
 
+        if let Some(hint) = locked_candidate(self.format, &candidates) {
+            return Some(hint);
+        }
+
         // Generation established uniqueness, and every current entry agrees with that solution.
         // Each other legal candidate here therefore leads to a contradiction further ahead.
         let index = empty().min_by_key(|&index| candidates[index].count_ones())?;
@@ -114,4 +139,54 @@ impl Game {
             },
         })
     }
+}
+
+fn locked_candidate(format: Format, candidates: &[u16; CELLS]) -> Option<Hint> {
+    (0..format.size())
+        .flat_map(|index| [Unit::Box(index), Unit::Row(index), Unit::Column(index)])
+        .find_map(|source| {
+            (1..=format.size() as u8)
+                .find_map(|digit| place_by_lock(format, candidates, source, digit))
+        })
+}
+
+fn place_by_lock(
+    format: Format,
+    candidates: &[u16; CELLS],
+    source: Unit,
+    excluded: u8,
+) -> Option<Hint> {
+    let bit = 1 << excluded;
+    let possible = || {
+        source
+            .cells(format)
+            .filter(|&index| candidates[index] & bit != 0)
+    };
+    let first = possible().next()?;
+    let source_is_box = matches!(source, Unit::Box(_));
+
+    // If every spot for a digit in one unit also sits in the intersecting unit, the digit
+    // is unavailable anywhere else in that intersecting unit.
+    format
+        .units(first)
+        .into_iter()
+        .filter(|unit| matches!(unit, Unit::Box(_)) != source_is_box)
+        .filter(|&shared| possible().all(|index| shared.contains(format, index)))
+        .find_map(|shared| {
+            let index = shared.cells(format).find(|&index| {
+                !source.contains(format, index)
+                    && candidates[index] & bit != 0
+                    && candidates[index].count_ones() == 2
+            })?;
+            let digit = (candidates[index] & !bit).trailing_zeros() as u8;
+            Some(Hint {
+                index,
+                reason: HintReason::LockedCandidate {
+                    digit,
+                    excluded,
+                    source,
+                    shared,
+                },
+            })
+        })
 }
