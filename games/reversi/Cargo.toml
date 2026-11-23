@@ -1,0 +1,4 @@
+[package]
+name = "corner-table-reversi"
+version.workspace = true
+edition.workspace = true
