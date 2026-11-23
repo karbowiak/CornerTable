@@ -3,7 +3,7 @@ mod table;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use corner_table_mahjong::{Board, DAILY_SEED, Layout, MoveResult, Tile};
+use corner_table_mahjong::{Board, DAILY_SEED, Layout, MoveResult, Tile, TileState};
 use gpui::{
     Context, Div, FocusHandle, FontWeight, KeyDownEvent, Render, Role, Stateful, Toggled, Window,
     div, prelude::*, px, rgb,
@@ -16,16 +16,10 @@ use crate::{
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme,
 };
-use table::{TableColors, TilePosition, face_name};
+use table::{TableColors, TableGeometry, TilePosition, face_name};
 
 const INSTRUCTION: &str = "Match two free tiles with the same face.";
 const NO_MATCHES: &str = "No free pairs remain. Undo a move or restart.";
-const LAYOUTS: [(Layout, &str, &str); 4] = [
-    (Layout::Terrace, "terrace", "Terrace"),
-    (Layout::Atrium, "atrium", "Atrium"),
-    (Layout::Crown, "crown", "Crown"),
-    (Layout::Lantern, "lantern", "Lantern"),
-];
 
 #[derive(Deserialize, Serialize)]
 struct SavedRound {
@@ -107,7 +101,7 @@ impl GameView {
     }
 
     fn resume(&mut self, saved: SavedRound) -> bool {
-        let Some(&(layout, _, _)) = LAYOUTS.iter().find(|(_, key, _)| *key == saved.layout) else {
+        let Some(layout) = Layout::from_id(&saved.layout) else {
             return false;
         };
         if self.daily() && (saved.seed != self.seed || layout != self.board.layout()) {
@@ -125,12 +119,8 @@ impl GameView {
     }
 
     fn save(&self) {
-        let (_, key, _) = LAYOUTS
-            .into_iter()
-            .find(|(layout, _, _)| *layout == self.board.layout())
-            .expect("every layout has a save key");
         self.session.save(&SavedRound {
-            layout: key.into(),
+            layout: self.board.layout().id().into(),
             seed: self.seed,
             attempt: self.attempt,
             matches: self.board.matched_pairs().to_vec(),
@@ -170,10 +160,14 @@ impl GameView {
             }
         }
         let (status, effect) = match self.board.select(id) {
-            MoveResult::Blocked => (
-                "A free tile needs an open side and a clear top.".into(),
-                Some(Effect::InvalidMove),
-            ),
+            MoveResult::Blocked => {
+                let reason = match self.board.tile_state(id) {
+                    Some(TileState::Covered) => "Clear the tiles above this one first.",
+                    Some(TileState::SidesBlocked) => "Free this tile's left or right edge first.",
+                    _ => return,
+                };
+                (self.idle_status(reason).into(), Some(Effect::InvalidMove))
+            }
             MoveResult::Selected => (format!("{face} selected. Choose its match."), None),
             MoveResult::Deselected => (self.idle_status(INSTRUCTION).into(), None),
             MoveResult::DifferentFace => (
@@ -197,11 +191,7 @@ impl GameView {
                     let mode = if self.daily() {
                         "Daily"
                     } else {
-                        let (_, _, layout) = LAYOUTS
-                            .into_iter()
-                            .find(|(layout, _, _)| *layout == self.board.layout())
-                            .expect("every layout has a title");
-                        layout
+                        self.board.layout().title()
                     };
                     self.session.record_result(
                         self.attempt,
@@ -366,52 +356,46 @@ impl GameView {
         cx.notify();
     }
 
-    fn deal_options(&self, cx: &Context<Self>) -> Div {
+    fn layout_picker(&self, cx: &Context<Self>) -> Stateful<Div> {
         let palette = theme::colors(cx);
         div()
-            .flex()
-            .flex_wrap()
-            .justify_between()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .mr_2()
-                            .text_size(px(13.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(palette.muted))
-                            .child("Layout"),
-                    )
-                    .children(LAYOUTS.map(|(layout, key, label)| {
-                        toggle(
-                            key,
-                            label,
-                            self.board.layout() == layout,
-                            move |view| {
-                                if view.board.layout() != layout {
-                                    view.new_deal(layout);
-                                }
-                            },
-                            cx,
-                        )
-                    })),
-            )
-            .child(
+            .id("mahjong-layouts")
+            .role(Role::Group)
+            .aria_label("Layouts")
+            .grid()
+            .grid_cols(Layout::ALL.len() as u16)
+            .gap_1()
+            .children(Layout::ALL.map(|layout| {
+                let selected = self.board.layout() == layout;
+                let count = format!("{} tiles", layout.tile_count());
                 toggle(
-                    "mahjong-clean-clear",
-                    "Clean Clear",
-                    self.clean_clear,
-                    Self::toggle_clean_clear,
+                    layout.id(),
+                    layout.title(),
+                    selected,
+                    move |view| {
+                        if view.board.layout() != layout {
+                            view.new_deal(layout);
+                        }
+                    },
                     cx,
                 )
-                .aria_description("Clear all tiles without using Hint or Undo."),
-            )
+                .aria_label(format!("{}, {count}", layout.title()))
+                .when(!selected, |button| {
+                    button.aria_description("Start a new deal on this layout.")
+                })
+                .h(px(40.))
+                .px_1()
+                .flex_col()
+                .justify_center()
+                .line_height(px(15.))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(rgb(palette.muted))
+                        .child(count),
+                )
+            }))
     }
 
     fn toolbar(&self, cx: &Context<Self>) -> Div {
@@ -429,9 +413,27 @@ impl GameView {
             .gap_2()
             .child(
                 div()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(count),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(count),
+                    )
+                    .when(!self.daily(), |row| {
+                        row.child(
+                            toggle(
+                                "mahjong-clean-clear",
+                                "Clean Clear",
+                                self.clean_clear,
+                                Self::toggle_clean_clear,
+                                cx,
+                            )
+                            .aria_description("Clear all tiles without using Hint or Undo."),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -574,17 +576,21 @@ impl Render for GameView {
             self.focus.focus(window, cx);
         }
         let palette = theme::colors(cx);
+        let geometry = TableGeometry::for_window(&self.board, self.daily(), window);
         div()
             .id("mahjong-game")
             .on_key_down(cx.listener(Self::key_down))
+            .w_full()
+            .max_w(px(geometry.game_width()))
+            .mx_auto()
             .flex()
             .flex_col()
             .gap_2()
-            .when(!self.daily(), |root| root.child(self.deal_options(cx)))
             .child(self.toolbar(cx))
-            .child(self.table(TableColors::from(palette), window, cx))
+            .child(self.table(geometry, TableColors::from(palette), window, cx))
             .when(self.board.remaining() > 0, |root| {
                 root.child(self.feedback(cx))
             })
+            .when(!self.daily(), |root| root.child(self.layout_picker(cx)))
     }
 }

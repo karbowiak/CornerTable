@@ -8,11 +8,58 @@ pub enum Layout {
     Atrium,
     Crown,
     Lantern,
+    TeaTray,
+    Koi,
 }
 
 impl Layout {
+    pub const ALL: [Self; 6] = [
+        Self::TeaTray,
+        Self::Terrace,
+        Self::Atrium,
+        Self::Crown,
+        Self::Lantern,
+        Self::Koi,
+    ];
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Terrace => "terrace",
+            Self::Atrium => "atrium",
+            Self::Crown => "crown",
+            Self::Lantern => "lantern",
+            Self::TeaTray => "tea-tray",
+            Self::Koi => "koi",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|layout| layout.id() == id)
+    }
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Terrace => "Terrace",
+            Self::Atrium => "Atrium",
+            Self::Crown => "Crown",
+            Self::Lantern => "Lantern",
+            Self::TeaTray => "Tea Tray",
+            Self::Koi => "Koi",
+        }
+    }
+
+    pub const fn tile_count(self) -> usize {
+        match self {
+            Self::Terrace | Self::Koi => 144,
+            Self::Atrium => 116,
+            Self::Crown => 92,
+            Self::Lantern => 102,
+            Self::TeaTray => 24,
+        }
+    }
+
     fn tiles(self) -> Vec<Tile> {
-        let mut tiles = Vec::new();
+        let mut tiles = Vec::with_capacity(self.tile_count());
         match self {
             Self::Terrace => {
                 centered_rows(&mut tiles, 0, 0, 14, &[10, 12, 12, 14, 14, 12, 12, 10]);
@@ -58,6 +105,52 @@ impl Layout {
                 centered_rows(&mut tiles, 2, 6, 10, &[2, 4, 4, 2]);
                 centered_rows(&mut tiles, 3, 8, 10, &[2, 2]);
                 centered_rows(&mut tiles, 4, 9, 10, &[2]);
+            }
+            Self::TeaTray => {
+                centered_rows(&mut tiles, 0, 0, 6, &[4, 6, 6, 4]);
+                centered_rows(&mut tiles, 1, 3, 6, &[2, 2]);
+            }
+            Self::Koi => {
+                // A forked tail at the left meets the body at the middle.
+                // The head rises on the right between the two offset fins.
+                // Runs are (row, first column, tile count), from left to right.
+                let layers: [&[(u8, u8, u8)]; 3] = [
+                    &[
+                        (0, 0, 2),
+                        (0, 8, 2),
+                        (1, 0, 3),
+                        (1, 7, 5),
+                        (2, 0, 4),
+                        (2, 6, 8),
+                        (3, 1, 14),
+                        (4, 2, 14),
+                        (5, 1, 14),
+                        (6, 0, 4),
+                        (6, 6, 8),
+                        (7, 0, 3),
+                        (7, 8, 5),
+                        (8, 0, 2),
+                        (8, 10, 2),
+                    ],
+                    &[
+                        (1, 9, 2),
+                        (2, 7, 6),
+                        (3, 2, 2),
+                        (3, 7, 6),
+                        (4, 2, 2),
+                        (4, 6, 8),
+                        (5, 7, 6),
+                        (6, 7, 6),
+                        (7, 9, 2),
+                    ],
+                    &[(2, 9, 2), (3, 9, 4), (4, 10, 4), (5, 10, 2)],
+                ];
+                for (level, runs) in layers.into_iter().enumerate() {
+                    for &(row, column, width) in runs {
+                        add_row(&mut tiles, level as u8, row * 2, column * 2, width);
+                    }
+                }
+                add_row(&mut tiles, 3, 7, 22, 2);
             }
         }
         tiles
@@ -109,6 +202,13 @@ pub enum MoveResult {
     Deselected,
     DifferentFace,
     Matched,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileState {
+    Free,
+    Covered,
+    SidesBlocked,
 }
 
 pub struct Board {
@@ -168,6 +268,11 @@ impl Board {
             faces.extend([Face::Dragon(dragon); 2]);
         }
         faces.extend([Face::Flower, Face::Flower, Face::Season, Face::Season]);
+        if layout == Layout::TeaTray {
+            // Each face has exactly one partner, so any legal match keeps the
+            // remainder solvable. Removing tiles can only open more moves.
+            faces.dedup();
+        }
 
         let mut board = Self {
             layout,
@@ -214,8 +319,9 @@ impl Board {
         pairs.clear();
         let highest = self.tiles.last().unwrap().level;
         let (_, height) = self.dimensions();
-        // Each layer has even rows at least one tile-height apart. Once the
-        // layers above are gone, the outer ends of each row are both free.
+        // Every layer's rows are at least one tile-height apart and contain an
+        // even number of tiles, including rows that contain separate runs.
+        // Peel the leftmost and rightmost ends after clearing the layers above.
         for level in (0..=highest).rev() {
             for y in 0..height {
                 let row: Vec<_> = self
@@ -250,6 +356,11 @@ impl Board {
             .filter(|(id, _)| !self.removed[*id])
     }
 
+    /// The full, unchanging footprint, in tile ID order.
+    pub fn all_tiles(&self) -> &[Tile] {
+        &self.tiles
+    }
+
     pub fn selected(&self) -> Option<usize> {
         self.selected
     }
@@ -280,11 +391,14 @@ impl Board {
     }
 
     pub fn is_free(&self, id: usize) -> bool {
-        let Some(tile) = self.tiles.get(id) else {
-            return false;
-        };
+        self.tile_state(id) == Some(TileState::Free)
+    }
+
+    /// Explain how a tile can be freed. Removed and unknown tiles have no state.
+    pub fn tile_state(&self, id: usize) -> Option<TileState> {
+        let tile = self.tiles.get(id)?;
         if self.removed[id] {
-            return false;
+            return None;
         }
         let mut left = false;
         let mut right = false;
@@ -293,14 +407,18 @@ impl Board {
                 continue;
             }
             if other.level > tile.level && tile.x.abs_diff(other.x) < 2 {
-                return false;
+                return Some(TileState::Covered);
             }
             if tile.level == other.level {
                 left |= other.x + 2 == tile.x;
                 right |= tile.x + 2 == other.x;
             }
         }
-        !(left && right)
+        Some(if left && right {
+            TileState::SidesBlocked
+        } else {
+            TileState::Free
+        })
     }
 
     fn free_tiles(&self) -> Vec<usize> {
@@ -403,10 +521,13 @@ mod tests {
                 .unwrap()
                 .0
         };
-        assert!(board.is_free(id_at(4, 0, 0)));
-        assert!(!board.is_free(id_at(6, 0, 0)));
-        assert!(!board.is_free(id_at(10, 4, 1)));
-        assert!(board.is_free(id_at(12, 6, 3)));
+        assert_eq!(board.tile_state(id_at(4, 0, 0)), Some(TileState::Free));
+        assert_eq!(
+            board.tile_state(id_at(6, 0, 0)),
+            Some(TileState::SidesBlocked)
+        );
+        assert_eq!(board.tile_state(id_at(10, 4, 1)), Some(TileState::Covered));
+        assert_eq!(board.tile_state(id_at(12, 6, 3)), Some(TileState::Free));
     }
 
     #[test]
@@ -429,17 +550,21 @@ mod tests {
 
     #[test]
     fn seeded_deals_have_a_complete_solution() {
-        for layout in [
-            Layout::Terrace,
-            Layout::Atrium,
-            Layout::Crown,
-            Layout::Lantern,
-        ] {
-            for seed in [0, 1, 2, DAILY_SEED, u64::MAX] {
+        for layout in Layout::ALL {
+            for seed in (0..32).chain([DAILY_SEED, u64::MAX]) {
                 let (mut board, solution) = Board::deal(layout, seed);
+                assert_eq!(solution.len() * 2, layout.tile_count(), "{layout:?}");
                 for [first, second] in solution {
-                    assert_eq!(board.select(first), MoveResult::Selected);
-                    assert_eq!(board.select(second), MoveResult::Matched);
+                    assert_eq!(
+                        board.select(first),
+                        MoveResult::Selected,
+                        "{layout:?} seed {seed}"
+                    );
+                    assert_eq!(
+                        board.select(second),
+                        MoveResult::Matched,
+                        "{layout:?} seed {seed}"
+                    );
                 }
                 assert_eq!(board.remaining(), 0);
                 assert!(!board.used_assistance());
@@ -449,12 +574,7 @@ mod tests {
 
     #[test]
     fn the_fallback_order_can_clear_every_layout() {
-        for layout in [
-            Layout::Terrace,
-            Layout::Atrium,
-            Layout::Crown,
-            Layout::Lantern,
-        ] {
+        for layout in Layout::ALL {
             let mut board = Board::with_layout(layout, DAILY_SEED);
             board
                 .tiles
@@ -467,6 +587,80 @@ mod tests {
                 assert_eq!(board.select(second), MoveResult::Matched, "{layout:?}");
             }
             assert_eq!(board.remaining(), 0, "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn new_layouts_have_supported_stacks_and_the_expected_footprints() {
+        for (layout, dimensions, counts) in [
+            (Layout::TeaTray, (12, 8), &[20, 4][..]),
+            (Layout::Koi, (32, 18), &[90, 40, 12, 2][..]),
+        ] {
+            let board = Board::with_layout(layout, DAILY_SEED);
+            let tiles = board.all_tiles();
+            assert_eq!(board.dimensions(), dimensions);
+            assert_eq!(tiles.len(), layout.tile_count());
+            assert_eq!(Layout::from_id(layout.id()), Some(layout));
+            let mut occupied = std::collections::HashSet::new();
+            let mut actual_counts = vec![0; counts.len()];
+            for tile in tiles {
+                actual_counts[usize::from(tile.level)] += 1;
+                for x in tile.x..tile.x + 2 {
+                    for y in tile.y..tile.y + 2 {
+                        assert!(occupied.insert((x, y, tile.level)), "{layout:?}: overlap");
+                        assert!(
+                            tile.level == 0 || occupied.contains(&(x, y, tile.level - 1)),
+                            "{layout:?}: unsupported tile {tile:?}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(actual_counts, counts);
+        }
+    }
+
+    #[test]
+    fn tea_tray_gives_every_tile_one_partner() {
+        for seed in [0, 1, DAILY_SEED, u64::MAX] {
+            let board = Board::with_layout(Layout::TeaTray, seed);
+            let tiles = board.all_tiles();
+            for tile in tiles {
+                assert_eq!(
+                    tiles.iter().filter(|other| tile.face == other.face).count(),
+                    2
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn original_seeded_tile_ids_and_faces_are_stable() {
+        // Fingerprints captured before adding layouts. The dated seed comes
+        // from the Daily Challenge ID daily-v1-2026-11-23-mahjong.
+        for (layout, seed, expected) in [
+            (Layout::Terrace, DAILY_SEED, 0x441a1b301c5ff01d),
+            (Layout::Atrium, DAILY_SEED, 0xa90bb810abb58481),
+            (Layout::Crown, DAILY_SEED, 0x9950833f9eabb475),
+            (Layout::Lantern, DAILY_SEED, 0x903d436a1e8ccf47),
+            (Layout::Terrace, 0x02825903f7bd2635, 0x461e1ea0cf1f29f5),
+        ] {
+            let board = Board::with_layout(layout, seed);
+            let bytes = board.all_tiles().iter().flat_map(|tile| {
+                let face = match tile.face {
+                    Face::Dots(rank) => rank,
+                    Face::Bamboo(rank) => 10 + rank,
+                    Face::Characters(rank) => 20 + rank,
+                    Face::Wind(letter) => letter as u8,
+                    Face::Dragon(letter) => letter as u8 + 64,
+                    Face::Flower => 200,
+                    Face::Season => 201,
+                };
+                [tile.x, tile.y, tile.level, face]
+            });
+            let fingerprint = bytes.fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+            });
+            assert_eq!(fingerprint, expected, "{layout:?} seed {seed}");
         }
     }
 
@@ -488,26 +682,27 @@ mod tests {
 
     #[test]
     fn resumed_matches_preserve_order_undo_and_assistance() {
-        let layout = Layout::Lantern;
-        let (mut board, solution) = Board::deal(layout, DAILY_SEED);
-        for &[first, second] in &solution[..3] {
-            board.select(first);
-            assert_eq!(board.select(second), MoveResult::Matched);
+        for layout in Layout::ALL {
+            let (mut board, solution) = Board::deal(layout, DAILY_SEED);
+            for &[first, second] in &solution[..3] {
+                board.select(first);
+                assert_eq!(board.select(second), MoveResult::Matched);
+            }
+            assert!(board.undo());
+            let mut restored = Board::resume(
+                layout,
+                DAILY_SEED,
+                board.matched_pairs(),
+                board.used_assistance(),
+            )
+            .unwrap();
+            assert_eq!(restored.matched_pairs(), &solution[..2]);
+            assert_eq!(restored.hint(), board.hint());
+            assert!(restored.used_assistance());
+            assert!(restored.undo());
+            assert_eq!(restored.matched_pairs(), &solution[..1]);
+            assert!(Board::resume(layout, DAILY_SEED, &[solution[0]; 2], false).is_none());
+            assert!(Board::resume(layout, DAILY_SEED, &[[usize::MAX, 0]], false).is_none());
         }
-        assert!(board.undo());
-        let mut restored = Board::resume(
-            layout,
-            DAILY_SEED,
-            board.matched_pairs(),
-            board.used_assistance(),
-        )
-        .unwrap();
-        assert_eq!(restored.matched_pairs(), &solution[..2]);
-        assert_eq!(restored.hint(), board.hint());
-        assert!(restored.used_assistance());
-        assert!(restored.undo());
-        assert_eq!(restored.matched_pairs(), &solution[..1]);
-        assert!(Board::resume(layout, DAILY_SEED, &[solution[0]; 2], false).is_none());
-        assert!(Board::resume(layout, DAILY_SEED, &[[usize::MAX, 0]], false).is_none());
     }
 }

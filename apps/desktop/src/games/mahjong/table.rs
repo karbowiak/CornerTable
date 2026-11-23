@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use corner_table_mahjong::{Face, Tile};
+use corner_table_mahjong::{Board, Face, Tile};
 use gpui::{
     Animation, AnimationExt as _, BoxShadow, Context, Div, FontWeight, MouseButton, ObjectFit,
     Role, Stateful, Window, div, img, linear_color_stop, linear_gradient, prelude::*, px, rgb, svg,
@@ -11,9 +11,10 @@ use crate::{games::board_space, theme};
 
 const TILE_RATIO: f32 = 1.14;
 const LAYER_OFFSET: f32 = 0.089;
-const DEPTH_ALLOWANCE: f32 = 4. * LAYER_OFFSET;
 const FELT_INSET: f32 = 14.;
 const TABLE_FRAME: f32 = 10.;
+const TABLE_INSETS: f32 = 2. * (TABLE_FRAME + FELT_INSET + 1.);
+const MIN_CONTROLS_WIDTH: f32 = 480.;
 
 #[derive(Clone, Copy)]
 pub(super) struct TableColors {
@@ -57,12 +58,63 @@ impl TilePosition {
             f32::from(tile.y) * 0.5 * TILE_RATIO - offset,
         )
     }
+}
 
-    fn on_felt(tile: &Tile, size: f32) -> Self {
-        let (x, y) = Self::relative(tile);
+#[derive(Clone, Copy)]
+pub(super) struct TableGeometry {
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    tile_size: f32,
+}
+
+impl TableGeometry {
+    pub(super) fn for_window(board: &Board, daily: bool, window: &Window) -> Self {
+        // Reserve the shell title, toolbar and feedback, plus the classic
+        // layout picker. The complete footprint stays fixed during the deal.
+        let chrome = if daily { 148. } else { 196. };
+        Self::fit(
+            board,
+            board_space(window),
+            f32::from(window.viewport_size().height) - chrome,
+        )
+    }
+
+    fn fit(board: &Board, available_width: f32, available_height: f32) -> Self {
+        let [left, top, right, bottom] = board.all_tiles().iter().map(TilePosition::relative).fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |[left, top, right, bottom], (x, y)| {
+                [left.min(x), top.min(y), right.max(x), bottom.max(y)]
+            },
+        );
+        let width = right - left + 1.;
+        let height = bottom - top + TILE_RATIO;
+        let fit_width = (available_width - TABLE_INSETS) / width;
+        let fit_height = (available_height - TABLE_INSETS) / height;
         Self {
-            x: x * size + FELT_INSET,
-            y: (y + DEPTH_ALLOWANCE) * size + FELT_INSET,
+            left,
+            top,
+            width,
+            height,
+            tile_size: fit_width.min(fit_height).clamp(1., 72.).floor(),
+        }
+    }
+
+    pub(super) fn game_width(self) -> f32 {
+        (self.width * self.tile_size + TABLE_INSETS).max(MIN_CONTROLS_WIDTH)
+    }
+
+    fn position(self, tile: &Tile) -> TilePosition {
+        let (x, y) = TilePosition::relative(tile);
+        TilePosition {
+            x: (x - self.left) * self.tile_size + FELT_INSET,
+            y: (y - self.top) * self.tile_size + FELT_INSET,
         }
     }
 }
@@ -170,8 +222,9 @@ fn gradient([top, bottom]: [u32; 2]) -> gpui::Background {
     )
 }
 
-fn ceramic_tile(tile: &Tile, mark: &Emblem, size: f32, glaze: Glaze) -> Div {
-    let position = TilePosition::on_felt(tile, size);
+fn ceramic_tile(tile: &Tile, mark: &Emblem, geometry: TableGeometry, glaze: Glaze) -> Div {
+    let position = geometry.position(tile);
+    let size = geometry.tile_size;
     let clearance = (size * 0.035).max(1.);
     let thickness = (size * 0.075).max(2.);
     div()
@@ -233,7 +286,7 @@ impl GameView {
         &self,
         id: usize,
         tile: &Tile,
-        size: f32,
+        geometry: TableGeometry,
         cursor: Option<usize>,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
@@ -250,9 +303,9 @@ impl GameView {
             BLOCKED
         };
         let mark = Emblem::from(tile.face);
-        ceramic_tile(tile, &mark, size, glaze)
+        ceramic_tile(tile, &mark, geometry, glaze)
             .id(("mahjong-tile", id))
-            .occlude()
+            .block_mouse_except_scroll()
             .when(free, |tile| {
                 tile.role(Role::Button)
                     .aria_label(mark.name)
@@ -280,19 +333,12 @@ impl GameView {
 
     pub(super) fn table(
         &self,
+        geometry: TableGeometry,
         colors: TableColors,
         window: &Window,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
-        let (extent_x, extent_y) = self.board.dimensions();
-        let columns = f32::from(extent_x) * 0.5 + DEPTH_ALLOWANCE;
-        let rows = f32::from(extent_y) * 0.5 * TILE_RATIO + DEPTH_ALLOWANCE;
-        let inset = 2. * (TABLE_FRAME + FELT_INSET);
-        // Allow room for the shell header, toolbar and status even at 760 × 540.
-        let chrome = if self.daily() { 144. } else { 185. };
-        let fit_width = (board_space(window) - inset) / columns;
-        let fit_height = (f32::from(window.viewport_size().height) - chrome - inset) / rows;
-        let size = fit_width.min(fit_height).clamp(23., 68.).floor();
+        let size = geometry.tile_size;
         let cursor = (self.focus.is_focused(window) && window.last_input_was_keyboard())
             .then(|| self.focused_tile())
             .flatten();
@@ -322,17 +368,20 @@ impl GameView {
                 div()
                     .relative()
                     .flex_none()
-                    .w(px(size * columns + 2. * FELT_INSET))
-                    .h(px(size * rows + 2. * FELT_INSET))
+                    .w(px(size * geometry.width + 2. * FELT_INSET))
+                    .h(px(size * geometry.height + 2. * FELT_INSET))
+                    .when(cfg!(test), |board| {
+                        board.debug_selector(|| "mahjong-footprint".into())
+                    })
                     .children(
-                        self.board
-                            .tiles()
-                            .map(|(id, tile)| self.interactive_tile(id, tile, size, cursor, cx)),
+                        self.board.tiles().map(|(id, tile)| {
+                            self.interactive_tile(id, tile, geometry, cursor, cx)
+                        }),
                     )
                     .when_some(self.departure.as_ref(), |board, departure| {
                         board.children(departure.tiles.iter().enumerate().map(|(index, tile)| {
-                            let top = TilePosition::on_felt(tile, size).y;
-                            ceramic_tile(tile, &Emblem::from(tile.face), size, SELECTED)
+                            let top = geometry.position(tile).y;
+                            ceramic_tile(tile, &Emblem::from(tile.face), geometry, SELECTED)
                                 .with_animation(
                                     (
                                         "mahjong-match",
@@ -403,5 +452,97 @@ impl GameView {
             .border_color(rgb(colors.edge))
             .bg(gradient(colors.rim))
             .child(felt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use corner_table_mahjong::{DAILY_SEED, Layout};
+
+    use super::*;
+
+    #[test]
+    fn the_full_boards_fit_at_narrow_and_wide_sizes() {
+        for (width, height) in [(506., 344.), (1056., 704.)] {
+            for layout in Layout::ALL {
+                let board = Board::with_layout(layout, DAILY_SEED);
+                let geometry = TableGeometry::fit(&board, width, height);
+                assert!(geometry.tile_size >= 25., "{layout:?}");
+                assert!(geometry.game_width() <= width, "{layout:?}");
+                assert!(
+                    geometry.height * geometry.tile_size + TABLE_INSETS <= height,
+                    "{layout:?}"
+                );
+                for tile in board.all_tiles() {
+                    let position = geometry.position(tile);
+                    assert!(position.x >= FELT_INSET && position.y >= FELT_INSET);
+                    assert!(
+                        position.x + geometry.tile_size
+                            <= geometry.width * geometry.tile_size + FELT_INSET + 0.01
+                    );
+                    assert!(
+                        position.y + geometry.tile_size * TILE_RATIO
+                            <= geometry.height * geometry.tile_size + FELT_INSET + 0.01
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    fn click_hits_the_visible_tile_where_koi_layers_overlap(cx: &mut gpui::TestAppContext) {
+        use corner_table_api::GameId;
+        use gpui::{Modifiers, VisualTestContext, point, size};
+
+        let launch = crate::games::GameLaunch {
+            game: GameId("mahjong-picking-test".into()),
+            entry: crate::games::GameEntry::Classic,
+        };
+        let window = cx.open_window(size(px(760.), px(540.)), |_, cx| {
+            let mut view = GameView::new(&launch, cx);
+            view.board = Board::with_layout(Layout::Koi, DAILY_SEED);
+            view
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let footprint = visual.debug_bounds("mahjong-footprint").unwrap();
+        let (top, overlap, exposed) = window
+            .update(cx, |view, window, _| {
+                let geometry = TableGeometry::for_window(&view.board, false, window);
+                let id_at = |x, y, level| {
+                    view.board
+                        .tiles()
+                        .find(|(_, tile)| (tile.x, tile.y, tile.level) == (x, y, level))
+                        .unwrap()
+                        .0
+                };
+                let top = id_at(22, 7, 3);
+                let covered = id_at(22, 6, 2);
+                let click = |id, x, y| {
+                    let pos = geometry.position(view.board.tile(id).unwrap());
+                    footprint.origin
+                        + point(
+                            px(pos.x + x * geometry.tile_size),
+                            px(pos.y + y * geometry.tile_size),
+                        )
+                };
+                (top, click(top, 0.45, 0.25), click(covered, 0.5, 0.2))
+            })
+            .unwrap();
+        visual.simulate_click(overlap, Modifiers::none());
+        window
+            .read_with(cx, |view, _| {
+                assert_eq!(view.board.selected(), Some(top));
+                assert!(view.status.contains("selected"));
+            })
+            .unwrap();
+        visual.simulate_click(exposed, Modifiers::none());
+        window
+            .read_with(cx, |view, _| {
+                assert_eq!(view.board.selected(), Some(top));
+                assert_eq!(view.status, "Clear the tiles above this one first.");
+            })
+            .unwrap();
     }
 }
