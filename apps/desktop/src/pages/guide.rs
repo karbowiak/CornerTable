@@ -452,7 +452,7 @@ impl Guide {
                     ),
                     (
                         "Reveal, flag and chord",
-                        "Click to reveal and right-click to flag, or turn on Flag mode to place flags with a click. Click a revealed clue when it has the indicated number of adjacent flags to open the other neighbors. Use arrows to move, Enter or Space to reveal or chord, and F to flag.",
+                        "Click to reveal and right-click to flag, or turn on Flag mode to place flags with a click. Click a revealed clue with the indicated number of adjacent flags to open the other neighbors. Use arrows to move, Enter or Space to open, F to flag, and H for a deduction based on the visible clues and flags.",
                     ),
                     (
                         "Finish the field",

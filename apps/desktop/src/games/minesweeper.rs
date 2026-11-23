@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use corner_table_minesweeper::{Board, Difficulty, Status, Tile};
+use corner_table_minesweeper::{Board, Clue, Difficulty, Hint, HintReason, Status, Tile};
 use gpui::{
     App, Context, Div, FocusHandle, FontFeatures, FontWeight, KeyDownEvent, MouseButton, Render,
     Role, SharedString, Stateful, Task, Window, div, prelude::*, px, rgb,
@@ -40,6 +40,73 @@ enum Move {
     Flag,
 }
 
+#[derive(Clone, Copy, Default)]
+enum HintState {
+    #[default]
+    Hidden,
+    NoDeduction,
+    Shown(Hint),
+}
+
+impl HintState {
+    fn target(self, column: usize, row: usize) -> Option<bool> {
+        match self {
+            Self::Shown(Hint::Square {
+                column: x,
+                row: y,
+                mine,
+                ..
+            }) if (x, y) == (column, row) => Some(mine),
+            _ => None,
+        }
+    }
+
+    fn feedback(self, palette: t::Palette) -> Option<(String, String, u32)> {
+        let label = |clue| match clue {
+            Clue::Square { column, row } => {
+                format!("the clue at row {}, column {}", row + 1, column + 1)
+            }
+            Clue::MinesRemaining => "the remaining mine count".to_owned(),
+        };
+        match self {
+            Self::Hidden => None,
+            Self::NoDeduction => Some((
+                "No deduction found".into(),
+                "Review your flags. Hints use the numbers visible on the board.".into(),
+                palette.ink,
+            )),
+            Self::Shown(Hint::FlagConflict(clue)) => Some((
+                "Check your flags".into(),
+                format!("Your current flags conflict with {}.", label(clue)),
+                palette.danger,
+            )),
+            Self::Shown(Hint::Square {
+                column,
+                row,
+                mine,
+                reason,
+            }) => {
+                let action = if mine { "Flag" } else { "Reveal" };
+                let title = format!("{action} row {}, column {}", row + 1, column + 1);
+                let detail = match reason {
+                    HintReason::Direct(clue) => format!(
+                        "This move follows from {} if your flags are correct.",
+                        label(clue)
+                    ),
+                    HintReason::Difference { larger, smaller } => {
+                        format!(
+                            "Compare {} with {}. This move assumes your flags are correct.",
+                            label(larger),
+                            label(smaller)
+                        )
+                    }
+                };
+                Some((title, detail, palette.gold_text))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Clock {
     Ready,
@@ -67,6 +134,7 @@ pub struct GameView {
     clock_task: Option<Task<()>>,
     generation_task: Option<Task<()>>,
     generation_failed: bool,
+    hint: HintState,
     impact: Option<Instant>,
     focus: FocusHandle,
 }
@@ -108,6 +176,7 @@ impl GameView {
             clock_task: None,
             generation_task: None,
             generation_failed: false,
+            hint: HintState::default(),
             impact: None,
             focus: cx.focus_handle().tab_stop(true),
         };
@@ -151,6 +220,7 @@ impl GameView {
         self.clock_task = None;
         self.generation_task = None;
         self.generation_failed = false;
+        self.hint = HintState::Hidden;
         self.impact = None;
         self.save();
         cx.notify();
@@ -246,6 +316,7 @@ impl GameView {
             }
             return;
         }
+        self.hint = HintState::Hidden;
         let mut result = None;
         match board.status() {
             Status::Playing if previous == Status::Ready => {
@@ -314,7 +385,20 @@ impl GameView {
         cx.notify();
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn show_hint(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.round.board.status() != Status::Playing {
+            return;
+        }
+        let hint = self.round.board.hint();
+        self.hint = hint.map_or(HintState::NoDeduction, HintState::Shown);
+        if let Some(Hint::Square { column, row, .. }) = hint {
+            self.round.selected = (column, row);
+            self.focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke;
         if key.modifiers.control || key.modifiers.platform || key.modifiers.alt {
             return;
@@ -328,7 +412,9 @@ impl GameView {
             "right" => self.round.selected = ((x + 1).min(width - 1), y),
             "enter" | "space" if !event.is_held => self.apply_move((x, y), Move::Reveal, cx),
             "f" if !event.is_held => self.apply_move((x, y), Move::Flag, cx),
-            "enter" | "space" | "f" => {}
+            "h" if !event.is_held => self.show_hint(window, cx),
+            "escape" if !event.is_held => self.hint = HintState::Hidden,
+            "enter" | "space" | "f" | "h" => {}
             _ => return,
         }
         cx.stop_propagation();
@@ -357,7 +443,12 @@ impl GameView {
         };
         let variant = (x + y * 3) % 5 < 2;
         let face = art.face(tile, chordable, variant);
-        let focus_ink = art.focus_ink(tile);
+        let hint = self.hint.target(x, y);
+        let focus_ink = if hint.is_some() {
+            t::GOLD
+        } else {
+            art.focus_ink(tile)
+        };
         let mut cell = div()
             .id(("minesweeper-cell", x))
             .role(Role::GridCell)
@@ -370,6 +461,13 @@ impl GameView {
             .when(chordable, |cell| {
                 cell.aria_description("Matching flags. Activate to open unmarked neighbors.")
             })
+            .when_some(hint, |cell, mine| {
+                cell.aria_description(if mine {
+                    "Hint suggests a flag"
+                } else {
+                    "Hint suggests a reveal"
+                })
+            })
             .relative()
             .w_full()
             .aspect_square()
@@ -379,6 +477,9 @@ impl GameView {
             .rounded(px((cell_size * 0.15).clamp(3., 5.)))
             .border_1()
             .border_color(rgb(if opening { OPENING_EDGE } else { face.edge }))
+            .when(hint.is_some(), |cell| {
+                cell.border_2().border_color(rgb(t::GOLD))
+            })
             .bg(face.finish())
             .when(self.round.selected == (x, y), |cell| {
                 cell.track_focus(&self.focus)
@@ -495,6 +596,13 @@ impl GameView {
                     )
                 },
             )
+            .when(self.round.board.status() == Status::Playing, |actions| {
+                actions.child(
+                    themed_control(cx, "minesweeper-hint", "Hint", true)
+                        .aria_keyshortcuts("H")
+                        .on_click(cx.listener(|view, _, window, cx| view.show_hint(window, cx))),
+                )
+            })
             .child(
                 themed_control(cx, "minesweeper-reset", reset_label, true).on_click(cx.listener(
                     |view, _, window, cx| {
@@ -646,6 +754,7 @@ impl GameView {
                 palette.danger,
             ),
         };
+        let (title, detail, ink) = self.hint.feedback(palette).unwrap_or((title, detail, ink));
 
         div()
             .id("minesweeper-status")
@@ -872,7 +981,7 @@ impl Render for GameView {
                         .line_height(px(19.))
                         .text_color(rgb(palette.muted))
                         .child("Right-click to flag · Highlighted clues open unmarked neighbors")
-                        .child("Tab to the field · Arrow keys move · Enter or Space opens · F flags"),
+                        .child("Tab to the field · Arrow keys move · Enter or Space opens · F flags · H hints"),
                 )
             })
     }

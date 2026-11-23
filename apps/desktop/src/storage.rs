@@ -18,7 +18,12 @@ fn data_dir() -> Option<PathBuf> {
     env::var_os("CORNER_TABLE_DATA_DIR")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .or_else(|| dirs::data_local_dir().map(|dir| dir.join("dk.karbowiak.CornerTable")))
+        .or_else(|| {
+            if cfg!(test) {
+                return None;
+            }
+            dirs::data_local_dir().map(|dir| dir.join("dk.karbowiak.CornerTable"))
+        })
 }
 
 pub struct Session {
