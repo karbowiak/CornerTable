@@ -5,7 +5,7 @@ use crate::{games::card_art, theme};
 
 use super::{BRASS, DECK_RATIO, RIM_SOFT};
 
-const BACK: &str = "games/solitaire/card-back.webp";
+const BACK: &str = "games/hearts/card-back.jpg";
 
 #[derive(Clone, Copy)]
 pub(super) enum Face {

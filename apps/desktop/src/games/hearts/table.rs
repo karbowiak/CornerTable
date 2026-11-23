@@ -5,8 +5,8 @@ mod hud;
 
 use corner_table_hearts::{Phase, Seat};
 use gpui::{
-    Context, Div, FontWeight, Role, Stateful, Toggled, Window, div, linear_color_stop,
-    linear_gradient, prelude::*, px, rgb, rgba,
+    Context, Div, FontWeight, ObjectFit, Role, Stateful, Toggled, Window, div, img,
+    linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
 };
 
 use crate::theme;
@@ -161,6 +161,17 @@ impl GameView {
                         linear_color_stop(rgb(felt[1]), 1.),
                     ))
                     .text_color(rgb(INK))
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .opacity(if dark { 0.77 } else { 0.64 })
+                            .child(
+                                img("games/hearts/felt.jpg")
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover),
+                            ),
+                    )
                     .child(
                         div()
                             .absolute()
