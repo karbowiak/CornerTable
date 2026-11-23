@@ -1,29 +1,38 @@
 # Corner Table development handoff
 
-Corner Table is an offline desktop games collection built in Rust and GPUI. The current app launches twelve original game families from the illustrated library. It supports System, Light, and Dark appearances, favorites, Last Played, and Back and Forward navigation with mouse navigation buttons and keyboard shortcuts.
+Corner Table is an offline desktop games collection built in Rust and GPUI. The current app launches twenty game families from the illustrated library. It supports category filters, native search, System, Light, and Dark appearances, favorites, Last Played, and Back and Forward navigation with mouse buttons and keyboard shortcuts. The Daily Challenge calendar marks completed puzzles, and Records shows local results and personal bests.
 
 ## Playable games
 
 | Game | Current features |
 | --- | --- |
-| Solitaire | Klondike, Spider, FreeCell, Pyramid, and TriPeaks. Card and stack dragging, click-to-move, illustrated court cards, multiple deal styles, and saved progress and undo. |
-| Mahjong | Four solvable layouts, original illustrated ceramic tiles, keyboard controls, Clean Clear, hints, undo, and saved classic boards. |
+| Solitaire | Klondike, Spider, FreeCell, Pyramid, and TriPeaks. Card and stack dragging, illustrated court cards, three table styles, 1,024 Verified Draw 1 Klondike deals, and per-mode progress and undo. |
+| Mahjong | Solvable layouts, original illustrated ceramic tiles, keyboard controls, Clean Clear, hints, undo, and saved boards for both practice and Daily Challenge. |
 | Minesweeper | Three fields, a clock and time trial, chording, undo-free replays, deduction-certified Logic only, and restored progress and bests. |
 | Sudoku | 9×9 and 6×6 practice, daily clean solves, deduction hints, notes, undo, and saved rounds. |
-| Jigsaw | Five original paintings, interlocking assembly and square swaps at three sizes, drag and keyboard controls, filters, hints, and gallery saves. |
-| Word Games | Letter Grove, Letter Rack, and two crossword sizes. Bundled dictionary, puzzle collection, UTC daily puzzles, hints, and separate progress saves. |
+| Jigsaw | Five original paintings plus a local photo gallery. Interlocking assembly and square swaps at three sizes, drag and keyboard controls, filters, hints, and gallery saves. |
+| Word Games | Letter Grove, Letter Rack, two crossword sizes, and Word Search with 96 themed layouts. Collection, daily puzzles, hints, and separate saves. |
 | Match Three | Animated swaps and cascades, four stages, hints, keyboard controls, and saved rounds. |
 | Block Puzzle | Accurate tray dragging, click and keyboard placement, animated line clears, Ten Trays, and saved progress and bests. |
 | Mine Trails | Five rooms, branching routes, illustrated excavation, a finale, and saved expeditions. |
 | Bubble Shooter | Animated bank shots, six stages, keyboard fine aim, challenge scoring, and resumable progress. |
 | Gem Cascade | Timed falling pairs, untimed practice, pause, chains, and saved runs and bests. |
 | Mahjong Cubes | Five solvable stacks, drag-to-turn and keyboard controls, precise face picking, a daily deal, undo, and saved progress. |
+| Reversi | Offline opponents or two people at the same board. Disc flips, automatic passes, saved matches, undo, and local results. |
+| Checkers | American checkers with mandatory jumps and crowned kings. Three offline difficulties, hot-seat and exact resume. |
+| Hearts | Four-player trick-taking against three offline opponents. Passing cards, shoot-the-moon scoring, keyboard play, and match resume. |
+| Picture Logic | Fifteen uniquely solvable nonograms. Drag painting, three tools, deductions, undo, and per-picture saves. |
+| Memory Match | An illustrated tidepool deck with three sizes, adjustable mismatch handling, separate saves and records. |
+| Kakuro | Ninety-six unique cross-sums puzzles at two sizes. Pencil marks, clue highlighting, hints, undo, and per-board progress. |
+| Dominoes | Double-six Draw Dominoes with a wrapping chain, offline opponents, covered hot-seat handoffs, and saved match scores. |
+| Chess | Offline and hot-seat play, original pieces, drag and keyboard moves, promotion, draw claims, and undo with saved replays. |
 
 ## Development
 
 - `cargo run --locked` starts the normal desktop app. The macOS build compiles Metal shaders at startup and works with Apple’s Command Line Tools.
 - `cargo xtask dev` uses Dioxus CLI 0.7.10 for GPUI in-process hot patching. Press `r` for a full build after changes to Rust data layouts, dependencies, or bundled assets.
-- `python3 scripts/dev.py` rebuilds and relaunches after a successful build. Set `CORNER_TABLE_DATA_DIR` to a separate directory for UI checks against clean save data.
+- `cargo xtask dev --restart` rebuilds and relaunches after a successful build. For checks, use the GPUI harness or set `CORNER_TABLE_DATA_DIR` to a separate directory in a normal development process.
+- `cargo xtask bundle` builds a locally signed release app at `target/Corner Table.app`.
 - Use `cargo fmt --all -- --check`, `cargo test --locked --workspace`, and `cargo clippy --locked --workspace --all-targets -- -D warnings` for workspace checks. Recent native checks were performed on macOS.
 - Start new work from current `main`. The original `game/*` branches are historical checkpoints.
 

@@ -1,6 +1,8 @@
 # Corner Table
 
-Corner Table is a native Rust and GPUI collection of twelve tabletop and arcade game families. Play offline, browse an illustrated library, favorite games, or open a deterministic daily puzzle from a week of challenges. The app includes its fonts, artwork, and sample data in the binary. See the [game directory](games/README.md) for the games and the [development handoff](HANDOFF.md) for integration notes.
+Corner Table is a native Rust and GPUI collection of twenty tabletop, puzzle, and arcade game families. Play offline, browse by category, find a game or variant with search, and keep favorites. Open a daily challenge from the calendar and track your streak, recent rounds, and personal bests. The app embeds its fonts, original artwork, and puzzle data.
+
+[Game directory](games/README.md) · [Development handoff](HANDOFF.md)
 
 ## Run on Linux
 
@@ -11,7 +13,7 @@ sudo apt install build-essential pkg-config libfontconfig1-dev libfreetype-dev l
 cargo run --locked
 ```
 
-GPUI uses your desktop's Wayland or X11 session and a Vulkan driver. Mesa users generally get the driver from `mesa-vulkan-drivers`. The mock API runs in process. You can run the app offline.
+GPUI uses your desktop's Wayland or X11 session and a Vulkan driver. Mesa users generally get the driver from `mesa-vulkan-drivers`. The bundled catalog and game rules run offline.
 
 ## Run on macOS
 
@@ -25,12 +27,12 @@ open "target/Corner Table.app"
 ```
 
 The bundle contains a release build for your Mac's architecture, with the
-artwork, fonts, and sample data embedded in the executable. You can also open it
+artwork, fonts, and puzzle data embedded in the executable. You can also open it
 in Finder. The app version comes from Cargo and the minimum macOS version
 comes from the executable's deployment target. The command signs the bundle
-locally with an ad hoc signature. Add or replace `packaging/macos/icon.png` with a 1024×1024 PNG and
-rerun the command to update the app icon. The bundle uses the default macOS
-app icon when that file is absent.
+locally with an ad hoc signature. Add or replace `packaging/macos/icon.png` with
+a 1024×1024 PNG and rerun the command to update the app icon. The bundle uses
+the default macOS app icon when that file is absent.
 
 ## Develop with hot reload
 
@@ -61,14 +63,14 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 
 | Path | Owns |
 | --- | --- |
-| `apps/desktop/src/pages/` | The library, Solitaire collection, daily challenge, and leaderboard |
+| `apps/desktop/src/pages/` | The library, Solitaire collection, Daily Challenge calendar, guides, and Records |
 | `apps/desktop/src/games/` | Game launch context and per-game GPUI views |
 | `apps/desktop/src/theme.rs` and `widgets.rs` | Shared typography, colors, and desktop controls |
-| `apps/desktop/assets/` | Original prototype illustrations and bundled fonts |
+| `apps/desktop/assets/` | Original illustrations, audio cues, and bundled fonts |
 | `crates/api/` | JSON wire types and the fixture-backed API |
-| `games/` | Per-game rules, generators, and tests as the games land |
+| `games/` | Per-game rules, generators, and tests |
 
-## Mock API
+## Bundled catalog
 
 | Planned route | Bundled JSON |
 | --- | --- |
@@ -76,7 +78,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 | `GET /v1/home` | `crates/api/fixtures/v1/home.json` |
 | `GET /v1/leaderboards?game_id=mahjong&period=today` | The matching item in `crates/api/fixtures/v1/leaderboards.json` |
 
-Game IDs are stable slugs shared by the catalog, launch routes, and leaderboard filters. Periods are `today`, `this-week`, and `all-time`. Missing game and period combinations display an empty state. The featured challenge and guest profile are fixed fixtures. Edits to fixtures take effect on rebuilding.
+Game IDs are stable slugs shared by the catalog, launch routes, and local records. Edits to fixtures take effect on rebuilding. The Daily Challenge rotation and calendar run offline. The Records page reads completed rounds on this device. The leaderboard fixtures remain available for future service development.
 
 A future HTTP client can deserialize the same structs from `corner-table-api`. Keep network requests asynchronous in the desktop and let the service calculate official scores. Keep the local fixture source for offline UI development.
 
@@ -84,12 +86,12 @@ A future HTTP client can deserialize the same structs from `corner-table-api`. K
 
 Pick a single game ID from [the game directory](games/README.md). Put the rules in `games/<game-id>/`, the GPUI board in `apps/desktop/src/games/<game-id>/`, and game-specific artwork in `apps/desktop/assets/games/<game-id>/`. Use underscores for Rust module names. Keep rule crates independent of GPUI and the API. This lets the same seeded rules run locally and later on the server for replay verification.
 
-Use a worktree per game. For example, from a checkout with the initial commit on `main`:
+When developing several games in parallel, give each worker its own game files. A separate worktree can isolate those changes while the main checkout drives the live preview.
 
 ```sh
 git worktree add ../corner-table-mahjong -b game/mahjong main
 ```
 
-Have each worktree own its game's files. The integration pass adds workspace members, desktop dependencies, and dispatch entries. It also regenerates `Cargo.lock` after combining the changes. Keep stable IDs and shared controls together in the integration branch.
+The integration pass adds workspace members, desktop dependencies, dispatch entries, a guide, cover art, and a catalog entry. Update `Cargo.lock` when combining workspace changes.
 
-The appearance control at the bottom of the sidebar offers System, Light, and Dark. The sidebar Back and Forward controls also respond to mouse navigation buttons and keyboard shortcuts. Last Played, Favorites, appearance, and supported game sessions are saved on this device. Set `CORNER_TABLE_DATA_DIR` when you want to run a separate test profile.
+The appearance control at the bottom of the sidebar offers System, Light, and Dark. The sidebar Back and Forward controls also respond to mouse navigation buttons and keyboard shortcuts. Last Played, Favorites, appearance, and game sessions are saved on this device. Use the GPUI test harness or set `CORNER_TABLE_DATA_DIR` for a separate profile in a normal development process.

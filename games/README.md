@@ -16,6 +16,14 @@ Each game family has a stable catalog ID and its own Rust rules crate. Keep seed
 | `block-puzzle` | `games/block-puzzle/` | `games::block_puzzle` |
 | `gem-cascade` | `games/gem-cascade/` | `games::gem_cascade` |
 | `mahjong-cubes` | `games/mahjong-cubes/` | `games::mahjong_cubes` |
+| `reversi` | `games/reversi/` | `games::reversi` |
+| `checkers` | `games/checkers/` | `games::checkers` |
+| `hearts` | `games/hearts/` | `games::hearts` |
+| `picture-logic` | `games/picture-logic/` | `games::picture_logic` |
+| `memory-match` | `games/memory-match/` | `games::memory_match` |
+| `kakuro` | `games/kakuro/` | `games::kakuro` |
+| `dominoes` | `games/dominoes/` | `games::dominoes` |
+| `chess` | `games/chess/` | `games::chess` |
 
 Keep Solitaire variants in separate modules within the Solitaire crate so they can share the card model. The current launch values are `klondike`, `spider`, `freecell`, `pyramid`, and `tripeaks`.
 
