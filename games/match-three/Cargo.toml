@@ -1,0 +1,4 @@
+[package]
+name = "corner-table-match-three"
+version.workspace = true
+edition.workspace = true
