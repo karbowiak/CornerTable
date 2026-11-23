@@ -113,10 +113,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_bundled_paintings_still_resolve_and_cut() {
+    fn all_bundled_paintings_decode_for_swap_and_cut_at_every_size() {
+        let renderer = gpui::SvgRenderer::new(Arc::new(Assets));
         for painting in super::super::GALLERY {
-            let pieces = cut_painting(&painting.source, Size::Twelve).unwrap();
-            assert_eq!(pieces.len(), Size::Twelve.piece_count());
+            let PictureSource::Bundled(asset) = painting.source else {
+                panic!("{} must be a bundled scene", painting.id);
+            };
+            let bytes = Assets.load(asset).unwrap().unwrap().into_owned();
+            let image = gpui::Image::from_bytes(gpui::ImageFormat::Jpeg, bytes)
+                .to_image_data(renderer.clone())
+                .unwrap_or_else(|error| panic!("decoding {asset}: {error}"));
+            let dimensions = image.size(0);
+            let aspect = u32::from(dimensions.width) as f32 / u32::from(dimensions.height) as f32;
+            assert_eq!(painting.aspect, aspect, "{asset}");
+
+            for size in Size::ALL {
+                let pieces = cut_painting(&painting.source, size)
+                    .unwrap_or_else(|error| panic!("cutting {asset} at {size:?}: {error}"));
+                assert_eq!(pieces.len(), size.piece_count(), "{asset} at {size:?}");
+            }
         }
     }
 

@@ -114,6 +114,18 @@ const GALLERY: &[Painting] = &[
         "games/jigsaw/rainy-bookshop.jpg",
         1280. / 853.,
     ),
+    Painting::bundled(
+        "coastal-railway",
+        "Coastal Railway",
+        "games/jigsaw/coastal-railway.jpg",
+        3. / 2.,
+    ),
+    Painting::bundled(
+        "citrus-courtyard",
+        "Citrus Courtyard",
+        "games/jigsaw/citrus-courtyard.jpg",
+        3. / 2.,
+    ),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
