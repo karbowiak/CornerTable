@@ -40,6 +40,8 @@ pub enum Action {
     SelectGame(GameId),
     SelectPeriod(Period),
     ClearSearch,
+    ToggleFavorite(GameId),
+    ShowFavorites(bool),
     SetAppearance(theme::Appearance),
 }
 
@@ -58,6 +60,8 @@ pub struct Desktop {
     pub search_focus: FocusHandle,
     pub search_select_all: bool,
     pub recent: Option<GameLaunch>,
+    pub favorites: Vec<GameId>,
+    pub favorites_only: bool,
     pub appearance: theme::Appearance,
     scroll: ScrollHandle,
     back: Vec<Visit>,
@@ -75,6 +79,8 @@ impl Desktop {
     ) -> Self {
         let board_game = api.home.challenge.game_id.clone();
         let recent = storage::recent_game().filter(|launch| api.game(&launch.game).is_some());
+        let mut favorites = storage::favorites();
+        favorites.retain(|id| api.game(id).is_some());
         theme::apply(appearance, window, cx);
         cx.observe_window_appearance(window, |desktop, window, cx| {
             theme::apply(desktop.appearance, window, cx);
@@ -90,6 +96,8 @@ impl Desktop {
             search_focus: cx.focus_handle().tab_stop(true),
             search_select_all: false,
             recent,
+            favorites,
+            favorites_only: false,
             appearance,
             scroll: ScrollHandle::new(),
             back: Vec::new(),
@@ -118,6 +126,18 @@ impl Desktop {
             Action::ClearSearch => {
                 self.search.clear();
                 self.search_select_all = false;
+            }
+            Action::ToggleFavorite(game) => {
+                if let Some(index) = self.favorites.iter().position(|id| id == &game) {
+                    self.favorites.remove(index);
+                } else {
+                    self.favorites.push(game);
+                }
+                storage::save_favorites(&self.favorites);
+            }
+            Action::ShowFavorites(only) => {
+                self.favorites_only = only;
+                self.scroll.set_offset(point(px(0.), px(0.)));
             }
             Action::SetAppearance(appearance) => {
                 if self.appearance != appearance {
@@ -223,6 +243,7 @@ impl Render for Desktop {
             }))
             .on_action(cx.listener(|desktop, _: &FindGame, window, cx| {
                 desktop.dispatch(Action::Navigate(Page::Library), window, cx);
+                desktop.favorites_only = false;
                 desktop.search_select_all = true;
                 cx.on_next_frame(window, |desktop, window, cx| {
                     desktop.search_focus.focus(window, cx);
@@ -263,5 +284,81 @@ impl Render for Desktop {
                             .child(content),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Modifiers, MouseDownEvent, PlatformInput, TestAppContext};
+
+    use super::*;
+
+    #[gpui::test]
+    fn navigation_buttons_restore_history_and_new_routes_drop_forward(cx: &mut TestAppContext) {
+        cx.update(crate::install_shortcuts);
+        let window = cx.add_window(|window, cx| {
+            let desktop = Desktop::new(
+                FixtureApi::load().unwrap(),
+                theme::Appearance::Light,
+                window,
+                cx,
+            );
+            desktop.focus.focus(window, cx);
+            desktop
+        });
+        window
+            .update(cx, |desktop, window, cx| {
+                desktop.dispatch(Action::Navigate(Page::Solitaire), window, cx);
+                desktop.dispatch(Action::Navigate(Page::DailyChallenge), window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let mouse = |direction| {
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Navigate(direction),
+                position: point(px(400.), px(150.)),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            })
+        };
+        cx.update_window(window.into(), |_, window, cx| {
+            window.dispatch_event(mouse(NavigationDirection::Back), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            window
+                .read_with(cx, |desktop, _| desktop.page.clone())
+                .unwrap(),
+            Page::Solitaire
+        );
+
+        cx.update_window(window.into(), |_, window, cx| {
+            window.dispatch_event(mouse(NavigationDirection::Forward), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            window
+                .read_with(cx, |desktop, _| desktop.page.clone())
+                .unwrap(),
+            Page::DailyChallenge
+        );
+
+        cx.simulate_keystrokes(window.into(), "alt-left");
+        assert_eq!(
+            window
+                .read_with(cx, |desktop, _| desktop.page.clone())
+                .unwrap(),
+            Page::Solitaire
+        );
+        window
+            .update(cx, |desktop, window, cx| {
+                desktop.dispatch(Action::Navigate(Page::Leaderboard), window, cx);
+                assert!(!desktop.can_step_history(NavigationDirection::Forward));
+            })
+            .unwrap();
     }
 }

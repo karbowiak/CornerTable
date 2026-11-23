@@ -3,6 +3,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use corner_table_api::GameId;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::games::GameLaunch;
@@ -92,6 +93,18 @@ pub fn appearance() -> Appearance {
 pub fn set_appearance(appearance: Appearance) {
     if let Some(dir) = data_dir() {
         write(&dir.join("appearance.json"), &appearance);
+    }
+}
+
+pub fn favorites() -> Vec<GameId> {
+    data_dir()
+        .and_then(|dir| read(&dir.join("favorites.json")))
+        .unwrap_or_default()
+}
+
+pub fn save_favorites(favorites: &[GameId]) {
+    if let Some(dir) = data_dir() {
+        write(&dir.join("favorites.json"), &favorites);
     }
 }
 

@@ -83,6 +83,7 @@ pub fn game(
     view: Option<AnyView>,
     cx: &Context<Desktop>,
 ) -> Div {
+    let favorite = app.favorites.contains(&launch.game);
     let (title, description) = app
         .api
         .game(&launch.game)
@@ -119,15 +120,36 @@ pub fn game(
             .justify_between()
             .gap_2()
             .child(t::display_type(title.to_owned(), 30.))
-            .children(daily::from_launch(launch).map(|puzzle| {
+            .child(
                 div()
-                    .text_size(px(13.))
-                    .text_color(rgb(t::colors(cx).muted))
-                    .child(format!(
-                        "Daily puzzle · {}",
-                        puzzle.date.format("%b %-d, %Y")
-                    ))
-            })),
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .children(daily::from_launch(launch).map(|puzzle| {
+                        div()
+                            .text_size(px(13.))
+                            .text_color(rgb(t::colors(cx).muted))
+                            .child(format!(
+                                "Daily puzzle · {}",
+                                puzzle.date.format("%b %-d, %Y")
+                            ))
+                    }))
+                    .child(
+                        widgets::button(
+                            "game-favorite",
+                            if favorite {
+                                "Remove favorite"
+                            } else {
+                                "Add favorite"
+                            },
+                            Action::ToggleFavorite(launch.game.clone()),
+                            false,
+                            cx,
+                        )
+                        .min_h(px(34.)),
+                    ),
+            ),
     );
 
     match view {
