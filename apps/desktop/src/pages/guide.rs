@@ -588,6 +588,10 @@ impl Guide {
             "Collect the last cards",
             "When Finish appears, you can send all remaining cards to their foundations in one action. Undo takes back the whole collection.",
         );
+        const SHARE: (&str, &str) = (
+            "Share a deal",
+            "Copy deal code shares the starting cards and rules. Copy a code you received, then choose Play copied deal to open it. Use Return to my deal to resume your own table.",
+        );
         let sections: &'static [(&str, &str)] = match variant {
             Variant::Klondike => &[
                 (
@@ -601,6 +605,7 @@ impl Guide {
                 MOVE_CARDS,
                 FINISH,
                 TRY_AGAIN,
+                SHARE,
             ],
             Variant::Spider => &[
                 (
@@ -613,6 +618,7 @@ impl Guide {
                 ),
                 MOVE_CARDS,
                 TRY_AGAIN,
+                SHARE,
             ],
             Variant::FreeCell => &[
                 (
@@ -626,6 +632,7 @@ impl Guide {
                 MOVE_CARDS,
                 FINISH,
                 TRY_AGAIN,
+                SHARE,
             ],
             Variant::Pyramid => &[
                 (
@@ -638,6 +645,7 @@ impl Guide {
                 ),
                 MOVE_CARDS,
                 TRY_AGAIN,
+                SHARE,
             ],
             Variant::TriPeaks => &[
                 (
@@ -650,6 +658,7 @@ impl Guide {
                 ),
                 MOVE_CARDS,
                 TRY_AGAIN,
+                SHARE,
             ],
         };
         Self {

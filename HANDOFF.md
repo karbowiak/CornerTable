@@ -8,7 +8,7 @@ The games present a result when a round ends. Results include the actual score o
 
 | Game | Current features |
 | --- | --- |
-| Solitaire | Klondike, Spider, FreeCell, Pyramid, and TriPeaks. Animated stock deals, card and stack dragging, arrow-key play, twelve original court illustrations and four engraved aces, three table styles, 1,024 Verified Draw 1 Klondike deals, hints, safe foundation collection, and per-mode progress and undo. Spider detects when no legal draw or transfer remains. |
+| Solitaire | Klondike, Spider, FreeCell, Pyramid, and TriPeaks. Animated stock deals, card and stack dragging, arrow-key play, twelve original court illustrations and four engraved aces, three table styles, 1,024 Verified Draw 1 Klondike deals, hints, safe foundation collection, and per-mode progress and undo. Spider detects when no legal draw or transfer remains. Deal codes open the exact starting deck on a separate table. |
 | Mahjong | Six solvable layouts from a 24-tile Tea Tray to a 144-tile Koi. Thirty-six original ceramic faces, keyboard controls, shareable practice deal codes, Clean Clear, hints, undo, and saved practice and Daily boards. |
 | Minesweeper | Three carved fields, animated reveals and flags, a clock and time trial, chording, exact-layout practice replays, visible-clue hints, deduction-certified Logic only, and restored progress and bests. |
 | Sudoku | 9×9 and 6×6 practice, three uniquely solvable Killer puzzles, daily clean solves, deduction hints, notes, undo, and saved rounds. |
@@ -28,7 +28,7 @@ The games present a result when a round ends. Results include the actual score o
 | Kakuro | Ninety-six unique cross-sums puzzles at two sizes. Pencil marks, clue highlighting, hints, undo, and per-board progress. |
 | Dominoes | Double-six Draw Dominoes with a wrapping chain, offline opponents, covered hot-seat handoffs, and saved match scores. |
 | Chess | Offline and hot-seat play, original pieces, drag and keyboard moves, promotion, draw claims, and undo with saved replays. |
-| Peg Solitaire | Classic 33-hole cross with copper pegs and teal enamel, pointer and keyboard play, center finishes, hints, undo, replay, and saved rounds. |
+| Peg Solitaire | Classic 33-hole cross with copper pegs and teal enamel, animated pointer and keyboard jumps, center finishes, hints, undo, replay, and saved rounds. |
 
 ## Development
 
