@@ -1,4 +1,4 @@
-use super::{CELLS, Format, Game, Occupancy, Unit};
+use super::{CELLS, CageIssue, Format, Game, Occupancy, Unit};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Hint {
@@ -26,6 +26,12 @@ pub enum HintReason {
         peer: usize,
         unit: Unit,
     },
+    CageConflict {
+        issue: CageIssue,
+    },
+    CageCandidate {
+        digit: u8,
+    },
     IncorrectEntry {
         digit: u8,
     },
@@ -42,8 +48,11 @@ impl Hint {
             HintReason::OnlyCandidate { digit }
             | HintReason::OnlyPlace { digit, .. }
             | HintReason::LockedCandidate { digit, .. }
+            | HintReason::CageCandidate { digit }
             | HintReason::Forced { digit, .. } => digit,
-            HintReason::Duplicate { .. } | HintReason::IncorrectEntry { .. } => 0,
+            HintReason::Duplicate { .. }
+            | HintReason::CageConflict { .. }
+            | HintReason::IncorrectEntry { .. } => 0,
         }
     }
 }
@@ -78,9 +87,25 @@ impl Game {
             }
         }
 
-        if let Some(index) = indices()
-            .find(|&index| self.value(index) != 0 && self.value(index) != self.solution[index])
+        let incorrect = || {
+            indices().filter(|&index| {
+                self.value(index) != 0 && self.value(index) != self.solution[index]
+            })
+        };
+        if self.killer.is_some()
+            && let Some((index, issue)) = incorrect().find_map(|index| {
+                let issue = self.cage_issue(index)?;
+                (!matches!(issue, CageIssue::Repeated(digit) if self.value(index) != digit))
+                    .then_some((index, issue))
+            })
         {
+            return Some(Hint {
+                index,
+                reason: HintReason::CageConflict { issue },
+            });
+        }
+
+        if let Some(index) = incorrect().next() {
             return Some(Hint {
                 index,
                 reason: HintReason::IncorrectEntry {
@@ -90,19 +115,28 @@ impl Game {
         }
 
         let used = Occupancy::from_values(self.format, &self.board.values);
-        let mut candidates = [0; CELLS];
+        let mut candidates = self.killer.map_or([0; CELLS], |rules| {
+            rules
+                .candidates(&self.board.values, &used)
+                .expect("correct entries can be extended to the solution")
+        });
         let empty = || indices().filter(|&index| self.value(index) == 0);
         for index in empty() {
             let allowed = used.allowed(self.format, index);
-            if allowed.count_ones() == 1 {
+            if self.killer.is_none() {
+                candidates[index] = allowed;
+            }
+            if candidates[index].count_ones() == 1 {
+                let digit = candidates[index].trailing_zeros() as u8;
                 return Some(Hint {
                     index,
-                    reason: HintReason::OnlyCandidate {
-                        digit: allowed.trailing_zeros() as u8,
+                    reason: if allowed.count_ones() == 1 {
+                        HintReason::OnlyCandidate { digit }
+                    } else {
+                        HintReason::CageCandidate { digit }
                     },
                 });
             }
-            candidates[index] = allowed;
         }
 
         for index in empty() {

@@ -1,8 +1,10 @@
 //! Sudoku generation, editing, and validation independent of the desktop UI.
 
 mod hints;
+mod killer;
 
 pub use hints::{Hint, HintReason};
+pub use killer::{Cage, CageIssue, KillerPuzzle};
 
 pub const SIZE: usize = 9;
 pub const CELLS: usize = SIZE * SIZE;
@@ -155,6 +157,7 @@ impl Checkpoint<'_> {
 
 pub struct Game {
     format: Format,
+    killer: Option<&'static killer::Rules>,
     givens: [u8; CELLS],
     solution: [u8; CELLS],
     board: Board,
@@ -199,6 +202,7 @@ impl Game {
 
         Self {
             format,
+            killer: None,
             givens,
             solution,
             board: Board {
@@ -249,6 +253,7 @@ impl Game {
             })
     }
 
+    /// Whether a digit repeats in its row, column or box. Killer cages have their own issues.
     pub fn has_conflict(&self, index: usize) -> bool {
         self.conflict_peer(index).is_some()
     }
@@ -312,6 +317,7 @@ impl Game {
 
         let mut restored = Self {
             format: self.format,
+            killer: self.killer,
             givens: self.givens,
             solution: self.solution,
             board: Board {
@@ -361,12 +367,16 @@ impl Game {
         self.undo.push(undo);
         self.board.values[index] = digit;
         self.board.notes[index] = 0;
-        if digit != 0 && !self.has_conflict(index) {
+        if digit != 0 && !self.has_conflict(index) && self.cage_issue(index).is_none() {
             for (other, notes) in self.board.notes[..self.format.cell_count()]
                 .iter_mut()
                 .enumerate()
             {
-                if self.format.related(index, other) {
+                if self.format.related(index, other)
+                    || self
+                        .killer
+                        .is_some_and(|rules| rules.share_cage(index, other))
+                {
                     *notes &= !(1 << digit);
                 }
             }

@@ -1,10 +1,11 @@
+mod killer;
 mod persistence;
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::NaiveDate;
-use corner_table_sudoku::{Difficulty, Format, Game, Hint, HintReason, Unit};
+use corner_table_sudoku::{Difficulty, Format, Game, Hint, HintReason, KillerPuzzle, Unit};
 use gpui::{
     Context, Div, FocusHandle, FontWeight, KeyDownEvent, SharedString, Stateful, Window, div,
     prelude::*, px, relative, rgb,
@@ -33,6 +34,7 @@ const PANEL_WIDTH: f32 = 284.;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Puzzle {
     Practice(Format, Difficulty),
+    Killer(KillerPuzzle),
     Daily(u64),
     Challenge(u64),
 }
@@ -45,6 +47,7 @@ impl Puzzle {
     fn fixed_seed(self) -> Option<u64> {
         match self {
             Self::Daily(day) | Self::Challenge(day) => Some(day),
+            Self::Killer(puzzle) => Some(puzzle.id()),
             Self::Practice(..) => None,
         }
     }
@@ -52,16 +55,25 @@ impl Puzzle {
     fn start(self, seed: u64) -> Game {
         match self {
             Self::Practice(format, difficulty) => Game::with_format(seed, difficulty, format),
+            Self::Killer(puzzle) => Game::killer(puzzle),
             Self::Daily(day) => Game::daily(day),
             Self::Challenge(seed) => Game::new(seed, Difficulty::Medium),
         }
     }
 
-    fn result_mode(self, launch: &GameLaunch) -> String {
+    fn result_mode(self, launch: &GameLaunch, hints_used: u32) -> String {
         match self {
             Self::Practice(format, difficulty) => {
                 let size = format.size();
                 format!("{size}×{size} · {}", difficulty.label())
+            }
+            Self::Killer(puzzle) => {
+                let result = if hints_used == 0 {
+                    "Clean solve"
+                } else {
+                    "With hints"
+                };
+                format!("Killer Sudoku · {} · {result}", puzzle.label())
             }
             Self::Daily(day) => i32::try_from(day)
                 .ok()
@@ -275,7 +287,7 @@ impl GameView {
             if matches!(effect, Effect::Complete) {
                 session.record_result(
                     round.attempt,
-                    self.puzzle.result_mode(&self.launch),
+                    self.puzzle.result_mode(&self.launch, round.hints_used),
                     Outcome::Won,
                     ResultMetric::Moves(round.moves),
                 );
@@ -362,6 +374,16 @@ impl GameView {
                     },
                 ))
                 .child(control(
+                    "sudoku-killer",
+                    "Killer Sudoku",
+                    ButtonStyle::selected(matches!(self.puzzle, Puzzle::Killer(_))),
+                    cx,
+                    |view| {
+                        view.open(view.modes.killer());
+                        None
+                    },
+                ))
+                .child(control(
                     "sudoku-daily",
                     "Daily puzzle",
                     ButtonStyle::selected(self.puzzle == Puzzle::Daily(today)),
@@ -385,6 +407,7 @@ impl GameView {
         let value = game.value(index);
         let same_digit = !solved && value != 0 && value == game.value(round.selected);
         let conflict = game.has_conflict(index);
+        let cage = killer::Cell::new(game, index, round.selected, solved);
         let hint = round.visible_hint();
         let hint_target = hint.is_some_and(|hint| hint.index == index);
         let hint_source = hint.is_some_and(|hint| {
@@ -395,11 +418,16 @@ impl GameView {
             HintReason::OnlyPlace { unit, .. } => unit.contains(format, index),
             HintReason::LockedCandidate { shared, .. } => shared.contains(format, index),
             HintReason::Duplicate { peer, .. } => peer == index,
+            HintReason::CageCandidate { .. } | HintReason::CageConflict { .. } => {
+                cage.is_some_and(|cell| cell.contains(hint.index))
+            }
             HintReason::IncorrectEntry { .. } | HintReason::Forced { .. } => false,
         });
 
         let fill = if conflict {
             ERROR_SURFACE
+        } else if cage.is_some_and(|cell| cell.has_issue()) {
+            killer::CAGE_ERROR_SURFACE
         } else if hint_target {
             0xf9dfa3
         } else if selected {
@@ -410,6 +438,8 @@ impl GameView {
             HINT_SURFACE
         } else if same_digit {
             0xd6e9d7
+        } else if cage.is_some_and(|cell| cell.is_active()) {
+            killer::CAGE_ACTIVE_SURFACE
         } else if !solved && format.related(round.selected, index) {
             0xeef2e4
         } else if given {
@@ -428,6 +458,7 @@ impl GameView {
 
         div()
             .id(("sudoku-cell", index))
+            .debug_selector(move || format!("sudoku-cell-{index}"))
             .relative()
             .size(px(size))
             .flex_shrink_0()
@@ -454,7 +485,12 @@ impl GameView {
             .when(!solved, |cell| {
                 cell.cursor_pointer()
                     .when(
-                        !conflict && !selected && !hint_target && !hint_source && !hint_evidence,
+                        !conflict
+                            && !selected
+                            && !hint_target
+                            && !hint_source
+                            && !hint_evidence
+                            && !cage.is_some_and(|cell| cell.has_issue()),
                         |cell| cell.hover(|style| style.bg(rgb(0xe4ead8))),
                     )
                     .on_click(cx.listener(move |view, _, window, cx| {
@@ -464,11 +500,15 @@ impl GameView {
                         cx.notify();
                     }))
             })
-            .when_some((value != 0).then(|| value.to_string()), |cell, digit| {
-                cell.child(digit)
+            .when_some(cage, |cell, cage| {
+                cage.render(cell, size, game.notes(index), value, selected, conflict)
             })
-            .when(game.notes(index) != 0, |cell| {
-                cell.child(notes_grid(format, size, game.notes(index)))
+            .when(cage.is_none(), |cell| {
+                cell.children((value != 0).then(|| value.to_string()))
+                    .children(
+                        (game.notes(index) != 0)
+                            .then(|| notes_grid(format, size, game.notes(index))),
+                    )
             })
             .when(conflict, |cell| {
                 cell.child(
@@ -493,13 +533,20 @@ impl GameView {
             })
     }
 
-    fn board(&self, size: f32, cx: &Context<Self>) -> Div {
+    fn board(&self, size: f32, cx: &Context<Self>) -> Stateful<Div> {
         let game = &self.round().game;
         let format = game.format();
         let boxes_wide = format.size() / format.box_columns();
         let boxes_high = format.size() / format.box_rows();
         let solved = game.is_solved();
         div()
+            .id("sudoku-board")
+            .debug_selector(|| "sudoku-board".into())
+            .when(!game.cages().is_empty(), |board| {
+                board
+                    .role(gpui::Role::Grid)
+                    .aria_label("Killer Sudoku grid")
+            })
             .flex()
             .flex_col()
             .items_start()
@@ -619,8 +666,13 @@ impl GameView {
             )
     }
 
-    fn hint_panel(&self, hint: Hint, cx: &Context<Self>) -> Div {
-        let (title, detail) = hint_message(hint, self.round().game.format());
+    fn hint_panel(&self, hint: Hint, stack_buttons: bool, cx: &Context<Self>) -> Div {
+        let game = &self.round().game;
+        let cage = game.cage(hint.index);
+        let (title, detail) = cage.map_or_else(
+            || hint_message(hint, game.format()),
+            |cage| killer::hint_message(hint, cage, game),
+        );
         let action = if hint.entry() == 0 {
             "Clear".to_owned()
         } else {
@@ -634,12 +686,16 @@ impl GameView {
             .bg(rgb(HINT_SURFACE))
             .text_color(rgb(t::INK))
             .p_3()
+            .when(cage.is_some(), |panel| {
+                panel.p_2().text_size(px(13.)).line_height(px(17.))
+            })
             .child(div().font_weight(FontWeight::BOLD).child(title))
             .child(div().text_size(px(13.)).line_height(px(18.)).child(detail))
             .child(
                 div()
                     .flex()
                     .gap_2()
+                    .when(stack_buttons, |actions| actions.flex_col().gap_1())
                     .child(
                         control(
                             "sudoku-apply-hint",
@@ -698,56 +754,67 @@ impl GameView {
         }
 
         panel
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        control(
-                            "sudoku-undo",
-                            "Undo",
-                            ButtonStyle::enabled(game.can_undo()),
-                            cx,
-                            |view| view.round_mut().undo(),
-                        )
-                        .flex_1(),
-                    )
-                    .when(!solved, |row| {
-                        row.child(
-                            control(
-                                "sudoku-hint",
-                                "Hint",
-                                ButtonStyle::selected(round.hint_open),
-                                cx,
-                                |view| {
-                                    view.round_mut().show_hint();
-                                    None
-                                },
-                            )
-                            .flex_1(),
-                        )
-                    }),
-            )
+            .child(self.edit_actions(cx))
             .when_some(round.visible_hint(), |panel, hint| {
-                panel.child(self.hint_panel(hint, cx))
+                panel.child(self.hint_panel(hint, false, cx))
             })
             .when(compact && !solved, |panel| {
                 panel.child(self.keypad(compact, cx))
             })
-            .child(control(
-                "sudoku-next",
-                if daily { "Retry puzzle" } else { "New puzzle" },
-                if solved {
-                    ButtonStyle::Primary
-                } else {
-                    ButtonStyle::Normal
-                },
-                cx,
-                |view| {
-                    view.start_over();
-                    None
-                },
-            ))
+            .child(self.reset_button(daily, cx))
+    }
+
+    fn edit_actions(&self, cx: &Context<Self>) -> Div {
+        let round = self.round();
+        div()
+            .flex()
+            .gap_2()
+            .child(
+                control(
+                    "sudoku-undo",
+                    "Undo",
+                    ButtonStyle::enabled(round.game.can_undo()),
+                    cx,
+                    |view| view.round_mut().undo(),
+                )
+                .flex_1(),
+            )
+            .when(!round.game.is_solved(), |row| {
+                row.child(
+                    control(
+                        "sudoku-hint",
+                        "Hint",
+                        ButtonStyle::selected(round.hint_open),
+                        cx,
+                        |view| {
+                            view.round_mut().show_hint();
+                            None
+                        },
+                    )
+                    .flex_1(),
+                )
+            })
+    }
+
+    fn reset_button(&self, retry_same: bool, cx: &Context<Self>) -> Stateful<Div> {
+        control(
+            "sudoku-next",
+            if retry_same {
+                "Retry puzzle"
+            } else {
+                "New puzzle"
+            },
+            if self.round().game.is_solved() {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Normal
+            },
+            cx,
+            |view| {
+                view.start_over();
+                None
+            },
+        )
     }
 }
 
@@ -757,6 +824,24 @@ impl Render for GameView {
         if self.focus_on_mount {
             self.focus_on_mount = false;
             cx.defer_in(window, |view, window, cx| view.focus.focus(window, cx));
+        }
+
+        let root = div()
+            .id("sudoku-game")
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key_down))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .when(!matches!(self.puzzle, Puzzle::Challenge(_)), |root| {
+                root.child(self.modes(cx))
+            });
+        if let Puzzle::Killer(puzzle) = self.puzzle {
+            return root
+                .role(gpui::Role::Group)
+                .aria_label("Sudoku practice")
+                .gap_2()
+                .child(self.killer_body(puzzle, window, cx));
         }
 
         let format = self.round().game.format();
@@ -788,42 +873,33 @@ impl Render for GameView {
                 "Previous daily · Select Daily puzzle for today’s grid."
             }
             Puzzle::Daily(_) | Puzzle::Challenge(_) => "Classic 9×9 · Medium difficulty",
+            Puzzle::Killer(_) => unreachable!(),
         };
 
-        div()
-            .id("sudoku-game")
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::key_down))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .when(!matches!(self.puzzle, Puzzle::Challenge(_)), |root| {
-                root.child(self.modes(cx))
-            })
-            .child(
-                div()
-                    .text_color(rgb(palette.muted))
-                    .text_size(px(14.))
-                    .child(instruction),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(SECTION_GAP))
-                    .when(!beside, |row| row.flex_col())
-                    .child(
-                        div()
-                            .w(px(board_width))
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(self.board(cell, cx))
-                            .child(shortcuts(size, palette)),
-                    )
-                    .child(self.controls(panel_width, compact, cx)),
-            )
+        root.child(
+            div()
+                .text_color(rgb(palette.muted))
+                .text_size(px(14.))
+                .child(instruction),
+        )
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(SECTION_GAP))
+                .when(!beside, |row| row.flex_col())
+                .child(
+                    div()
+                        .w(px(board_width))
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(self.board(cell, cx))
+                        .child(shortcuts(size, palette)),
+                )
+                .child(self.controls(panel_width, compact, cx)),
+        )
     }
 }
 
@@ -1033,6 +1109,7 @@ fn hint_message(hint: Hint, format: Format) -> (String, String) {
                 ),
             )
         }
+        HintReason::CageConflict { .. } | HintReason::CageCandidate { .. } => unreachable!(),
     }
 }
 
@@ -1092,6 +1169,7 @@ fn control(
     action: impl Fn(&mut GameView) -> Option<Effect> + 'static,
 ) -> Stateful<Div> {
     let palette = t::colors(cx);
+    let id = id.into();
     let title = title.into();
     let (fill, border, ink) = match style {
         ButtonStyle::Normal => (palette.surface, palette.border, palette.ink),
@@ -1105,7 +1183,8 @@ fn control(
         palette.hover
     };
     div()
-        .id(id.into())
+        .id(id.clone())
+        .debug_selector(move || id.to_string())
         .min_h(px(36.))
         .px_2()
         .flex()

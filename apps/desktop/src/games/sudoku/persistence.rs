@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use corner_table_sudoku::{Difficulty, Edit, Format};
+use corner_table_sudoku::{Difficulty, Edit, Format, KillerPuzzle};
 use serde::{Deserialize, Serialize};
 
 use super::{AttemptId, GameEntry, GameLaunch, Puzzle, Round, Session, utc_day};
@@ -13,6 +13,7 @@ enum Mode {
     #[default]
     Standard,
     Mini,
+    Killer,
     Daily(u64),
 }
 
@@ -31,6 +32,8 @@ pub(super) struct PracticeModes {
     standard: Difficulty,
     #[serde(with = "DifficultyName")]
     mini: Difficulty,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    killer: Option<u64>,
 }
 
 impl Default for PracticeModes {
@@ -39,6 +42,7 @@ impl Default for PracticeModes {
             mode: Mode::Standard,
             standard: Difficulty::Easy,
             mini: Difficulty::Easy,
+            killer: None,
         }
     }
 }
@@ -55,9 +59,18 @@ impl PracticeModes {
     pub(super) fn selected_puzzle(&self) -> Puzzle {
         match self.mode {
             Mode::Mini => self.practice(Format::Mini),
+            Mode::Killer => self.killer(),
             Mode::Daily(day) if day <= utc_day() => Puzzle::Daily(day),
             Mode::Standard | Mode::Daily(_) => self.practice(Format::Standard),
         }
+    }
+
+    pub(super) fn killer(&self) -> Puzzle {
+        Puzzle::Killer(
+            self.killer
+                .and_then(KillerPuzzle::from_id)
+                .unwrap_or(KillerPuzzle::FirstLight),
+        )
     }
 
     pub(super) fn select(&mut self, puzzle: Puzzle) {
@@ -70,6 +83,10 @@ impl PracticeModes {
                 self.mini = difficulty;
                 self.mode = Mode::Mini;
             }
+            Puzzle::Killer(puzzle) => {
+                self.killer = Some(puzzle.id());
+                self.mode = Mode::Killer;
+            }
             Puzzle::Daily(day) => self.mode = Mode::Daily(day),
             Puzzle::Challenge(_) => {}
         }
@@ -81,6 +98,7 @@ impl Puzzle {
         let key = match self {
             Self::Practice(Format::Standard, difficulty) => format!("9x9/{}", difficulty.label()),
             Self::Practice(Format::Mini, difficulty) => format!("6x6/{}", difficulty.label()),
+            Self::Killer(puzzle) => format!("killer/{}", puzzle.id()),
             Self::Daily(day) => format!("daily/{day}"),
             Self::Challenge(_) => return Session::new(launch),
         };
@@ -322,6 +340,88 @@ mod tests {
         assert_eq!(
             restored.practice(Format::Mini),
             Puzzle::Practice(Format::Mini, Difficulty::Hard)
+        );
+    }
+
+    #[test]
+    fn old_mode_files_keep_both_difficulties_and_offer_the_first_killer_puzzle() {
+        let mut modes: PracticeModes =
+            serde_json::from_str(r#"{"mode":"mini","standard":"hard","mini":"medium"}"#).unwrap();
+        assert_eq!(modes.killer(), Puzzle::Killer(KillerPuzzle::FirstLight));
+        assert_eq!(
+            modes.selected_puzzle(),
+            Puzzle::Practice(Format::Mini, Difficulty::Medium)
+        );
+
+        let killer = Puzzle::Killer(KillerPuzzle::Crossings);
+        modes.select(killer);
+        let mut restored: PracticeModes =
+            serde_json::from_slice(&serde_json::to_vec(&modes).unwrap()).unwrap();
+        assert_eq!(restored.selected_puzzle(), killer);
+        restored.select(Puzzle::Daily(20_000));
+        assert_eq!(restored.killer(), killer);
+        assert_eq!(
+            restored.practice(Format::Standard),
+            Puzzle::Practice(Format::Standard, Difficulty::Hard)
+        );
+        assert_eq!(
+            restored.practice(Format::Mini),
+            Puzzle::Practice(Format::Mini, Difficulty::Medium)
+        );
+
+        let unknown: PracticeModes = serde_json::from_str(
+            r#"{"mode":"killer","standard":"hard","mini":"medium","killer":99}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            unknown.selected_puzzle(),
+            Puzzle::Killer(KillerPuzzle::FirstLight)
+        );
+    }
+
+    #[test]
+    fn killer_checkpoints_belong_to_one_puzzle_and_retain_the_clean_best() {
+        let puzzle = Puzzle::Killer(KillerPuzzle::FirstLight);
+        let launch = GameLaunch {
+            game: corner_table_api::GameId("sudoku".into()),
+            entry: GameEntry::Classic,
+        };
+        let mut round = Round::new(puzzle, 42);
+        round.selected = 12;
+        round.toggle_notes();
+        round.edit(3, true);
+        let neighbor = Puzzle::Killer(KillerPuzzle::Crossings);
+        assert!(Round::restore(neighbor, decoded(&round)).is_none());
+        let mut resumed = Round::restore(puzzle, decoded(&round)).unwrap();
+        assert!(resumed.attempt == round.attempt);
+        assert_eq!(resumed.selected, 12);
+        assert!(resumed.note_mode);
+        assert_eq!(resumed.game.notes(12), 1 << 3);
+
+        let mut last_effect = None;
+        while let Some(hint) = resumed.game.hint(resumed.selected) {
+            resumed.selected = hint.index;
+            last_effect = resumed.edit(hint.entry(), false);
+        }
+        assert!(matches!(last_effect, Some(Effect::Complete)));
+        let mut completed = Round::restore(puzzle, decoded(&resumed)).unwrap();
+        assert!(completed.game.is_solved());
+        assert_eq!(completed.hints_used, 0);
+        assert_eq!(completed.moves, 81);
+        assert_eq!(completed.best, Some(0));
+        assert_eq!(
+            puzzle.result_mode(&launch, completed.hints_used),
+            "Killer Sudoku · First Light · Clean solve"
+        );
+
+        completed.undo();
+        completed.show_hint();
+        assert_eq!(completed.hints_used, 1);
+        assert!(matches!(completed.apply_hint(), Some(Effect::Complete)));
+        assert_eq!(completed.best, Some(0));
+        assert_eq!(
+            puzzle.result_mode(&launch, completed.hints_used),
+            "Killer Sudoku · First Light · With hints"
         );
     }
 }
