@@ -1,22 +1,26 @@
 //! Deterministic mine-clue rooms and tunnel progression for Mine Trails.
 
-pub const SIDE: usize = 6;
-const CELL_COUNT: usize = SIDE * SIDE;
+mod blueprints;
+
+pub type Position = (usize, usize);
+const MAX_CELLS: usize = 7 * 7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
+#[repr(u8)]
 pub enum Room {
     Entrance,
     AmberDrift,
     SlateDrift,
+    Floodgate,
     DeepVault,
 }
 
 impl Room {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Entrance,
         Self::AmberDrift,
         Self::SlateDrift,
+        Self::Floodgate,
         Self::DeepVault,
     ];
 
@@ -25,14 +29,17 @@ impl Room {
             Self::Entrance => "Entrance",
             Self::AmberDrift => "Amber Drift",
             Self::SlateDrift => "Slate Drift",
+            Self::Floodgate => "Floodgate",
             Self::DeepVault => "Deep Vault",
         }
     }
 
     pub fn connections(self) -> &'static [Self] {
         match self {
-            Self::Entrance | Self::DeepVault => &[Self::AmberDrift, Self::SlateDrift],
-            Self::AmberDrift | Self::SlateDrift => &[Self::Entrance, Self::DeepVault],
+            Self::Entrance => &[Self::AmberDrift, Self::SlateDrift],
+            Self::AmberDrift | Self::SlateDrift => &[Self::Entrance, Self::Floodgate],
+            Self::Floodgate => &[Self::AmberDrift, Self::SlateDrift, Self::DeepVault],
+            Self::DeepVault => &[Self::Floodgate],
         }
     }
 }
@@ -46,26 +53,30 @@ pub enum RoomStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tile {
-    Covered { cache: bool },
+    Bedrock,
+    Covered { diamond: bool },
     Flagged,
-    Open { clue: u8, cache: bool },
-    Mine,
+    Open { clue: u8, diamond: bool },
+    Mine { hit: bool },
+    FalseFlag,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expedition {
-    rooms: [RoomBoard; 4],
+    rooms: [RoomBoard; Room::ALL.len()],
     current: Room,
+    cave_ins: u32,
 }
 
 impl Expedition {
     pub fn new(seed: u64) -> Self {
         Self {
             rooms: Room::ALL.map(|room| {
-                let variant = mix(seed.wrapping_add(room as u64)) as usize & 15;
+                let variant = mix(seed.wrapping_add(u64::from(room as u8))) as usize & 15;
                 RoomBoard::new(room, variant)
             }),
             current: Room::Entrance,
+            cave_ins: 0,
         }
     }
 
@@ -77,12 +88,32 @@ impl Expedition {
         self.rooms[room as usize].status()
     }
 
+    pub fn surveyed_count(&self) -> usize {
+        Room::ALL
+            .into_iter()
+            .filter(|&room| self.status(room) == RoomStatus::Surveyed)
+            .count()
+    }
+
     pub fn is_complete(&self) -> bool {
         self.status(Room::DeepVault) == RoomStatus::Surveyed
     }
 
-    pub fn cache_progress(&self, room: Room) -> (usize, usize) {
-        self.rooms[room as usize].cache_progress()
+    pub fn cave_ins(&self) -> u32 {
+        self.cave_ins
+    }
+
+    pub fn diamonds(&self, room: Room) -> (usize, usize) {
+        self.rooms[room as usize].diamonds()
+    }
+
+    pub fn side(&self) -> usize {
+        self.board().side
+    }
+
+    pub fn entry(&self) -> Position {
+        let board = self.board();
+        board.position(board.entries[0])
     }
 
     pub fn mine_count(&self) -> usize {
@@ -97,39 +128,40 @@ impl Expedition {
             .count()
     }
 
-    pub fn tile(&self, x: usize, y: usize) -> Option<Tile> {
-        Some(self.board().tile(index(x, y)?))
-    }
-
-    pub fn can_dig(&self, x: usize, y: usize) -> bool {
+    pub fn tile(&self, position: Position) -> Option<Tile> {
         let board = self.board();
-        index(x, y).is_some_and(|cell| {
-            board.status() == RoomStatus::Exploring
-                && board.cells[cell] == Cell::Covered
-                && neighbors(cell, false).any(|neighbor| board.cells[neighbor] == Cell::Open)
-        })
+        Some(board.tile(board.index(position)?))
     }
 
-    pub fn dig(&mut self, x: usize, y: usize) -> bool {
-        if !self.can_dig(x, y) {
+    pub fn can_dig(&self, position: Position) -> bool {
+        let board = self.board();
+        board.status() == RoomStatus::Exploring
+            && board
+                .index(position)
+                .is_some_and(|cell| board.at_edge(cell))
+    }
+
+    pub fn dig(&mut self, position: Position) -> bool {
+        if !self.can_dig(position) {
             return false;
         }
-        let cell = y * SIDE + x;
         let board = self.board_mut();
+        let cell = board.index(position).expect("diggable tile");
         if board.features[cell] == b'M' {
             board.cells[cell] = Cell::Hit;
+            self.cave_ins = self.cave_ins.saturating_add(1);
         } else {
             board.reveal(cell);
         }
         true
     }
 
-    pub fn toggle_flag(&mut self, x: usize, y: usize) -> bool {
-        let Some(cell) = index(x, y) else {
+    pub fn toggle_flag(&mut self, position: Position) -> bool {
+        let board = self.board_mut();
+        let Some(cell) = board.index(position) else {
             return false;
         };
-        let board = self.board_mut();
-        if board.status() != RoomStatus::Exploring || board.features[cell] == b'C' {
+        if board.status() != RoomStatus::Exploring || matches!(board.features[cell], b'#' | b'C') {
             return false;
         }
         board.cells[cell] = match board.cells[cell] {
@@ -140,21 +172,76 @@ impl Expedition {
         true
     }
 
+    pub fn adjacent_flags(&self, position: Position) -> usize {
+        let board = self.board();
+        board
+            .index(position)
+            .map_or(0, |cell| board.adjacent_flags(cell))
+    }
+
+    /// A sweep trusts the player's flags. Only edge-reachable tiles are dug.
+    pub fn can_sweep(&self, position: Position) -> bool {
+        let board = self.board();
+        board.status() == RoomStatus::Exploring
+            && board.index(position).is_some_and(|cell| {
+                board.cells[cell] == Cell::Open
+                    && board.adjacent_flags(cell) == usize::from(board.clue(cell))
+                    && board
+                        .neighbors(cell, true)
+                        .any(|neighbor| board.at_edge(neighbor))
+            })
+    }
+
+    pub fn sweep(&mut self, position: Position) -> bool {
+        if !self.can_sweep(position) {
+            return false;
+        }
+        let board = self.board();
+        let cell = board.index(position).expect("sweep clue");
+        let side = board.side;
+        let mut neighbors: Vec<_> = board.neighbors(cell, true).collect();
+        // Dig the sides before the corners so the corners can become reachable.
+        while !neighbors.is_empty() {
+            let count = neighbors.len();
+            neighbors.retain(|&neighbor| !self.dig((neighbor % side, neighbor / side)));
+            if neighbors.len() == count || self.status(self.current) != RoomStatus::Exploring {
+                break;
+            }
+        }
+        true
+    }
+
     pub fn is_unlocked(&self, room: Room) -> bool {
+        let surveyed = |room| self.status(room) == RoomStatus::Surveyed;
         match room {
             Room::Entrance => true,
-            Room::AmberDrift | Room::SlateDrift => {
-                self.status(Room::Entrance) == RoomStatus::Surveyed
-            }
-            Room::DeepVault => {
-                self.status(Room::AmberDrift) == RoomStatus::Surveyed
-                    && self.status(Room::SlateDrift) == RoomStatus::Surveyed
-            }
+            Room::AmberDrift | Room::SlateDrift => surveyed(Room::Entrance),
+            Room::Floodgate => surveyed(Room::AmberDrift) || surveyed(Room::SlateDrift),
+            Room::DeepVault => surveyed(Room::Floodgate),
         }
     }
 
+    /// A player can take an open connecting tunnel and pass through surveyed
+    /// rooms on the way to a destination.
     pub fn can_travel(&self, room: Room) -> bool {
-        self.current.connections().contains(&room) && self.is_unlocked(room)
+        if room == self.current || !self.is_unlocked(room) {
+            return false;
+        }
+        let mut pending = vec![self.current];
+        let mut visited = [false; Room::ALL.len()];
+        visited[self.current as usize] = true;
+        while let Some(from) = pending.pop() {
+            for &next in from.connections() {
+                if next == room {
+                    return true;
+                }
+                if !visited[next as usize] && self.status(next) == RoomStatus::Surveyed {
+                    visited[next as usize] = true;
+                    pending.push(next);
+                }
+            }
+        }
+        false
     }
 
     pub fn travel(&mut self, room: Room) -> bool {
@@ -193,41 +280,47 @@ enum Cell {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RoomBoard {
-    features: [u8; CELL_COUNT],
-    cells: [Cell; CELL_COUNT],
-    entry: usize,
+    side: usize,
+    features: [u8; MAX_CELLS],
+    cells: [Cell; MAX_CELLS],
+    entries: Vec<usize>,
 }
 
 impl RoomBoard {
     fn new(room: Room, variant: usize) -> Self {
-        let mut features = [b'.'; CELL_COUNT];
-        let mut entry = 0;
-        for (y, row) in BLUEPRINTS[room as usize][variant / 8].iter().enumerate() {
+        let rows = blueprints::BLUEPRINTS[room as usize][variant / 8];
+        let side = rows.len();
+        let mut features = [b'#'; MAX_CELLS];
+        let mut entries = Vec::new();
+        for (y, row) in rows.iter().enumerate() {
             for (x, feature) in row.bytes().enumerate() {
-                let mut x = if variant & 4 == 0 { x } else { SIDE - 1 - x };
+                let mut x = if variant & 4 == 0 { x } else { side - 1 - x };
                 let mut y = y;
                 for _ in 0..variant % 4 {
-                    (x, y) = (SIDE - 1 - y, x);
+                    (x, y) = (side - 1 - y, x);
                 }
-                let cell = y * SIDE + x;
+                let cell = y * side + x;
                 features[cell] = feature;
                 if feature == b'S' {
-                    entry = cell;
+                    entries.push(cell);
                 }
             }
         }
         let mut board = Self {
+            side,
             features,
-            cells: [Cell::Covered; CELL_COUNT],
-            entry,
+            cells: [Cell::Covered; MAX_CELLS],
+            entries,
         };
-        board.reveal(entry);
+        board.reset();
         board
     }
 
     fn reset(&mut self) {
         self.cells.fill(Cell::Covered);
-        self.reveal(self.entry);
+        for entry in 0..self.entries.len() {
+            self.reveal(self.entries[entry]);
+        }
     }
 
     fn reveal(&mut self, cell: usize) {
@@ -238,35 +331,54 @@ impl RoomBoard {
             }
             self.cells[next] = Cell::Open;
             if self.clue(next) == 0 {
-                pending.extend(neighbors(next, true));
+                pending.extend(self.neighbors(next, false));
             }
         }
     }
 
+    fn at_edge(&self, cell: usize) -> bool {
+        self.features[cell] != b'#'
+            && self.cells[cell] == Cell::Covered
+            && self
+                .neighbors(cell, false)
+                .any(|neighbor| self.cells[neighbor] == Cell::Open)
+    }
+
+    fn adjacent_flags(&self, cell: usize) -> usize {
+        self.neighbors(cell, true)
+            .filter(|&neighbor| self.cells[neighbor] == Cell::Flagged)
+            .count()
+    }
+
     fn clue(&self, cell: usize) -> u8 {
-        neighbors(cell, true)
+        self.neighbors(cell, true)
             .filter(|&neighbor| self.features[neighbor] == b'M')
             .count() as u8
     }
 
     fn tile(&self, cell: usize) -> Tile {
-        let cache = self.features[cell] == b'C';
-        match self.cells[cell] {
-            Cell::Covered => Tile::Covered { cache },
-            Cell::Flagged => Tile::Flagged,
-            Cell::Open => Tile::Open {
-                clue: self.clue(cell),
-                cache,
+        let feature = self.features[cell];
+        match (feature, self.cells[cell]) {
+            (b'#', _) => Tile::Bedrock,
+            (_, Cell::Hit) => Tile::Mine { hit: true },
+            (b'M', _) if self.status() == RoomStatus::Collapsed => Tile::Mine { hit: false },
+            (_, Cell::Flagged) if self.status() == RoomStatus::Collapsed => Tile::FalseFlag,
+            (_, Cell::Covered) => Tile::Covered {
+                diamond: feature == b'C',
             },
-            Cell::Hit => Tile::Mine,
+            (_, Cell::Flagged) => Tile::Flagged,
+            (_, Cell::Open) => Tile::Open {
+                clue: self.clue(cell),
+                diamond: feature == b'C',
+            },
         }
     }
 
-    fn cache_progress(&self) -> (usize, usize) {
+    fn diamonds(&self) -> (usize, usize) {
         let mut found = 0;
         let mut total = 0;
-        for (feature, cell) in self.features.iter().zip(self.cells) {
-            if *feature == b'C' {
+        for (&feature, cell) in self.features.iter().zip(self.cells) {
+            if feature == b'C' {
                 total += 1;
                 found += usize::from(cell == Cell::Open);
             }
@@ -275,7 +387,7 @@ impl RoomBoard {
     }
 
     fn status(&self) -> RoomStatus {
-        let (found, total) = self.cache_progress();
+        let (found, total) = self.diamonds();
         if self.cells.contains(&Cell::Hit) {
             RoomStatus::Collapsed
         } else if found == total {
@@ -284,31 +396,35 @@ impl RoomBoard {
             RoomStatus::Exploring
         }
     }
-}
 
-fn index(x: usize, y: usize) -> Option<usize> {
-    (x < SIDE && y < SIDE).then(|| y * SIDE + x)
-}
+    fn index(&self, (x, y): Position) -> Option<usize> {
+        (x < self.side && y < self.side).then(|| y * self.side + x)
+    }
 
-fn neighbors(cell: usize, diagonals: bool) -> impl Iterator<Item = usize> {
-    let offsets = [
-        (0, -1),
-        (1, 0),
-        (0, 1),
-        (-1, 0),
-        (-1, -1),
-        (1, -1),
-        (1, 1),
-        (-1, 1),
-    ];
-    offsets
-        .into_iter()
-        .take(if diagonals { 8 } else { 4 })
-        .filter_map(move |(dx, dy)| {
-            let x = (cell % SIDE).checked_add_signed(dx)?;
-            let y = (cell / SIDE).checked_add_signed(dy)?;
-            index(x, y)
-        })
+    fn position(&self, cell: usize) -> Position {
+        (cell % self.side, cell / self.side)
+    }
+
+    fn neighbors(&self, cell: usize, diagonals: bool) -> impl Iterator<Item = usize> + '_ {
+        let (x, y) = self.position(cell);
+        const OFFSETS: [(isize, isize); 8] = [
+            (0, -1),
+            (1, 0),
+            (0, 1),
+            (-1, 0),
+            (-1, -1),
+            (1, -1),
+            (1, 1),
+            (-1, 1),
+        ];
+        OFFSETS
+            .into_iter()
+            .take(if diagonals { 8 } else { 4 })
+            .filter_map(move |(dx, dy)| {
+                let cell = self.index((x.checked_add_signed(dx)?, y.checked_add_signed(dy)?))?;
+                (self.features[cell] != b'#').then_some(cell)
+            })
+    }
 }
 
 fn mix(seed: u64) -> u64 {
@@ -318,110 +434,5 @@ fn mix(seed: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-// Each blueprint can be solved from its starting clues using single-clue
-// deductions. The seed selects a blueprint and rotates or reflects it.
-const BLUEPRINTS: [[[&str; SIDE]; 2]; 4] = [
-    [
-        ["M.....", "....CM", "S..M..", "......", ".....C", "..M..M"],
-        ["M....M", "....CM", "S..M..", "......", ".....C", "..M..."],
-    ],
-    [
-        ["M.....", "...C..", "M...MM", "...M..", "S....C", ".....M"],
-        ["M.....", "M..C.M", "...M..", "....M.", "S....C", "..M..."],
-    ],
-    [
-        ["M..S..", "M.....", "C.M.MM", "......", "M...C.", ".....M"],
-        ["MM.S..", ".M....", "C...M.", "M...M.", "....C.", ".....M"],
-    ],
-    [
-        ["M.S..M", "M.....", "...M..", "C..MM.", "M....M", "....C."],
-        ["..S.M.", "......", "MM....", "C....M", ".MMM..", "....CM"],
-    ],
-];
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_room_variants_can_be_surveyed_from_clues() {
-        for variant in 0..16 {
-            for room in Room::ALL {
-                let mut expedition = Expedition::new(0);
-                expedition.current = room;
-                expedition.rooms[room as usize] = RoomBoard::new(room, variant);
-                assert_eq!(expedition.cache_progress(room), (0, 2));
-                survey(&mut expedition);
-            }
-        }
-    }
-
-    #[test]
-    fn vault_requires_both_drifts_and_retry_preserves_progress() {
-        let mut expedition = Expedition::new(42);
-        assert_eq!(expedition, Expedition::new(42));
-        assert_ne!(expedition, Expedition::new(43));
-        assert!(!expedition.travel(Room::AmberDrift));
-        survey(&mut expedition);
-        assert!(expedition.travel(Room::AmberDrift));
-        let starting_room = expedition.board().clone();
-        let mine = (0..CELL_COUNT)
-            .find(|&cell| {
-                expedition.board().features[cell] == b'M'
-                    && expedition.can_dig(cell % SIDE, cell / SIDE)
-            })
-            .expect("amber starting frontier has a mine");
-        assert!(expedition.toggle_flag(mine % SIDE, mine / SIDE));
-        assert!(!expedition.dig(mine % SIDE, mine / SIDE));
-        assert!(expedition.toggle_flag(mine % SIDE, mine / SIDE));
-        assert!(expedition.dig(mine % SIDE, mine / SIDE));
-        assert_eq!(expedition.status(Room::AmberDrift), RoomStatus::Collapsed);
-        assert!(expedition.retry_room());
-        assert_eq!(*expedition.board(), starting_room);
-        assert_eq!(expedition.status(Room::Entrance), RoomStatus::Surveyed);
-
-        survey(&mut expedition);
-        assert!(!expedition.travel(Room::DeepVault));
-        assert!(!expedition.travel(Room::SlateDrift));
-        assert!(expedition.travel(Room::Entrance));
-        assert!(expedition.travel(Room::SlateDrift));
-        survey(&mut expedition);
-        assert!(expedition.travel(Room::DeepVault));
-        assert!(!expedition.is_complete());
-        survey(&mut expedition);
-        assert!(expedition.is_complete());
-    }
-
-    fn survey(expedition: &mut Expedition) {
-        let room = expedition.current_room();
-        while expedition.status(room) == RoomStatus::Exploring {
-            let mut changed = false;
-            for cell in 0..CELL_COUNT {
-                let Some(Tile::Open { clue, .. }) = expedition.tile(cell % SIDE, cell / SIDE)
-                else {
-                    continue;
-                };
-                let mut covered = Vec::new();
-                let mut flagged = 0;
-                for neighbor in neighbors(cell, true) {
-                    match expedition.tile(neighbor % SIDE, neighbor / SIDE).unwrap() {
-                        Tile::Covered { .. } => covered.push(neighbor),
-                        Tile::Flagged => flagged += 1,
-                        _ => (),
-                    }
-                }
-                let unmarked_mines = usize::from(clue) - flagged;
-                for neighbor in covered.iter().copied() {
-                    let (x, y) = (neighbor % SIDE, neighbor / SIDE);
-                    if unmarked_mines == 0 {
-                        changed |= expedition.dig(x, y);
-                    } else if unmarked_mines == covered.len() {
-                        changed |= expedition.toggle_flag(x, y);
-                    }
-                }
-            }
-            assert!(changed, "{room:?} has no clue-based move");
-        }
-        assert_eq!(expedition.status(room), RoomStatus::Surveyed);
-    }
-}
+mod tests;
