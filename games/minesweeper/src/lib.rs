@@ -2,6 +2,8 @@
 
 mod logic;
 
+pub use logic::{Clue, Hint, HintReason};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Difficulty {
     Meadow,
