@@ -28,10 +28,9 @@ ldd "$stage/corner-table" | awk '$3 ~ /^\// { print $3 }' | while read -r librar
     fi
 done
 
-install -Dm644 packaging/macos/icon.png "$tools/corner-table.png"
 APPIMAGE_EXTRACT_AND_RUN=1 LDAI_OUTPUT="$(realpath -m "$output")" \
     "$linuxdeploy" --appdir "$appdir" --desktop-file packaging/linux/corner-table.desktop \
-    --icon-file "$tools/corner-table.png" --output appimage
+    --icon-file packaging/linux/corner-table.png --output appimage
 
 test -x "$output"
 image=$(realpath "$output")
