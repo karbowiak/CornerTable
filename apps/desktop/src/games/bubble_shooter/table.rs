@@ -111,6 +111,7 @@ impl Playfield {
         );
         ring(window, launcher, radius * 1.10, tint(0x0c2626, 0.9), px(1.));
         if let Some(flight) = flight {
+            self.paint_bank_contacts(flight, radius, window);
             if let Some(trail) = flight.position(0.042) {
                 circle(window, self.screen(trail), radius * 0.54, tint(IVORY, 0.15));
             }
@@ -120,6 +121,36 @@ impl Playfield {
         } else if ready {
             paint_bubble(window, launcher, radius, round.current(), 1.);
         }
+    }
+
+    fn paint_bank_contacts(self, flight: &Flight, radius: Pixels, window: &mut Window) {
+        let elapsed = flight.started.elapsed().as_secs_f64();
+        let bounces = flight.aim.bounces();
+        if bounces == 0 {
+            return;
+        }
+        let mut traveled = 0.;
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: self.bounds,
+            }),
+            |window| {
+                for segment in flight.aim.path.windows(2).take(bounces) {
+                    traveled += distance(segment[0], segment[1]);
+                    let contact = traveled * flight.duration / flight.length;
+                    let progress = ((elapsed - contact) / 0.14) as f32;
+                    if (0. ..1.).contains(&progress) {
+                        ring(
+                            window,
+                            self.screen(segment[1]),
+                            radius * (0.58 + 0.86 * progress),
+                            tint(0xffdc87, (1. - progress).powi(2) * 0.9),
+                            px(1.8),
+                        );
+                    }
+                }
+            },
+        );
     }
 
     fn paint_frame(self, window: &mut Window, crowding_line: bool, lost: bool) {

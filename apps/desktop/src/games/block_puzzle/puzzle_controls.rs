@@ -1,4 +1,4 @@
-use corner_table_block_puzzle::{PuzzleGoal, PuzzleStatus};
+use corner_table_block_puzzle::PuzzleGoal;
 use gpui::{Context, Div, FontWeight, div, prelude::*, px, rgb};
 
 use super::{GameView, PREVIEW_FITS, WALNUT, t, themed_control};
@@ -120,18 +120,6 @@ impl GameView {
                         )
                     }),
             )
-    }
-
-    pub(super) fn puzzle_status(&self) -> String {
-        let round = &self.puzzles.current().round;
-        match round.game.puzzle_status() {
-            Some(PuzzleStatus::Solved) => {
-                format!("Solved in {}.", move_count(round.turns.len()))
-            }
-            Some(PuzzleStatus::OutOfMoves) => "Goal missed. Undo or restart.".into(),
-            Some(PuzzleStatus::Blocked) => "No pieces fit. Undo or restart.".into(),
-            _ => String::new(),
-        }
     }
 }
 

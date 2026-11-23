@@ -1,8 +1,6 @@
-use std::time::Duration;
-
 use gpui::{
-    Animation, AnimationExt, AnyElement, ObjectFit, PathBuilder, Pixels, Point, Rgba, Window,
-    canvas, div, img, point, prelude::*, px, rgb, rgba,
+    AnyElement, ObjectFit, PathBuilder, Pixels, Point, Rgba, Window, canvas, div, img, point,
+    prelude::*, px, rgb, rgba,
 };
 
 pub(super) const ENTRANCE: &str = "games/mine-trails/mine-entrance.jpg";
@@ -183,19 +181,21 @@ fn poly(
     }
 }
 
-pub(super) fn strike(generation: usize, hit: bool) -> impl IntoElement {
-    let color = rgba(if hit { 0xff79519b } else { 0xffdda37a });
+pub(super) fn strike(progress: f32, hit: bool, diamond: bool) -> impl IntoElement {
+    let color = rgba(if hit {
+        0xff79519b
+    } else if diamond {
+        0x80e7ffb8
+    } else {
+        0xffdda37a
+    });
+    let strength = (1. - progress.clamp(0., 1.)).powi(3);
     div()
         .absolute()
         .inset_0()
         .rounded(px(5.))
         .border_2()
         .border_color(color)
-        .bg(color)
-        .with_animation(
-            ("excavation-strike", generation),
-            Animation::new(Duration::from_millis(if hit { 430 } else { 320 }))
-                .with_easing(|progress| 1. - (1. - progress).powi(3)),
-            |overlay, fade| overlay.opacity(1. - fade),
-        )
+        .bg(color.opacity(if diamond { 0.35 } else { 1. }))
+        .opacity(strength)
 }

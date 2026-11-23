@@ -3,6 +3,8 @@ mod board;
 mod chart;
 mod record;
 
+use std::time::{Duration, Instant};
+
 use corner_table_mine_trails::{Expedition, Position, Room, RoomStatus, Tile};
 use gpui::{
     Context, Div, ElementId, FocusHandle, FontWeight, KeyDownEvent, Render, Role, SharedString,
@@ -11,7 +13,7 @@ use gpui::{
 
 use crate::{
     audio::{self, Effect},
-    games::{GameEntry, GameLaunch},
+    games::{GameEntry, GameLaunch, round_result},
     storage::{Outcome, ResultMetric, Session},
     theme as t,
 };
@@ -41,11 +43,17 @@ impl Reset {
     }
 }
 
-#[derive(Default)]
 struct Strike {
-    generation: usize,
+    started: Instant,
     opened: u64,
     hit: Option<Position>,
+}
+
+impl Strike {
+    fn progress(&self) -> f32 {
+        let duration = Duration::from_millis(if self.hit.is_some() { 430 } else { 320 });
+        self.started.elapsed().as_secs_f32() / duration.as_secs_f32()
+    }
 }
 
 pub struct GameView {
@@ -59,7 +67,8 @@ pub struct GameView {
     keyboard_cursor: bool,
     hovered_clue: Option<Position>,
     pinned_clue: Option<Position>,
-    strike: Strike,
+    strike: Option<Strike>,
+    new_best: bool,
     show_final_board: bool,
     pending_reset: Option<Reset>,
 }
@@ -96,7 +105,8 @@ impl GameView {
             keyboard_cursor: true,
             hovered_clue: None,
             pinned_clue: None,
-            strike: Strike::default(),
+            strike: None,
+            new_best: false,
             show_final_board: false,
             pending_reset: None,
         }
@@ -104,7 +114,7 @@ impl GameView {
 
     fn apply(&mut self, action: Move, cx: &mut Context<Self>) {
         let excavation = matches!(action, Move::Dig(..) | Move::Sweep(..));
-        let before = excavation.then(|| self.opened_tiles());
+        let before = (excavation && crate::motion::enabled(cx)).then(|| self.opened_tiles());
         let room = self.expedition.current_room();
         let was_complete = self.expedition.is_complete();
         if !action.apply(&mut self.expedition) {
@@ -121,20 +131,30 @@ impl GameView {
         }
 
         if let Some(before) = before {
-            self.strike = Strike {
-                generation: self.strike.generation.wrapping_add(1),
-                opened: self.opened_tiles() & !before,
-                hit: self.positions().find(|&position| {
+            let opened = self.opened_tiles() & !before;
+            let hit = if self.expedition.status(room) == RoomStatus::Collapsed {
+                self.positions().find(|&position| {
                     self.expedition.tile(position) == Some(Tile::Mine { hit: true })
-                }),
+                })
+            } else {
+                None
             };
+            if opened != 0 || hit.is_some() {
+                self.strike = Some(Strike {
+                    started: Instant::now(),
+                    opened,
+                    hit,
+                });
+            }
         }
         if matches!(action, Move::Travel(_) | Move::Retry) {
             self.reset_tools();
         }
 
         self.pending_reset = None;
+        let previous_best = self.record.best;
         self.record.remember(action, &self.expedition);
+        self.new_best |= self.record.best != previous_best;
         self.session.save(&self.record);
         let effect = if !was_complete && self.expedition.is_complete() {
             self.session.record_result(
@@ -167,6 +187,7 @@ impl GameView {
     fn reset(&mut self, reset: Reset, window: &mut Window, cx: &mut Context<Self>) {
         self.expedition = self.record.restart(reset.seed(self.record.seed));
         self.reset_tools();
+        self.new_best = false;
         self.pending_reset = None;
         self.session.save(&self.record);
         self.board_focus.focus(window, cx);
@@ -179,8 +200,7 @@ impl GameView {
         self.tool = Tool::Dig;
         self.hovered_clue = None;
         self.pinned_clue = None;
-        self.strike.opened = 0;
-        self.strike.hit = None;
+        self.strike = None;
         self.show_final_board = false;
     }
 
@@ -259,27 +279,14 @@ impl GameView {
         }
     }
 
-    fn objective(&self, room: Room) -> &'static str {
-        match self.expedition.status(room) {
-            RoomStatus::Exploring => match room {
-                Room::Entrance => "Dig from the lit edge to reach both diamonds.",
-                Room::AmberDrift | Room::SlateDrift => {
-                    "Recover both diamonds to open the way to the Floodgate."
-                }
-                Room::Floodgate => "Recover three diamonds to open the Deep Vault.",
-                Room::DeepVault => "Recover three diamonds to finish the expedition.",
-            },
-            RoomStatus::Surveyed => match room {
-                Room::Entrance => {
-                    "Amber has fewer mines. Slate has tighter passages. Both lead to the Floodgate."
-                }
-                Room::AmberDrift | Room::SlateDrift => {
-                    "The Floodgate is open. The other drift is an optional detour."
-                }
-                Room::Floodgate => "The route to the Deep Vault is open.",
-                Room::DeepVault => "The final seam is charted.",
-            },
-            RoomStatus::Collapsed => "A mine caved in the chamber. Retry to reopen it.",
+    fn objective(room: Room) -> &'static str {
+        match room {
+            Room::Entrance => "Dig from the lit edge to reach both diamonds.",
+            Room::AmberDrift | Room::SlateDrift => {
+                "Recover both diamonds to open the way to the Floodgate."
+            }
+            Room::Floodgate => "Recover three diamonds to open the Deep Vault.",
+            Room::DeepVault => "Recover three diamonds to finish the expedition.",
         }
     }
 
@@ -300,12 +307,18 @@ impl GameView {
                     .flex_col()
                     .gap_1()
                     .child(t::display_type(room.name(), 28.))
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .line_height(px(18.))
-                            .text_color(rgb(colors.muted))
-                            .child(self.objective(room)),
+                    .when(
+                        self.strike.is_some()
+                            || self.expedition.status(room) == RoomStatus::Exploring,
+                        |heading| {
+                            heading.child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(rgb(colors.muted))
+                                    .child(Self::objective(room)),
+                            )
+                        },
                     ),
             )
             .child(
@@ -366,14 +379,24 @@ impl GameView {
                         )),
                 )
             }
-            RoomStatus::Collapsed => bar.child(
-                button("mine-retry", "Retry chamber", true, colors).on_click(cx.listener(
-                    |view, _, window, cx| {
-                        view.apply(Move::Retry, cx);
-                        view.board_focus.focus(window, cx);
-                    },
-                )),
-            ),
+            _ if self.strike.is_some() => bar,
+            RoomStatus::Collapsed => {
+                let (found, total) = self.expedition.diamonds(room);
+                bar.child(round_result(
+                    cx,
+                    "mine-trails-room-result",
+                    Outcome::Lost,
+                    "Chamber collapsed",
+                    format!("{found}/{total} diamonds found here · {} on this route. Retry this chamber to reopen it.",
+                        cave_in_count(self.expedition.cave_ins())),
+                    button("mine-retry", "Retry chamber", true, colors).on_click(cx.listener(
+                        |view, _, window, cx| {
+                            view.apply(Move::Retry, cx);
+                            view.board_focus.focus(window, cx);
+                        },
+                    )),
+                ))
+            }
             RoomStatus::Surveyed if room == Room::DeepVault => bar.child(
                 button("mine-show-summary", "Show expedition log", true, colors).on_click(
                     cx.listener(|view, _, _, cx| {
@@ -383,23 +406,45 @@ impl GameView {
                 ),
             ),
             RoomStatus::Surveyed => {
-                let exits: &[Room] = match room {
-                    Room::Entrance => &[Room::AmberDrift, Room::SlateDrift],
-                    Room::AmberDrift | Room::SlateDrift => &[Room::Floodgate],
-                    Room::Floodgate => &[Room::DeepVault],
-                    Room::DeepVault => &[],
+                let (exits, route_hint): (&[Room], _) = match room {
+                    Room::Entrance => (
+                        &[Room::AmberDrift, Room::SlateDrift],
+                        "Amber has fewer mines. Slate has tighter passages. Both lead to the Floodgate.",
+                    ),
+                    Room::AmberDrift | Room::SlateDrift => (
+                        &[Room::Floodgate],
+                        "The Floodgate is open. The other drift is an optional detour.",
+                    ),
+                    Room::Floodgate => (&[Room::DeepVault], "The route to the Deep Vault is open."),
+                    Room::DeepVault => (&[], "The final seam is charted."),
                 };
-                bar.children(exits.iter().map(|&destination| {
-                    button(
-                        ("mine-next", destination as usize),
-                        format!("Enter {}", destination.name()),
-                        true,
-                        colors,
-                    )
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        view.travel(destination, window, cx);
-                    }))
-                }))
+                let actions =
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .children(exits.iter().map(|&destination| {
+                            button(
+                                ("mine-next", destination as usize),
+                                format!("Enter {}", destination.name()),
+                                true,
+                                colors,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, window, cx| {
+                                    view.travel(destination, window, cx);
+                                },
+                            ))
+                        }));
+                let (found, _) = self.expedition.diamonds(room);
+                bar.child(round_result(
+                    cx,
+                    "mine-trails-room-result",
+                    Outcome::Won,
+                    format!("{} surveyed", room.name()),
+                    format!("{found} diamonds recovered. {route_hint}"),
+                    actions,
+                ))
             }
         }
     }
@@ -471,6 +516,50 @@ impl GameView {
         let optional = [Room::AmberDrift, Room::SlateDrift]
             .into_iter()
             .find(|&room| self.expedition.status(room) != RoomStatus::Surveyed);
+        let mut detail = format!(
+            "{rooms} rooms surveyed · {diamonds} diamonds · {}",
+            cave_in_count(self.expedition.cave_ins()),
+        );
+        if self.new_best
+            && self.record.best.is_some_and(|best| {
+                best.rooms == rooms && best.cave_ins == self.expedition.cave_ins()
+            })
+        {
+            detail.push_str(" · New expedition best");
+        }
+        if let Some(room) = optional {
+            detail.push_str(&format!(
+                ". You can still survey {} from the map.",
+                room.name()
+            ));
+        } else {
+            detail.push_str(". Every chamber is charted.");
+        }
+        let actions = if let Some(reset) = self.pending_reset {
+            self.reset_confirmation(reset, cx)
+        } else {
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .when(!self.challenge, |actions| {
+                    actions.child(button("mine-new", "New expedition", true, colors).on_click(
+                        cx.listener(|view, _, window, cx| {
+                            view.reset(Reset::New, window, cx);
+                        }),
+                    ))
+                })
+                .child(self.restart_route(self.challenge, cx))
+                .child(
+                    button("mine-final-board", "View final excavation", false, colors).on_click(
+                        cx.listener(|view, _, window, cx| {
+                            view.show_final_board = true;
+                            view.board_focus.focus(window, cx);
+                            cx.notify();
+                        }),
+                    ),
+                )
+        };
         div()
             .flex()
             .flex_col()
@@ -480,105 +569,67 @@ impl GameView {
                     .bg(rgb(0x212d30))
                     .child(art::painting(art::VAULT)),
             )
-            .child(
-                div()
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(t::display_type("Expedition complete", 29.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_2()
-                            .text_size(px(13.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(art::symbol(Mark::Diamond, 16., colors.gold_text))
-                            .child(format!(
-                                "{rooms} rooms surveyed  ·  {diamonds} diamonds  ·  {}",
-                                cave_in_count(self.expedition.cave_ins()),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(colors.muted))
-                            .text_size(px(13.))
-                            .child(optional.map_or_else(
-                                || {
-                                    "Every chamber is charted. The expedition log is complete."
-                                        .to_owned()
-                                },
-                                |room| {
-                                    format!("You can still survey {} from the map.", room.name())
-                                },
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .when(!self.challenge, |actions| {
-                                actions.child(
-                                    button("mine-new", "New expedition", true, colors).on_click(
-                                        cx.listener(|view, _, window, cx| {
-                                            view.reset(Reset::New, window, cx);
-                                        }),
-                                    ),
-                                )
-                            })
-                            .child(
-                                button("mine-final-board", "View final excavation", false, colors)
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.show_final_board = true;
-                                        view.board_focus.focus(window, cx);
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            )
+            .child(div().p_4().child(round_result(
+                cx,
+                "mine-trails-expedition-result",
+                Outcome::Won,
+                "Expedition complete",
+                detail,
+                actions,
+            )))
     }
 
-    fn expedition_actions(&self, showing_summary: bool, cx: &Context<Self>) -> Div {
+    fn restart_route(&self, primary: bool, cx: &Context<Self>) -> Stateful<Div> {
+        button("mine-restart", "Restart route", primary, t::colors(cx)).on_click(cx.listener(
+            |view, _, _, cx| {
+                view.pending_reset = Some(Reset::Restart);
+                cx.notify();
+            },
+        ))
+    }
+
+    fn reset_confirmation(&self, reset: Reset, cx: &Context<Self>) -> Div {
         let colors = t::colors(cx);
-        let row = div().flex().flex_wrap().items_center().gap_2();
-        if let Some(reset) = self.pending_reset {
-            let (message, label) = match reset {
-                Reset::Restart => ("Restart this route from the Entrance?", "Restart"),
-                Reset::New => ("Leave this route and start a new layout?", "Start new"),
-            };
-            return row
-                .child(
-                    div()
-                        .text_color(rgb(colors.muted))
-                        .text_size(px(12.))
-                        .child(message),
-                )
-                .child(
-                    button("mine-restart-confirm", label, true, colors).on_click(
-                        cx.listener(move |view, _, window, cx| view.reset(reset, window, cx)),
-                    ),
-                )
-                .child(
-                    button("mine-restart-cancel", "Cancel", false, colors).on_click(cx.listener(
-                        |view, _, _, cx| {
-                            view.pending_reset = None;
-                            cx.notify();
-                        },
-                    )),
-                );
-        }
-        row.when(self.record.has_progress(), |row| {
-            row.child(
-                button("mine-restart", "Restart route", false, colors).on_click(cx.listener(
+        let (message, label) = match reset {
+            Reset::Restart => ("Restart this route from the Entrance?", "Restart"),
+            Reset::New => ("Leave this route and start a new layout?", "Start new"),
+        };
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .text_size(px(12.))
+                    .child(message),
+            )
+            .child(
+                button("mine-restart-confirm", label, true, colors).on_click(
+                    cx.listener(move |view, _, window, cx| view.reset(reset, window, cx)),
+                ),
+            )
+            .child(
+                button("mine-restart-cancel", "Cancel", false, colors).on_click(cx.listener(
                     |view, _, _, cx| {
-                        view.pending_reset = Some(Reset::Restart);
+                        view.pending_reset = None;
                         cx.notify();
                     },
                 )),
             )
+    }
+
+    fn expedition_actions(&self, showing_summary: bool, cx: &Context<Self>) -> Div {
+        if let Some(reset) = self.pending_reset
+            && !showing_summary
+        {
+            return self.reset_confirmation(reset, cx);
+        }
+        let colors = t::colors(cx);
+        let row = div().flex().flex_wrap().items_center().gap_2();
+        row.when(!showing_summary && self.record.has_progress(), |row| {
+            row.child(self.restart_route(false, cx))
         })
         .when(!showing_summary && !self.challenge, |row| {
             row.child(
@@ -611,6 +662,13 @@ impl GameView {
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(strike) = &self.strike {
+            if crate::motion::enabled(cx) && strike.progress() < 1. {
+                window.request_animation_frame();
+            } else {
+                self.strike = None;
+            }
+        }
         let room = self.expedition.current_room();
         let available = super::board_space(window);
         let wide = available >= 610.;
@@ -630,8 +688,10 @@ impl Render for GameView {
         let tile_size = ((board_size - (side - 1.) * board::TILE_GAP) / side)
             .clamp(38., 78.)
             .floor();
-        let finished =
-            room == Room::DeepVault && self.expedition.is_complete() && !self.show_final_board;
+        let finished = room == Room::DeepVault
+            && self.expedition.is_complete()
+            && self.strike.is_none()
+            && !self.show_final_board;
 
         div()
             .flex()
@@ -683,9 +743,11 @@ fn button(
     primary: bool,
     colors: t::Palette,
 ) -> Stateful<Div> {
+    let id = id.into();
     let label = label.into();
     div()
-        .id(id)
+        .id(id.clone())
+        .debug_selector(move || id.to_string())
         .role(Role::Button)
         .aria_label(label.clone())
         .tab_index(0)
@@ -709,4 +771,112 @@ fn button(
         .text_size(px(13.))
         .font_weight(FontWeight::SEMIBOLD)
         .child(label)
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use corner_table_api::GameId;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, size};
+
+    use super::*;
+
+    fn survey(view: &mut GameView, cx: &mut Context<GameView>) {
+        let room = view.expedition.current_room();
+        while view.expedition.status(room) == RoomStatus::Exploring {
+            let (x, y) = view
+                .positions()
+                .find(|&at| {
+                    let mut probe = view.expedition.clone();
+                    probe.dig(at) && probe.status(room) != RoomStatus::Collapsed
+                })
+                .expect("a safe dig remains");
+            view.apply(Move::Dig(x as u8, y as u8), cx);
+        }
+    }
+
+    #[gpui::test]
+    fn chamber_retry_and_vault_log_follow_excavation_effects(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId("mine-trails-result-test".into()),
+            entry: GameEntry::Classic,
+        };
+        let window = cx.open_window(size(px(760.), px(540.)), |_, cx| {
+            cx.set_reduce_motion(true);
+            let mut view = GameView::new(&launch, cx);
+            view.expedition = Expedition::new(42);
+            view.record = Record::new(42);
+            survey(&mut view, cx);
+            view
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+        let amber = visual.debug_bounds("mine-next-1").unwrap();
+        visual.simulate_click(amber.center(), Modifiers::none());
+        let attempt = window
+            .update(&mut visual.cx, |view, _, cx| {
+                assert_eq!(view.expedition.current_room(), Room::AmberDrift);
+                view.cursor = view
+                    .positions()
+                    .find(|&at| {
+                        let mut probe = view.expedition.clone();
+                        probe.dig(at) && probe.status(Room::AmberDrift) == RoomStatus::Collapsed
+                    })
+                    .expect("a mine borders the entry");
+                cx.set_reduce_motion(false);
+                cx.notify();
+                view.record.attempt
+            })
+            .unwrap();
+        visual.simulate_keystrokes("enter");
+        assert!(visual.debug_bounds("mine-retry").is_none());
+        window
+            .update(&mut visual.cx, |view, _, cx| {
+                assert_eq!(
+                    view.expedition.status(Room::AmberDrift),
+                    RoomStatus::Collapsed
+                );
+                view.strike.as_mut().expect("cave-in strike").started -= Duration::from_secs(1);
+                cx.notify();
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let retry = visual.debug_bounds("mine-retry").unwrap();
+        visual.simulate_click(retry.center(), Modifiers::none());
+        window
+            .update(&mut visual.cx, |view, _, cx| {
+                assert!(view.record.attempt == attempt);
+                assert_eq!(view.expedition.cave_ins(), 1);
+                assert_eq!(view.expedition.status(Room::Entrance), RoomStatus::Surveyed);
+                assert_eq!(
+                    view.expedition.status(Room::AmberDrift),
+                    RoomStatus::Exploring
+                );
+                survey(view, cx);
+                for room in [Room::Floodgate, Room::DeepVault] {
+                    view.apply(Move::Travel(room as u8), cx);
+                    survey(view, cx);
+                }
+                assert!(view.expedition.is_complete());
+                assert_eq!(view.expedition.surveyed_count(), 4);
+                assert!(view.strike.is_some());
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("mine-final-board").is_none());
+        window
+            .update(&mut visual.cx, |view, _, cx| {
+                view.strike.as_mut().unwrap().started -= Duration::from_secs(1);
+                cx.notify();
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let restart = visual.debug_bounds("mine-restart").unwrap();
+        visual.simulate_click(restart.center(), Modifiers::none());
+        let cancel = visual.debug_bounds("mine-restart-cancel").unwrap();
+        visual.simulate_click(cancel.center(), Modifiers::none());
+        let final_board = visual.debug_bounds("mine-final-board").unwrap();
+        visual.simulate_click(final_board.center(), Modifiers::none());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("mine-show-summary").is_some());
+    }
 }

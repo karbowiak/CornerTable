@@ -118,6 +118,13 @@ impl Field {
                         .iter()
                         .any(|cell| cell.row == row && cell.column == column)
                 {
+                    let contact = scale_about_center(at, 1. + 0.12 * (1. - strength));
+                    window.paint_quad(
+                        fill(contact, color(glint(gem), 0.18 * strength))
+                            .corner_radii(px(3.))
+                            .border_color(color(glint(gem), 0.65 * strength))
+                            .border_widths(px(1.)),
+                    );
                     // Compression is anchored at the bottom of the cut.
                     let compression = at.size.height * (0.13 * strength);
                     at.origin.y += compression;

@@ -8,14 +8,14 @@ use corner_table_gem_cascade::{
     COLUMNS, Clear, Fall, GROUP_SIZE, Gem, PAIRS_PER_LEVEL, PlacedGem, ROWS, Wave,
 };
 use gpui::{
-    Bounds, ClickEvent, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, Render,
-    Role, SharedString, Stateful, Subscription, Task, Toggled, Window, canvas, div, point,
-    prelude::*, px, rgb, rgba, size,
+    AnyElement, Bounds, ClickEvent, Context, Div, FocusHandle, FontWeight, KeyDownEvent,
+    MouseButton, Render, Role, SharedString, Stateful, Subscription, Task, Toggled, Window, canvas,
+    div, point, prelude::*, px, rgb, rgba, size,
 };
 
 use crate::{
     audio::{self, Effect},
-    games::{GameEntry, GameLaunch},
+    games::{GameEntry, GameLaunch, round_result},
     storage::{Outcome, ResultMetric, Session},
     theme::{self as t, Palette},
 };
@@ -285,7 +285,7 @@ impl GameView {
         let effect = match result {
             Fall::Moved => {
                 if movement == Move::Fall {
-                    if !cx.reduce_motion() {
+                    if crate::motion::enabled(cx) {
                         self.motion = Some(Motion::Falling(Instant::now()));
                     }
                     self.reset_clock(window, cx);
@@ -305,7 +305,7 @@ impl GameView {
                         ResultMetric::Points(run.game.score().into()),
                     );
                 }
-                if !cx.reduce_motion() {
+                if crate::motion::enabled(cx) {
                     let started = Instant::now();
                     if waves > 0 {
                         self.cascade = Some(Cascade {
@@ -477,6 +477,7 @@ impl GameView {
 
         div()
             .id("gem-cascade-board")
+            .debug_selector(|| "gem-cascade-board".into())
             .role(Role::Grid)
             .aria_label("Gem Cascade board")
             .aria_row_count(ROWS)
@@ -499,38 +500,81 @@ impl GameView {
             .children(self.overlay(cx))
     }
 
-    fn overlay(&self, cx: &Context<Self>) -> Option<Div> {
-        let palette = t::colors(cx);
-        let (title, detail, label, action) = if self.cascade.is_some() {
+    fn overlay(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if self.cascade.is_some() {
             return None;
-        } else if self.run().game.is_over() {
-            (
-                "Game over",
-                Some("The entrance is blocked."),
-                "Retry deal",
-                Action::Retry,
-            )
-        } else {
-            match self.phase {
-                Phase::Ready => (
-                    "Ready?",
-                    Some("Join 4 gems of the same kind along their edges."),
-                    "Start timed run",
-                    Action::Toggle,
-                ),
-                Phase::Paused => ("Paused", None, "Resume", Action::Toggle),
-                Phase::Playing => return None,
+        }
+        let backdrop = div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x14141cb8));
+        let run = self.run();
+        if run.game.is_over() {
+            if self.motion.is_some() {
+                return None;
             }
-        };
-        let offer_deal = self.run().game.is_over() && !self.challenge;
-        Some(
-            div()
-                .absolute()
-                .inset_0()
+            let title = if run.new_best {
+                "New personal best"
+            } else {
+                "Game over"
+            };
+            let game = &run.game;
+            let pairs = game.pairs();
+            let unit = if pairs == 1 { "pair" } else { "pairs" };
+            let best = if run.new_best {
+                String::new()
+            } else {
+                format!(" · Best {}", run.best())
+            };
+            let detail = format!(
+                "{} points · {pairs} {unit} placed · Level {}{best}. The entrance is blocked.",
+                game.score(),
+                game.level(),
+            );
+            let actions = div()
                 .flex()
-                .items_center()
-                .justify_center()
-                .bg(rgba(0x14141cb8))
+                .flex_col()
+                .gap_2()
+                .child(
+                    self.button("gem-overlay-primary", "Retry deal", Action::Retry, true, cx)
+                        .w_full(),
+                )
+                .when(!self.challenge, |actions| {
+                    actions.child(
+                        self.button("gem-new-deal", "New deal", Action::NewDeal, false, cx)
+                            .w_full(),
+                    )
+                });
+            return Some(
+                backdrop
+                    .p_2()
+                    .child(round_result(
+                        cx,
+                        "gem-cascade-result",
+                        Outcome::Finished,
+                        title,
+                        detail,
+                        actions,
+                    ))
+                    .into_any_element(),
+            );
+        }
+
+        let palette = t::colors(cx);
+        let (title, detail, label) = match self.phase {
+            Phase::Ready => (
+                "Ready?",
+                Some("Join 4 gems of the same kind along their edges."),
+                "Start timed run",
+            ),
+            Phase::Paused => ("Paused", None, "Resume"),
+            Phase::Playing => return None,
+        };
+        Some(
+            backdrop
                 .p_3()
                 .child(
                     t::panel(cx)
@@ -554,17 +598,12 @@ impl GameView {
                             )
                         })
                         .child(
-                            self.button("gem-overlay-primary", label, action, true, cx)
+                            self.button("gem-overlay-primary", label, Action::Toggle, true, cx)
                                 .mt_1()
                                 .w_full(),
-                        )
-                        .when(offer_deal, |overlay| {
-                            overlay.child(
-                                self.button("gem-new-deal", "New deal", Action::NewDeal, false, cx)
-                                    .w_full(),
-                            )
-                        }),
-                ),
+                        ),
+                )
+                .into_any_element(),
         )
     }
 
@@ -597,6 +636,7 @@ impl GameView {
         let shortcut = shortcut(action);
         let button = div()
             .id(id)
+            .debug_selector(move || id.into())
             .role(Role::Button)
             .accessibility_id(id)
             .aria_label(label)
@@ -717,7 +757,7 @@ impl GameView {
             .child(self.scoreboard(wave, p, cx))
             .child(self.pace(p))
             .child(clear_status(clear, wave.is_some(), p))
-            .child(group)
+            .when(!run.game.is_over() || self.motion.is_some() || self.cascade.is_some(), |console| console.child(group))
             .child(
                 div().text_size(px(12.)).line_height(px(17.)).text_color(rgb(p.muted))
                     .child(format!("Match {GROUP_SIZE} edge to edge. Each link in a chain multiplies the points it earns.")),
@@ -848,7 +888,11 @@ impl Render for GameView {
             Some(Motion::Impact(started, _)) => Some((started, IMPACT_TIME)),
             None => None,
         };
-        let reduce_motion = cx.reduce_motion();
+        let reduce_motion =
+            (self.motion.is_some() || self.cascade.is_some()) && !crate::motion::enabled(cx);
+        if reduce_motion && self.cascade.take().is_some() {
+            self.reset_clock(window, cx);
+        }
         if reduce_motion || motion_time.is_some_and(|(started, duration)| now - started >= duration)
         {
             self.motion = None;
@@ -858,7 +902,7 @@ impl Render for GameView {
             .as_ref()
             .filter(|_| !reduce_motion)
             .map(|cascade| cascade.frame(now));
-        if wave.is_some() || self.motion.is_some() {
+        if wave.is_some_and(|frame| frame.progress < 1.) || self.motion.is_some() {
             window.request_animation_frame();
         }
 
@@ -990,5 +1034,69 @@ fn shortcut(action: Action) -> Option<(&'static str, &'static str)> {
         Action::Toggle | Action::Pause => Some(("P", "P")),
         Action::Retry => Some(("R", "R")),
         Action::Select(_) | Action::NewDeal => None,
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use corner_table_api::GameId;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+
+    use super::*;
+
+    #[gpui::test]
+    fn blocked_well_finishes_impact_before_offering_retry(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId("gem-cascade-result-test".into()),
+            entry: GameEntry::Classic,
+        };
+        let window = cx.open_window(size(px(760.), px(540.)), |_, cx| {
+            let mut view = GameView::new(&launch, cx);
+            view.mode = Mode::Practice;
+            view.phase = Phase::Playing;
+            let mut run = Run::new(14);
+            loop {
+                let mut after = run.game.clone();
+                after.lock_pair().unwrap();
+                if after.is_over() {
+                    break;
+                }
+                run.play(Move::Drop).unwrap();
+            }
+            view.runs[Mode::Practice.index()] = run;
+            view
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+        window
+            .update(&mut visual.cx, |view, window, cx| {
+                view.focus.focus(window, cx)
+            })
+            .unwrap();
+        visual.simulate_keystrokes("space");
+        assert!(visual.debug_bounds("gem-overlay-primary").is_none());
+        let attempt = window
+            .update(&mut visual.cx, |view, _, cx| {
+                assert!(view.run().game.is_over());
+                assert!(view.overlay(cx).is_none());
+                assert!(view.motion.is_some() || view.cascade.is_some());
+                cx.set_reduce_motion(true);
+                cx.notify();
+                view.run().record.attempt
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let board = visual.debug_bounds("gem-cascade-board").unwrap();
+        let retry = visual.debug_bounds("gem-overlay-primary").unwrap();
+        let new_deal = visual.debug_bounds("gem-new-deal").unwrap();
+        assert!(retry.is_contained_within(&board) && new_deal.is_contained_within(&board));
+        visual.simulate_click(retry.center(), Modifiers::none());
+        window
+            .read_with(&visual.cx, |view, _| {
+                assert_eq!(view.mode, Mode::Practice);
+                assert_eq!(view.run().game.pairs(), 0);
+                assert!(view.run().record.attempt != attempt);
+            })
+            .unwrap();
     }
 }

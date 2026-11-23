@@ -3,7 +3,7 @@ use gpui::{Context, Div, FontWeight, Role, Stateful, Window, div, prelude::*, px
 
 use crate::theme as t;
 
-use super::{GameView, Tool, art, button, record::Move};
+use super::{GameView, Strike, Tool, art, button, record::Move};
 use art::Mark;
 
 pub(super) const TILE_GAP: f32 = 4.;
@@ -18,6 +18,10 @@ impl GameView {
     ) -> Stateful<Div> {
         let focused = self.board_focus.is_focused(window) && self.keyboard_cursor;
         let side = self.expedition.side();
+        let strike = self
+            .strike
+            .as_ref()
+            .map(|strike| (strike, strike.progress()));
         div()
             .id("mine-trails-board")
             .role(Role::Grid)
@@ -54,7 +58,10 @@ impl GameView {
                             .aria_row_index(y)
                             .flex()
                             .gap(px(TILE_GAP))
-                            .children((0..side).map(|x| self.cell((x, y), size, room, focused, cx)))
+                            .children(
+                                (0..side)
+                                    .map(|x| self.cell((x, y), size, room, focused, strike, cx)),
+                            )
                     })),
             )
     }
@@ -65,6 +72,7 @@ impl GameView {
         size: f32,
         room: Room,
         focused: bool,
+        strike: Option<(&Strike, f32)>,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let tile = self.expedition.tile(at).expect("position inside chamber");
@@ -172,9 +180,14 @@ impl GameView {
             Tile::Covered { diamond: false } | Tile::Bedrock => cell,
         };
 
-        let strike = &self.strike;
-        if strike.hit == Some(at) || strike.opened & (1 << index) != 0 {
-            cell = cell.child(art::strike(strike.generation, strike.hit == Some(at)));
+        if let Some((strike, progress)) = strike
+            && (strike.hit == Some(at) || strike.opened & (1 << index) != 0)
+        {
+            cell = cell.child(art::strike(
+                progress,
+                strike.hit == Some(at),
+                matches!(tile, Tile::Open { diamond: true, .. }),
+            ));
         }
         let tool_applies = match self.tool {
             Tool::Dig => digging,

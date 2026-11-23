@@ -75,6 +75,7 @@ pub(super) struct Run {
     pub game: Game,
     pub record: Record,
     pub last_scoring: Clear,
+    pub new_best: bool,
 }
 
 impl Run {
@@ -88,6 +89,7 @@ impl Run {
                 attempt: AttemptId::default(),
             },
             last_scoring: Clear::default(),
+            new_best: false,
         }
     }
 
@@ -112,6 +114,7 @@ impl Run {
             game,
             record,
             last_scoring,
+            new_best: false,
         }
     }
 
@@ -130,6 +133,7 @@ impl Run {
             && resolution.clear.points > 0
         {
             self.last_scoring = resolution.clear;
+            self.new_best |= self.game.score() > self.record.best;
             self.record.best = self.record.best.max(self.game.score());
         }
         Some(fall)
@@ -145,6 +149,7 @@ impl Run {
         self.record.moves.clear();
         self.record.attempt = AttemptId::default();
         self.last_scoring = Clear::default();
+        self.new_best = false;
     }
 }
 

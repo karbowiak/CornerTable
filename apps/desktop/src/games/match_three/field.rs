@@ -10,6 +10,7 @@ use gpui::{
 const FIELD: u32 = 0x132a27;
 const WELL: [u32; 2] = [0x24423a, 0x203e37];
 const LIP: u32 = 0x2d4d43;
+const INLAY_LIGHT: u32 = 0xaeefdb;
 const RIM_DARK: u32 = 0x675639;
 const RIM_LIGHT: u32 = 0xad8f56;
 pub const FRAME: f32 = 10.;
@@ -123,7 +124,7 @@ pub fn inlay(edge: f32) -> Div {
                         rim.line_to(origin + point(corner * dx, px(0.)));
                     }
                     if let Ok(path) = rim.build() {
-                        window.paint_path(path, rgb(0xaeefdb));
+                        window.paint_path(path, rgb(INLAY_LIGHT));
                     }
                 },
             )
@@ -239,7 +240,15 @@ impl Scene<'_> {
                     .zip(cascade.before)
                     .enumerate()
                     .filter(|(_, (cleared, _))| **cleared)
-                    .map(|(index, (_, gem))| (Cell::from_index(index), gem_light(gem)))
+                    .map(|(index, (_, gem))| {
+                        let cell = Cell::from_index(index);
+                        let color = if cascade.cleared_marks.contains(cell) {
+                            INLAY_LIGHT
+                        } else {
+                            gem_light(gem)
+                        };
+                        (cell, color)
+                    })
                     .collect::<Vec<_>>(),
                 fraction,
                 5,
@@ -440,10 +449,6 @@ impl Motion {
             }
             _ => None,
         }
-    }
-
-    pub fn is_celebrating(&self) -> bool {
-        matches!(self.phase, Phase::Celebrate)
     }
 }
 

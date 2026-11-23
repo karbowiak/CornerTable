@@ -86,6 +86,7 @@ pub struct GameView {
     pointer: Option<Pointer>,
     bounds: Rc<ValueCell<Option<Bounds<Pixels>>>>,
     feedback: Feedback,
+    new_best: bool,
     motion: Option<Motion>,
     focus: FocusHandle,
     focus_on_open: bool,
@@ -117,6 +118,7 @@ impl GameView {
             pointer: None,
             bounds: Rc::default(),
             feedback: Feedback::Ready,
+            new_best: false,
             motion: None,
             focus: cx.focus_handle().tab_stop(true),
             focus_on_open: true,
@@ -166,6 +168,7 @@ impl GameView {
             self.pointer = None;
             self.cursor = Cell::from_index(0);
             self.feedback = Feedback::Ready;
+            self.new_best = false;
             self.session.save(&self.journal);
         }
         self.focus.focus(window, cx);
@@ -202,6 +205,7 @@ impl GameView {
         self.cursor = second;
         let turn = match self.game.swap(first, second) {
             Ok(turn) => {
+                self.new_best |= self.game.score() > self.journal.record().0;
                 self.journal.add_move(
                     first.index().expect("field cell"),
                     second.index().expect("field cell"),
@@ -244,7 +248,7 @@ impl GameView {
             }
             Err(_) => return,
         };
-        if !cx.reduce_motion() {
+        if crate::motion::enabled(cx) {
             self.motion = Some(Motion::new(
                 exchange,
                 original,
@@ -376,6 +380,7 @@ impl GameView {
             self.motion.is_none() && self.game.status() == Status::Won,
         )
         .id("match-three-board")
+        .debug_selector(|| "match-three-board".into())
         .role(Role::Grid)
         .aria_label("Match Three field")
         .aria_description(format!(
@@ -400,10 +405,10 @@ impl GameView {
         .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
             if let Some(pointer) = &mut view.pointer {
                 if event.dragging() {
-                    pointer.preview = if cx.reduce_motion() {
-                        None
-                    } else {
+                    pointer.preview = if crate::motion::enabled(cx) {
                         pointer.exchange(event.position, step)
+                    } else {
+                        None
                     };
                 } else {
                     view.pointer = None;
@@ -505,7 +510,7 @@ impl Render for GameView {
         }
         let now = Instant::now();
         if let Some(motion) = &mut self.motion {
-            if cx.reduce_motion() || !motion.advance(now) {
+            if !crate::motion::enabled(cx) || !motion.advance(now) {
                 self.motion = None;
             } else {
                 window.request_animation_frame();
@@ -549,18 +554,25 @@ impl Render for GameView {
                     .flex_col()
                     .gap(px(6.))
                     .flex_none()
-                    .child(self.board(step, scene, displayed, window, cx))
                     .child(
                         div()
-                            .flex()
-                            .justify_between()
-                            .px(px(1.))
-                            .text_size(px(if compact { 11. } else { 12. }))
-                            .line_height(px(17.))
-                            .text_color(rgb(t::colors(cx).muted))
-                            .child("Drag or click an adjacent pair")
-                            .child("Arrows + Space"),
-                    ),
+                            .relative()
+                            .child(self.board(step, scene, displayed, window, cx))
+                            .children(self.result(cx)),
+                    )
+                    .when(self.game.status() == Status::Playing, |column| {
+                        column.child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .px(px(1.))
+                                .text_size(px(if compact { 11. } else { 12. }))
+                                .line_height(px(17.))
+                                .text_color(rgb(t::colors(cx).muted))
+                                .child("Drag or click an adjacent pair")
+                                .child("Arrows + Space"),
+                        )
+                    }),
             )
             .child(self.hud(hud_width, compact, displayed, cx))
     }
@@ -572,4 +584,86 @@ fn offset(cell: Cell, row: isize, col: isize) -> Option<Cell> {
         col: cell.col.checked_add_signed(col)?,
     };
     target.index().map(|_| target)
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use corner_table_api::GameId;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
+
+    use super::*;
+
+    #[gpui::test]
+    fn final_drag_settles_before_next_stage_action(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId("match-three-result-test".into()),
+            entry: GameEntry::Classic,
+        };
+        let window = cx.open_window(size(px(760.), px(540.)), |_, cx| {
+            cx.set_reduce_motion(true);
+            let mut view = GameView::new(&launch, cx);
+            view.journal = Journal::new(3);
+            view.game = view.journal.resume();
+            view
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let (first, second) = window
+            .update(&mut visual.cx, |view, _, cx| {
+                loop {
+                    let (first, second) = view.game.suggestion().unwrap();
+                    let mut after = view.game.clone();
+                    after.swap(first, second).unwrap();
+                    if after.status() == Status::Won {
+                        cx.set_reduce_motion(false);
+                        break (first, second);
+                    }
+                    assert_eq!(after.status(), Status::Playing);
+                    view.swap(
+                        Exchange {
+                            first,
+                            second,
+                            fraction: 0.,
+                        },
+                        cx,
+                    );
+                }
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let field = window
+            .read_with(&visual.cx, |view, _| view.bounds.get().unwrap())
+            .unwrap();
+        let step = field.size.width / SIDE as f32;
+        let center = |cell: Cell| {
+            field.origin
+                + point(
+                    step * (cell.col as f32 + 0.5),
+                    step * (cell.row as f32 + 0.5),
+                )
+        };
+        visual.simulate_mouse_down(center(first), MouseButton::Left, Modifiers::none());
+        visual.simulate_mouse_move(center(second), MouseButton::Left, Modifiers::none());
+        visual.simulate_mouse_up(center(second), MouseButton::Left, Modifiers::none());
+        visual.run_until_parked();
+        window
+            .update(&mut visual.cx, |view, _, cx| {
+                assert_eq!(view.game.status(), Status::Won);
+                assert!(view.motion.is_some());
+                assert!(view.result(cx).is_none());
+                cx.set_reduce_motion(true);
+                cx.notify();
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let board = visual.debug_bounds("match-three-board").unwrap();
+        let next = visual.debug_bounds("match-three-next-0").unwrap();
+        assert!(next.is_contained_within(&board));
+        visual.simulate_click(next.center(), Modifiers::none());
+        window
+            .read_with(&visual.cx, |view, _| {
+                assert_eq!(view.journal.active, 1);
+                assert_eq!(view.game.status(), Status::Playing);
+            })
+            .unwrap();
+    }
 }

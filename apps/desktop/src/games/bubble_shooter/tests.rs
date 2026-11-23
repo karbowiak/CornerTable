@@ -61,6 +61,8 @@ fn compact_puzzles_support_mouse_retry_and_keyboard_bank_shots(cx: &mut TestAppC
         })
         .unwrap();
 
+    let retry = cx.debug_bounds("bubble-restart").unwrap();
+    assert!(retry.is_contained_within(&board));
     click(&mut cx, "bubble-restart");
     cx.simulate_keystrokes(&["left"; 22].join(" "));
     cx.simulate_keystrokes("shift-left");
@@ -78,6 +80,8 @@ fn compact_puzzles_support_mouse_retry_and_keyboard_bank_shots(cx: &mut TestAppC
         })
         .unwrap();
 
+    let next = cx.debug_bounds("bubble-next-or-replay").unwrap();
+    assert!(next.is_contained_within(&board));
     cx.simulate_keystrokes("enter");
     cx.simulate_keystrokes(&["right"; 22].join(" "));
     cx.simulate_keystrokes("space");
@@ -162,5 +166,25 @@ fn puzzles_keep_flight_and_drop_effects_across_successive_shots(cx: &mut TestApp
             assert!(view.impact.is_none());
             assert_eq!(view.progress.round.shots_left(), 2);
         })
+        .unwrap();
+
+    window
+        .update(&mut cx.cx, |view, _, cx| {
+            for ticks in [352, -352] {
+                let angle = Angle::from_ticks(ticks).unwrap();
+                let landing = view.progress.round.aim_at(angle).unwrap().landing;
+                view.resolve_shot(angle, Some(landing), cx);
+            }
+            assert_eq!(view.progress.round.status(), Status::Won);
+            assert!(view.impact.is_some());
+            assert!(view.result(cx).is_none());
+            cx.set_reduce_motion(true);
+            view.animate(cx);
+            assert!(view.result(cx).is_some());
+        })
+        .unwrap();
+    click(&mut cx, "bubble-next-or-replay");
+    window
+        .read_with(&cx.cx, |view, _| assert_eq!(view.progress.puzzle(), 2))
         .unwrap();
 }

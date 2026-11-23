@@ -1,15 +1,16 @@
 use corner_table_match_three::{Goal, Progress, STAGES, Status};
-use gpui::{Context, Div, FontWeight, Role, SharedString, Stateful, div, prelude::*, px, rgb};
+use gpui::{
+    AnyElement, Context, Div, FontWeight, Role, SharedString, Stateful, div, prelude::*, px, rgb,
+    rgba,
+};
 
-use crate::theme as t;
+use crate::{games::round_result, storage::Outcome, theme as t};
 
 use super::{Action, Feedback, GameView, field};
 
 impl GameView {
     fn status_text(&self) -> (String, String) {
-        if let Some(motion) = &self.motion
-            && !motion.is_celebrating()
-        {
+        if let Some(motion) = &self.motion {
             if let Some((chain, points)) = motion.clear_feedback() {
                 return (
                     if chain == 1 {
@@ -22,78 +23,51 @@ impl GameView {
             }
             return (String::new(), String::new());
         }
-        let status = self.game.status();
-        match status {
-            Status::Won => (
-                if self.challenge {
-                    "Daily puzzle cleared"
-                } else if self.journal.active + 1 == STAGES.len() {
-                    "All stages cleared"
-                } else {
-                    "Stage cleared"
-                }
-                .into(),
-                if self.game.moves_left() == 0 {
-                    "On the final move".into()
-                } else {
-                    format!("{} moves to spare", self.game.moves_left())
-                },
-            ),
-            Status::Lost => (
-                "Out of moves".into(),
-                if self.challenge {
-                    "Retry today’s layout."
-                } else {
-                    "Retry this layout or deal a new board."
-                }
-                .into(),
-            ),
-            Status::Playing => match self.feedback {
-                Feedback::Ready if self.selected.is_some() => {
-                    ("Jewel selected".into(), "Choose a neighbor to swap.".into())
-                }
-                Feedback::Ready => match STAGES[self.journal.active].goals[0] {
-                    Goal::Score(_) => (
-                        "Line up 3 or more".into(),
-                        "Matches clear in rows or columns.".into(),
-                    ),
-                    Goal::Collect(..) => (
-                        "Collect jewels".into(),
-                        "Clear the listed jewels to fill their meters.".into(),
-                    ),
-                    Goal::Chains(_) => (
-                        "Set off a chain".into(),
-                        "A falling jewel must make another match.".into(),
-                    ),
-                    Goal::ClearMarked(_) => (
-                        "Clear the marked cells".into(),
-                        if STAGES[self.journal.active].goals.len() > 1 {
-                            "Match on marked cells and collect the listed jewels."
-                        } else {
-                            "Match jewels on a marked cell to clear it."
-                        }
-                        .into(),
-                    ),
-                },
-                Feedback::Hint => ("Hint".into(), "Swap the highlighted jewels.".into()),
-                Feedback::NoMatch => ("No match".into(), "Make a line of three or more.".into()),
-                Feedback::Turn {
-                    points,
-                    chain,
-                    reshuffled,
-                } => (
-                    if chain == 1 {
-                        format!("+{points} points")
+        match self.feedback {
+            Feedback::Ready if self.selected.is_some() => {
+                ("Jewel selected".into(), "Choose a neighbor to swap.".into())
+            }
+            Feedback::Ready => match STAGES[self.journal.active].goals[0] {
+                Goal::Score(_) => (
+                    "Line up 3 or more".into(),
+                    "Matches clear in rows or columns.".into(),
+                ),
+                Goal::Collect(..) => (
+                    "Collect jewels".into(),
+                    "Clear the listed jewels to fill their meters.".into(),
+                ),
+                Goal::Chains(_) => (
+                    "Set off a chain".into(),
+                    "A falling jewel must make another match.".into(),
+                ),
+                Goal::ClearMarked(_) => (
+                    "Clear the marked cells".into(),
+                    if STAGES[self.journal.active].goals.len() > 1 {
+                        "Match on marked cells and collect the listed jewels."
                     } else {
-                        format!("×{chain} chain · +{points}")
-                    },
-                    if reshuffled {
-                        "Board reshuffled".into()
-                    } else {
-                        String::new()
-                    },
+                        "Match jewels on a marked cell to clear it."
+                    }
+                    .into(),
                 ),
             },
+            Feedback::Hint => ("Hint".into(), "Swap the highlighted jewels.".into()),
+            Feedback::NoMatch => ("No match".into(), "Make a line of three or more.".into()),
+            Feedback::Turn {
+                points,
+                chain,
+                reshuffled,
+            } => (
+                if chain == 1 {
+                    format!("+{points} points")
+                } else {
+                    format!("×{chain} chain · +{points}")
+                },
+                if reshuffled {
+                    "Board reshuffled".into()
+                } else {
+                    String::new()
+                },
+            ),
         }
     }
 
@@ -188,47 +162,11 @@ impl GameView {
                     .text_color(rgb(colors.muted))
                     .child(message),
             );
-        hud = hud.child(feedback);
-
-        let mut buttons = div().flex().gap(px(5.)).flex_wrap();
-        match status {
-            Status::Playing => {
-                buttons = buttons
-                    .child(self.button(Action::Hint, "Hint", false, !active_motion, cx))
-                    .child(self.button(Action::Replay, "Restart", false, !active_motion, cx))
-                    .when(!self.challenge, |buttons| {
-                        buttons.child(self.button(
-                            Action::NewBoard,
-                            "New board",
-                            false,
-                            !active_motion,
-                            cx,
-                        ))
-                    });
-            }
-            Status::Lost => {
-                buttons = buttons
-                    .child(self.button(Action::Replay, "Retry", true, true, cx))
-                    .when(!self.challenge, |buttons| {
-                        buttons.child(self.button(Action::NewBoard, "New board", false, true, cx))
-                    });
-            }
-            Status::Won => {
-                buttons = if self.challenge {
-                    buttons.child(self.button(Action::Replay, "Replay", true, true, cx))
-                } else if self.journal.active + 1 < STAGES.len() {
-                    buttons
-                        .child(self.button(Action::NextStage, "Next stage", true, true, cx))
-                        .child(self.button(Action::Replay, "Replay", false, true, cx))
-                } else {
-                    buttons
-                        .child(self.button(Action::Replay, "Replay", true, true, cx))
-                        .child(self.button(Action::NewBoard, "New board", false, true, cx))
-                };
-            }
-        };
+        if status == Status::Playing {
+            hud = hud.child(feedback).child(self.round_actions(status, cx));
+        }
         let (best_score, best_chain) = self.journal.record();
-        hud.child(buttons).when(best_score > 0, |hud| {
+        hud.when(best_score > 0, |hud| {
             hud.child(
                 div()
                     .line_height(px(16.))
@@ -240,6 +178,98 @@ impl GameView {
                     )),
             )
         })
+    }
+
+    pub(super) fn result(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if self.motion.is_some() {
+            return None;
+        }
+        let status = self.game.status();
+        let (outcome, title) = match status {
+            Status::Playing => return None,
+            Status::Lost => (Outcome::Lost, "Out of moves"),
+            Status::Won if self.challenge => (Outcome::Won, "Daily puzzle cleared"),
+            Status::Won if self.journal.active + 1 == STAGES.len() => {
+                (Outcome::Won, "All stages cleared")
+            }
+            Status::Won => (Outcome::Won, "Stage cleared"),
+        };
+        let progress = self.game.progress();
+        let goals = STAGES[self.journal.active].goals;
+        let met = goals
+            .iter()
+            .filter(|&&goal| progress.value(goal) >= goal.target())
+            .count();
+        let moves = self.game.moves_left();
+        let score = display_score(progress.score);
+        let best = display_score(self.journal.record().0);
+        let record = if self.new_best {
+            "New personal best".to_owned()
+        } else {
+            format!("Best {best}")
+        };
+        let mut detail = format!(
+            "{score} points · {met}/{} goals · {moves} moves left · {record}",
+            goals.len()
+        );
+        if progress.best_chain > 1 {
+            detail.push_str(&format!(" · ×{} best chain", progress.best_chain));
+        }
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_lg()
+                .px_4()
+                .bg(rgba(0x171221b0))
+                .child(round_result(
+                    cx,
+                    "match-three-result",
+                    outcome,
+                    title,
+                    detail,
+                    self.round_actions(status, cx),
+                ))
+                .into_any_element(),
+        )
+    }
+
+    fn round_actions(&self, status: Status, cx: &Context<Self>) -> Div {
+        let buttons = div().flex().gap_2().flex_wrap();
+        match status {
+            Status::Playing => {
+                let enabled = self.motion.is_none();
+                buttons
+                    .child(self.button(Action::Hint, "Hint", false, enabled, cx))
+                    .child(self.button(Action::Replay, "Restart", false, enabled, cx))
+                    .when(!self.challenge, |buttons| {
+                        buttons.child(self.button(
+                            Action::NewBoard,
+                            "New board",
+                            false,
+                            enabled,
+                            cx,
+                        ))
+                    })
+            }
+            Status::Lost => buttons
+                .child(self.button(Action::Replay, "Retry", true, true, cx))
+                .when(!self.challenge, |buttons| {
+                    buttons.child(self.button(Action::NewBoard, "New board", false, true, cx))
+                }),
+            Status::Won if self.challenge => {
+                buttons.child(self.button(Action::Replay, "Replay", true, true, cx))
+            }
+            Status::Won if self.journal.active + 1 < STAGES.len() => buttons
+                .child(self.button(Action::NextStage, "Next stage", true, true, cx))
+                .child(self.button(Action::Replay, "Replay", false, true, cx)),
+            Status::Won => buttons
+                .child(self.button(Action::Replay, "Replay", true, true, cx))
+                .child(self.button(Action::NewBoard, "New board", false, true, cx)),
+        }
     }
 
     fn stage_picker(&self, width: f32, cx: &Context<Self>) -> Div {
@@ -306,6 +336,7 @@ impl GameView {
         };
         div()
             .id(id)
+            .debug_selector(move || format!("{}-{}", id.0, id.1))
             .role(Role::Button)
             .aria_label(label.clone())
             .min_h(px(31.))

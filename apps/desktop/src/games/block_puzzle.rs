@@ -1,11 +1,17 @@
-use std::{cell::Cell, rc::Rc, time::Instant};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use corner_table_block_puzzle::{
-    CHALLENGE_SEED, CHALLENGE_TRAYS, Game, Move, Piece, Placement, SIDE, TRAY_SIZE, Wood,
+    CHALLENGE_SEED, CHALLENGE_TRAYS, Game, Move, Piece, Placement, PuzzleStatus, SIDE, TRAY_SIZE,
+    Wood,
 };
 use gpui::{
-    Bounds, ClickEvent, Context, Div, EntityId, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
-    ObjectFit, Pixels, Point, Role, Stateful, Window, canvas, div, img, prelude::*, px, rgb, rgba,
+    AnyElement, Bounds, ClickEvent, Context, Div, EntityId, FocusHandle, FontWeight, KeyDownEvent,
+    MouseButton, ObjectFit, Pixels, Point, Role, Stateful, Window, canvas, div, img, prelude::*,
+    px, rgb, rgba,
 };
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +21,7 @@ use crate::{
     theme as t,
 };
 
-use super::{GameLaunch, board_space, themed_control};
+use super::{GameLaunch, board_space, round_result, themed_control};
 
 mod puzzle_controls;
 mod puzzle_progress;
@@ -30,6 +36,7 @@ const WALNUT: u32 = 0x4e3125;
 const PREVIEW_FITS: u32 = 0xffdb86;
 const PREVIEW_BLOCKED: u32 = 0xffa39a;
 const CLEAR_DURATION: f32 = 0.5;
+const SEAT_DURATION: Duration = Duration::from_millis(160);
 
 struct PlayLayout {
     cell: f32,
@@ -127,6 +134,7 @@ struct SeededRound {
     seed: u64,
     round: Round,
     best: u64,
+    starting_best: u64,
 }
 
 impl SeededRound {
@@ -135,6 +143,7 @@ impl SeededRound {
             seed,
             round: Round::new(deal(seed)),
             best: 0,
+            starting_best: 0,
         }
     }
 
@@ -142,6 +151,7 @@ impl SeededRound {
         let mut state = Self::new(deal, saved.seed);
         state.round = state.round.replay(saved.journal, attempt)?;
         state.best = saved.best.max(state.round.game.score());
+        state.starting_best = state.best;
         Some(state)
     }
 
@@ -150,6 +160,7 @@ impl SeededRound {
             self.seed = self.seed.wrapping_add(1);
         }
         self.round = Round::new(deal(self.seed));
+        self.starting_best = self.best;
     }
 
     fn saved(&self) -> SavedRound {
@@ -353,6 +364,29 @@ struct Clear {
     lines: usize,
 }
 
+struct Seat {
+    started: Instant,
+    turn: Move,
+    piece: Piece,
+}
+
+impl Seat {
+    fn tile(&self, column: usize, row: usize, opacity: f32) -> Option<Div> {
+        let offset = column
+            .checked_sub(self.turn.column)
+            .zip(row.checked_sub(self.turn.row))?;
+        self.piece.tiles.contains(&offset).then(|| {
+            div()
+                .absolute()
+                .inset_0()
+                .rounded_sm()
+                .border_2()
+                .border_color(rgb(PREVIEW_FITS))
+                .opacity(opacity * 0.8)
+        })
+    }
+}
+
 impl Clear {
     fn new(placement: Placement, turn: Move, piece: Piece, before: &Game) -> Self {
         let mut tiles = *before.board();
@@ -422,6 +456,8 @@ pub struct GameView {
     revision: u64,
     feedback: Option<Feedback>,
     clear: Option<Clear>,
+    seat: Option<Seat>,
+    new_puzzle_best: bool,
 }
 
 impl GameView {
@@ -459,6 +495,8 @@ impl GameView {
             revision: 0,
             feedback: None,
             clear: None,
+            seat: None,
+            new_puzzle_best: false,
         }
     }
 
@@ -497,6 +535,8 @@ impl GameView {
         self.drag = None;
         self.feedback = None;
         self.clear = None;
+        self.seat = None;
+        self.new_puzzle_best = false;
     }
 
     fn switch(&mut self, mode: Mode) {
@@ -601,11 +641,14 @@ impl GameView {
                 self.ten_trays.update_best();
                 self.ten_trays.outcome()
             }
-            Mode::PuzzleBoards => self
-                .puzzles
-                .current_mut()
-                .update_record()
-                .then_some(Outcome::Won),
+            Mode::PuzzleBoards => {
+                let puzzle = self.puzzles.current_mut();
+                let previous_best = puzzle.best_moves;
+                let solved = puzzle.update_record();
+                self.new_puzzle_best =
+                    solved && previous_best.is_none_or(|best| puzzle.round.turns.len() < best);
+                solved.then_some(Outcome::Won)
+            }
         };
         self.revision = self.revision.wrapping_add(1);
         self.cursor = anchor;
@@ -624,12 +667,18 @@ impl GameView {
             };
             self.session.record_result(attempt, label, outcome, metric);
         }
+        let motion = crate::motion::enabled(cx);
         self.clear = self
             .round()
             .undo
             .as_ref()
-            .filter(|_| placement.lines > 0 && !cx.reduce_motion())
+            .filter(|_| placement.lines > 0 && motion)
             .map(|before| Clear::new(placement, turn, piece, before));
+        self.seat = (motion && placement.lines == 0).then(|| Seat {
+            started: Instant::now(),
+            turn,
+            piece,
+        });
         audio::play(
             cx,
             match result {
@@ -693,6 +742,10 @@ impl GameView {
         let preview = self.preview(window);
         let keyboard = self.using_keyboard && self.focus.is_focused(window) && self.drag.is_none();
         let clear = self.clear.as_ref().map(|clear| (clear, clear.elapsed()));
+        let seat = self.seat.as_ref().map(|seat| {
+            let progress = seat.started.elapsed().as_secs_f32() / SEAT_DURATION.as_secs_f32();
+            (seat, (1. - progress.clamp(0., 1.)).powi(2))
+        });
         let geometry = self.grid.clone();
         let puzzle = (self.mode == Mode::PuzzleBoards).then(|| self.puzzles.current().definition);
         let label = if keyboard {
@@ -715,6 +768,7 @@ impl GameView {
         };
         div()
             .id("block-puzzle-board")
+            .debug_selector(|| "block-puzzle-board".into())
             .role(Role::Grid)
             .aria_row_count(SIDE)
             .aria_column_count(SIDE)
@@ -795,6 +849,7 @@ impl GameView {
                                             .child(wood_tile(wood, cell))
                                     }))
                                     .children(fading)
+                                    .children(seat.and_then(|(seat, opacity)| seat.tile(column, row, opacity)))
                                     .when(marked, |well| {
                                         well.aria_description("Marked square")
                                             .child(marked_square(cell, wood.is_some()))
@@ -1008,23 +1063,176 @@ impl GameView {
             }))
     }
 
-    fn controls(&self, width: f32, cell: f32, cx: &Context<Self>) -> Div {
+    fn round_outcome(&self) -> Option<Outcome> {
+        match self.mode {
+            Mode::Classic => self.classic.outcome(),
+            Mode::TenTrays => self.ten_trays.outcome(),
+            Mode::PuzzleBoards => match self.round().game.puzzle_status() {
+                Some(PuzzleStatus::Solved) => Some(Outcome::Won),
+                Some(PuzzleStatus::OutOfMoves | PuzzleStatus::Blocked) => Some(Outcome::Lost),
+                _ => None,
+            },
+        }
+    }
+
+    fn result(&self, outcome: Outcome, cx: &Context<Self>) -> AnyElement {
+        let round = self.round();
+        let moves = round.turns.len();
+        let move_unit = if moves == 1 { "move" } else { "moves" };
+        let (title, detail) = match self.mode {
+            Mode::PuzzleBoards => {
+                let puzzle = self.puzzles.current();
+                let title = match round.game.puzzle_status() {
+                    Some(PuzzleStatus::Solved)
+                        if self.puzzles.solved_count() == self.puzzles.boards.len() =>
+                    {
+                        "All boards solved"
+                    }
+                    Some(PuzzleStatus::Solved) => "Puzzle solved",
+                    Some(PuzzleStatus::OutOfMoves) => "Goal missed",
+                    _ => "No pieces fit",
+                };
+                let mut detail = format!("{} · {moves} {move_unit}", puzzle.definition.title);
+                if self.new_puzzle_best {
+                    detail.push_str(" · New move record");
+                } else if let Some(best) = puzzle.best_moves {
+                    let unit = if best == 1 { "move" } else { "moves" };
+                    detail.push_str(&format!(" · Best {best} {unit}"));
+                }
+                (title, detail)
+            }
+            mode => {
+                let best = if mode == Mode::Classic {
+                    &self.classic
+                } else {
+                    &self.ten_trays
+                };
+                let score = round.game.score();
+                let new_best = score > best.starting_best && score == best.best;
+                let title = match outcome {
+                    Outcome::Won => "All ten trays placed",
+                    Outcome::Finished if new_best => "New personal best",
+                    _ => "No pieces fit",
+                };
+                let mut detail = format!("{score} points · {moves} pieces placed");
+                match (new_best, outcome) {
+                    (true, Outcome::Finished) => detail.push_str(". No pieces fit."),
+                    (true, _) => detail.push_str(" · New personal best"),
+                    (false, _) => detail.push_str(&format!(" · Best {}", best.best)),
+                };
+                if outcome == Outcome::Lost {
+                    let remaining = round.game.placements_left().unwrap_or_default();
+                    detail.push_str(&format!(" · {remaining} pieces left"));
+                }
+                (title, detail)
+            }
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_lg()
+            .px_3()
+            .bg(rgba(0x26170fbb))
+            .child(round_result(
+                cx,
+                "block-puzzle-result",
+                outcome,
+                title,
+                detail,
+                self.round_actions(Some(outcome), false, cx),
+            ))
+            .into_any_element()
+    }
+
+    fn round_actions(&self, outcome: Option<Outcome>, compact: bool, cx: &Context<Self>) -> Div {
         let palette = t::colors(cx);
         let round = self.round();
-        let compact = width < 230.;
-        let is_puzzle = self.mode == Mode::PuzzleBoards;
-        let solved = round.game.puzzle_solved();
         let next = self.puzzles.active + 1;
+        let advance = outcome == Some(Outcome::Won)
+            && self.mode == Mode::PuzzleBoards
+            && next < self.puzzles.boards.len();
         let round_control = |id, label, enabled| {
             themed_control(cx, id, label, enabled)
                 .debug_selector(|| id.into())
                 .when(compact, |button| button.px_2().text_size(px(12.)))
         };
+        let restart = match outcome {
+            Some(Outcome::Won) => "Replay",
+            Some(Outcome::Lost | Outcome::Finished) => "Try again",
+            _ => "Restart",
+        };
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .when(advance, |controls| {
+                controls.child(
+                    round_control("block-puzzle-next", "Next board", true)
+                        .bg(rgb(palette.hover))
+                        .border_color(rgb(palette.gold_text))
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.choose_puzzle(next, window, cx);
+                        })),
+                )
+            })
+            .child(
+                round_control("block-puzzle-undo", "Undo", round.undo.is_some())
+                    .aria_keyshortcuts(if cx.platform_info().is_mac() {
+                        "Meta+Z"
+                    } else {
+                        "Control+Z"
+                    })
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.undo(cx);
+                        view.focus.focus(window, cx);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                round_control("block-puzzle-restart", restart, true)
+                    .when(outcome.is_some() && !advance, |button| {
+                        button
+                            .bg(rgb(palette.hover))
+                            .border_color(rgb(palette.gold_text))
+                    })
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.restart(false);
+                        view.focus.focus(window, cx);
+                        cx.notify();
+                    })),
+            )
+            .when(self.mode == Mode::Classic, |controls| {
+                controls.child(
+                    round_control("block-puzzle-new", "New board", true).on_click(cx.listener(
+                        |view, _, window, cx| {
+                            view.restart(true);
+                            view.focus.focus(window, cx);
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+    }
+
+    fn controls(
+        &self,
+        width: f32,
+        cell: f32,
+        outcome: Option<Outcome>,
+        show_result: bool,
+        cx: &Context<Self>,
+    ) -> Div {
+        let palette = t::colors(cx);
+        let round = self.round();
+        let compact = width < 230.;
+        let is_puzzle = self.mode == Mode::PuzzleBoards;
+        let solved = round.game.puzzle_solved();
         let remaining = round.game.placements_left();
         let status = match remaining {
-            _ if is_puzzle => self.puzzle_status(),
-            Some(0) => "All ten trays placed.".into(),
-            _ if !round.game.has_moves() => "No pieces fit. Undo or restart.".into(),
+            _ if is_puzzle || outcome.is_some() => String::new(),
             _ if self.drag.is_some() => "Drop the piece onto the board.".into(),
             _ if self.selection.is_some() && self.using_keyboard => {
                 "Move the piece with the arrow keys.".into()
@@ -1132,56 +1340,10 @@ impl GameView {
                         .child(self.tray(cell, width, cx)),
                 )
             })
-            .children(self.status(status, palette, compact))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .when(solved && next < self.puzzles.boards.len(), |controls| {
-                        controls.child(
-                            round_control("block-puzzle-next", "Next board", true)
-                                .bg(rgb(palette.hover))
-                                .border_color(rgb(palette.gold_text))
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.choose_puzzle(next, window, cx);
-                                })),
-                        )
-                    })
-                    .child(
-                        round_control("block-puzzle-undo", "Undo", round.undo.is_some())
-                            .aria_keyshortcuts(if cx.platform_info().is_mac() {
-                                "Meta+Z"
-                            } else {
-                                "Control+Z"
-                            })
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.undo(cx);
-                                view.focus.focus(window, cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        round_control("block-puzzle-restart", "Restart", true).on_click(
-                            cx.listener(|view, _, window, cx| {
-                                view.restart(false);
-                                view.focus.focus(window, cx);
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .when(self.mode == Mode::Classic, |controls| {
-                        controls.child(
-                            round_control("block-puzzle-new", "New board", true).on_click(
-                                cx.listener(|view, _, window, cx| {
-                                    view.restart(true);
-                                    view.focus.focus(window, cx);
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                    }),
-            )
+            .when(!show_result, |rail| {
+                rail.children(self.status(status, palette, compact))
+                    .child(self.round_actions(None, compact, cx))
+            })
             .when(!solved, |rail| {
                 rail.child(
                     div()
@@ -1294,13 +1456,30 @@ impl Render for GameView {
         if self.drag.is_some() && !cx.has_active_drag() {
             self.drag = None;
         }
-        if let Some(clear) = &self.clear {
-            if clear.elapsed() < CLEAR_DURATION && !cx.reduce_motion() {
-                window.request_animation_frame();
-            } else {
+        if self.clear.is_some() || self.seat.is_some() {
+            let motion = crate::motion::enabled(cx);
+            if !motion
+                || self
+                    .clear
+                    .as_ref()
+                    .is_some_and(|clear| clear.elapsed() >= CLEAR_DURATION)
+            {
                 self.clear = None;
             }
+            if !motion
+                || self
+                    .seat
+                    .as_ref()
+                    .is_some_and(|seat| seat.started.elapsed() >= SEAT_DURATION)
+            {
+                self.seat = None;
+            }
+            if self.clear.is_some() || self.seat.is_some() {
+                window.request_animation_frame();
+            }
         }
+        let outcome = self.round_outcome();
+        let result = outcome.filter(|_| self.clear.is_none() && self.seat.is_none());
         let layout = PlayLayout::fit(board_space(window), window.viewport_size().height.into());
         t::panel(cx)
             .id("block-puzzle-game")
@@ -1315,8 +1494,14 @@ impl Render for GameView {
             .when(!layout.stacked && layout.board >= 520., |panel| {
                 panel.items_center()
             })
-            .child(self.board(layout.cell, window, cx))
-            .child(self.controls(layout.controls, layout.cell, cx))
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(self.board(layout.cell, window, cx))
+                    .children(result.map(|outcome| self.result(outcome, cx))),
+            )
+            .child(self.controls(layout.controls, layout.cell, outcome, result.is_some(), cx))
     }
 }
 
@@ -1431,6 +1616,80 @@ fn piece_shape(piece: Piece, cell: f32, gap: f32) -> Div {
 mod tests {
     use super::*;
     use gpui::{point, size};
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    fn puzzle_results_follow_placement_and_preserve_undo(cx: &mut gpui::TestAppContext) {
+        use corner_table_api::GameId;
+        use gpui::{KeyUpEvent, Keystroke, Modifiers, VisualTestContext};
+
+        let launch = GameLaunch {
+            game: GameId("block-puzzle-result-test".into()),
+            entry: super::super::GameEntry::Classic,
+        };
+        let window = cx.open_window(size(px(760.), px(540.)), |_, cx| {
+            let mut view = GameView::new(&launch, cx);
+            view.switch(Mode::PuzzleBoards);
+            view
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+        let attempt = window
+            .update(&mut visual.cx, |view, window, cx| {
+                view.focus.focus(window, cx);
+                view.round().attempt
+            })
+            .unwrap();
+        let place = |visual: &mut VisualTestContext| {
+            visual.simulate_keystrokes("1 enter");
+            visual.simulate_event(KeyUpEvent {
+                keystroke: Keystroke::parse("enter").unwrap(),
+            });
+        };
+        place(&mut visual);
+        window
+            .update(&mut visual.cx, |view, _, cx| {
+                assert_eq!(view.round_outcome(), Some(Outcome::Lost));
+                let seat = view.seat.as_mut().expect("piece seats before the result");
+                seat.started -= SEAT_DURATION;
+                cx.notify();
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let board = visual.debug_bounds("block-puzzle-board").unwrap();
+        let undo = visual.debug_bounds("block-puzzle-undo").unwrap();
+        assert!(undo.is_contained_within(&board));
+        visual.simulate_click(undo.center(), Modifiers::none());
+        window
+            .update(&mut visual.cx, |view, _, cx| {
+                assert_eq!(view.round_outcome(), None);
+                assert!(view.round().attempt == attempt);
+                assert!(view.round().turns.is_empty());
+                view.cursor = Anchor { column: 4, row: 3 };
+                cx.notify();
+            })
+            .unwrap();
+        place(&mut visual);
+        assert!(visual.debug_bounds("block-puzzle-next").is_none());
+        window
+            .update(&mut visual.cx, |view, _, cx| {
+                assert_eq!(view.round_outcome(), Some(Outcome::Won));
+                assert!(view.round().attempt == attempt);
+                view.clear
+                    .as_mut()
+                    .expect("crossing clears two lines")
+                    .started -= Duration::from_secs(1);
+                cx.notify();
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let next = visual.debug_bounds("block-puzzle-next").unwrap();
+        assert!(next.is_contained_within(&board));
+        visual.simulate_click(next.center(), Modifiers::none());
+        window
+            .read_with(&visual.cx, |view, _| assert_eq!(view.puzzles.active, 1))
+            .unwrap();
+    }
 
     #[test]
     fn play_layout_fits_the_board_and_tray_in_supported_windows() {

@@ -30,7 +30,7 @@ impl Move {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Best {
     pub(super) rooms: usize,
     pub(super) cave_ins: u32,

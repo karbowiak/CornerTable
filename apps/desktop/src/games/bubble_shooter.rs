@@ -10,19 +10,20 @@ use corner_table_bubble_shooter::{
     Aim, Angle, Cell as BubbleCell, Color, PUZZLE_COUNT, PUZZLES, STAGE_COUNT, STAGES, Status,
 };
 use gpui::{
-    Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
+    AnyElement, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, Render, Role, SharedString, Stateful, Toggled, Window, canvas, div, prelude::*,
     px, relative, rgb, rgba,
 };
 
 use crate::{
     audio::{self, Effect},
+    storage::Outcome,
     theme as t,
 };
 
 use self::progress::{Mode, Progress};
 use self::table::{Flight, Impact, Playfield, TABLE_HEIGHT, TABLE_WIDTH};
-use super::{GameLaunch, board_space};
+use super::{GameLaunch, board_space, round_result};
 
 pub struct GameView {
     progress: Progress,
@@ -141,10 +142,10 @@ impl GameView {
             return;
         };
         self.impact = None;
-        if cx.reduce_motion() {
-            self.resolve_shot(self.angle, None, cx);
-        } else {
+        if crate::motion::enabled(cx) {
             self.flight = Some(Flight::new(aim, self.angle));
+        } else {
+            self.resolve_shot(self.angle, None, cx);
         }
         cx.notify();
     }
@@ -169,19 +170,16 @@ impl GameView {
     }
 
     fn animate(&mut self, cx: &mut Context<Self>) {
+        let motion = crate::motion::enabled(cx);
         if self
             .flight
             .as_ref()
-            .is_some_and(|flight| flight.position(0.).is_none())
+            .is_some_and(|flight| !motion || flight.position(0.).is_none())
             && let Some(flight) = self.flight.take()
         {
-            self.resolve_shot(
-                flight.angle,
-                (!cx.reduce_motion()).then_some(flight.aim.landing),
-                cx,
-            );
+            self.resolve_shot(flight.angle, motion.then_some(flight.aim.landing), cx);
         }
-        if self.impact.as_ref().is_some_and(Impact::finished) {
+        if !motion || self.impact.as_ref().is_some_and(Impact::finished) {
             self.impact = None;
         }
         cx.notify();
@@ -285,9 +283,7 @@ impl GameView {
                 )
                 .size_full(),
             )
-            .when(status == Status::Won && self.impact.is_none(), |board| {
-                board.child(self.completion(cx))
-            })
+            .children(self.result(cx))
     }
 
     fn aim_description(&self) -> String {
@@ -318,62 +314,147 @@ impl GameView {
         }
     }
 
-    fn completion(&self, cx: &Context<Self>) -> Div {
+    fn result(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if self.flight.is_some() || self.impact.is_some() {
+            return None;
+        }
         let round = &self.progress.round;
         let mode = self.progress.mode();
         let next = self.next_level();
-        let title = match mode {
-            Mode::Stages if next.is_none() => "All stages cleared",
-            Mode::Stages => "Stage cleared",
-            Mode::Classic => "Board cleared",
-            Mode::Challenge => "Challenge cleared",
-            Mode::Puzzles => "Puzzle solved",
+        let (outcome, title) = match round.status() {
+            Status::Playing => return None,
+            Status::HitDangerLine => (Outcome::Lost, "Danger line reached"),
+            Status::OutOfShots => (Outcome::Lost, "Out of shots"),
+            Status::BankGoalMissed => (Outcome::Lost, "Bank goal missed"),
+            Status::Won => (
+                Outcome::Won,
+                match mode {
+                    Mode::Stages if next.is_none() => "All stages cleared",
+                    Mode::Stages => "Stage cleared",
+                    Mode::Classic => "Board cleared",
+                    Mode::Challenge => "Challenge cleared",
+                    Mode::Puzzles
+                        if (0..PUZZLE_COUNT).all(|index| self.progress.puzzle_solved(index)) =>
+                    {
+                        "All puzzles solved"
+                    }
+                    Mode::Puzzles => "Puzzle solved",
+                },
+            ),
         };
-        let replay = if mode == Mode::Puzzles {
-            "Replay puzzle"
-        } else {
-            "Play again"
-        };
-        let (action, button_label) = next.unwrap_or((Action::Restart, replay));
         let shots = round.shots_used();
-        div()
-            .absolute()
-            .inset_0()
+        let unit = if shots == 1 { "shot" } else { "shots" };
+        let mut detail = format!("{} points · {shots} {unit} used", round.score());
+        if let Some(puzzle) = round.puzzle_info() {
+            detail.push_str(&format!(
+                " · {}/{} bank matches",
+                round.banked_matches(),
+                puzzle.bank_target,
+            ));
+        } else {
+            detail.push_str(&format!(" · {} shots left", round.shots_left()));
+        }
+        if outcome == Outcome::Lost {
+            detail.push_str(&format!(" · {} bubbles left", round.bubbles().count()));
+        } else if let Some(shot) = &self.progress.last_shot
+            && shot.clear_bonus > 0
+        {
+            detail.push_str(&format!(" · {} unused-shot bonus", shot.clear_bonus));
+        }
+        if self.progress.new_best {
+            detail.push_str(" · New personal best");
+        } else if let Some(best) = self.progress.best() {
+            detail.push_str(&format!(" · Best {}", best.score));
+        }
+        if round.status() == Status::BankGoalMissed {
+            detail.push_str(". A bank match bounces off a wall before popping a group.");
+        }
+
+        let colors = t::colors(cx);
+        let replay = match (outcome, mode) {
+            (Outcome::Won, Mode::Puzzles) => "Replay puzzle",
+            (Outcome::Won, _) => "Play again",
+            (_, Mode::Puzzles) => "Retry puzzle",
+            _ => "Try again",
+        };
+        let replay_id = if next.is_none() && outcome == Outcome::Won {
+            "bubble-next-or-replay"
+        } else {
+            "bubble-restart"
+        };
+        let actions = div()
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_3()
-            .px_4()
-            .text_color(rgb(0xfff2d6))
-            .child(t::display_type(title, 25.).text_center())
-            .when(round.stars() > 0, |summary| {
-                summary.child(star_row(round.stars(), 24., 0xecc064, 0x59716a))
-            })
-            .child(div().text_size(px(14.)).text_center().child(format!(
-                "{} points · {shots} {}",
-                round.score(),
-                if shots == 1 { "shot" } else { "shots" },
-            )))
-            .when(self.progress.new_best, |summary| {
-                summary.child(
-                    div()
-                        .text_size(px(13.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(0xffdc87))
-                        .child("New personal best"),
-                )
+            .gap_2()
+            .when(round.stars() > 0, |actions| {
+                actions.child(star_row(
+                    round.stars(),
+                    18.,
+                    colors.gold_text,
+                    colors.border,
+                ))
             })
             .child(
-                self.button(
-                    "bubble-next-or-replay",
-                    button_label,
-                    action,
-                    ButtonStyle::Gold,
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .when_some(next, |row, (action, label)| {
+                        row.child(
+                            self.button(
+                                "bubble-next-or-replay",
+                                label,
+                                action,
+                                ButtonStyle::Gold,
+                                cx,
+                            )
+                            .aria_keyshortcuts("Enter"),
+                        )
+                    })
+                    .child(
+                        self.button(
+                            replay_id,
+                            replay,
+                            Action::Restart,
+                            if next.is_some() {
+                                ButtonStyle::Plain
+                            } else {
+                                ButtonStyle::Gold
+                            },
+                            cx,
+                        )
+                        .aria_keyshortcuts(if next.is_some() { "R" } else { "Enter R" }),
+                    )
+                    .when(mode == Mode::Classic, |row| {
+                        row.child(self.button(
+                            "bubble-new-board",
+                            "New board",
+                            Action::NewBoard,
+                            ButtonStyle::Plain,
+                            cx,
+                        ))
+                    }),
+            );
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_xl()
+                .px_3()
+                .bg(rgba(0x122d2cca))
+                .child(round_result(
                     cx,
-                )
-                .aria_keyshortcuts("Enter"),
-            )
+                    "bubble-result",
+                    outcome,
+                    title,
+                    detail,
+                    actions,
+                ))
+                .into_any_element(),
+        )
     }
 
     fn rail(&self, width: f32, cx: &Context<Self>) -> Div {
@@ -383,10 +464,6 @@ impl GameView {
         let stage = round.stage_info();
         let puzzle = round.puzzle_info();
         let status = round.status();
-        let lost = matches!(
-            status,
-            Status::HitDangerLine | Status::OutOfShots | Status::BankGoalMissed
-        );
         let title = puzzle
             .map(|puzzle| puzzle.name)
             .or_else(|| stage.map(|stage| stage.name))
@@ -443,9 +520,9 @@ impl GameView {
             .when(status == Status::Playing, |rail| {
                 rail.child(self.ammunition(cx))
             })
-            .when(lost, |rail| rail.child(self.feedback(cx)))
-            .child(self.round_actions(cx))
-            .when(!lost, |rail| rail.child(self.feedback(cx)))
+            .when(status == Status::Playing, |rail| {
+                rail.child(self.round_actions(cx)).child(self.feedback(cx))
+            })
             .when(status == Status::Playing && !compact, |rail| {
                 rail.child(
                     keyboard_help(p, self.has_next_ammo())
@@ -683,17 +760,13 @@ impl GameView {
 
     fn round_actions(&self, cx: &Context<Self>) -> Div {
         let round = &self.progress.round;
-        let status = round.status();
         let can_swap = self.flight.is_none() && round.can_swap();
-        let puzzle = self.progress.mode() == Mode::Puzzles;
         div()
             .flex()
             .flex_wrap()
             .gap_2()
-            .when(
-                status == Status::Playing && self.has_next_ammo(),
-                |actions| {
-                    actions.child(
+            .when(self.has_next_ammo(), |actions| {
+                actions.child(
                     self.button(
                         "bubble-swap",
                         "Swap",
@@ -715,29 +788,16 @@ impl GameView {
                         "Trade the loaded bubble for the next one once per shot when they differ.",
                     ),
                 )
-                },
-            )
-            .when(
-                status != Status::Won || self.next_level().is_some(),
-                |actions| {
-                    let (label, style) = match (status, puzzle) {
-                        (Status::Playing, _) => ("Restart", ButtonStyle::Plain),
-                        (Status::Won, true) => ("Replay puzzle", ButtonStyle::Plain),
-                        (Status::Won, false) => ("Replay stage", ButtonStyle::Plain),
-                        (_, true) => ("Retry puzzle", ButtonStyle::Gold),
-                        _ => ("Try again", ButtonStyle::Gold),
-                    };
-                    actions.child(
-                        self.button("bubble-restart", label, Action::Restart, style, cx)
-                            .when(puzzle, |button| {
-                                button
-                                    .aria_label(label)
-                                    .aria_keyshortcuts("R")
-                                    .gap_2()
-                                    .child(div().text_size(px(11.)).opacity(0.8).child("R"))
-                            }),
-                    )
-                },
+            })
+            .child(
+                self.button(
+                    "bubble-restart",
+                    "Restart",
+                    Action::Restart,
+                    ButtonStyle::Plain,
+                    cx,
+                )
+                .aria_keyshortcuts("R"),
             )
             .when(self.progress.mode() == Mode::Classic, |actions| {
                 actions.child(self.button(
@@ -753,29 +813,8 @@ impl GameView {
     fn feedback(&self, cx: &Context<Self>) -> Stateful<Div> {
         let p = t::colors(cx);
         let round = &self.progress.round;
-        let shot = self.progress.last_shot.as_ref();
-        let (title, detail) = match (round.status(), shot) {
-            (Status::Won, Some(shot)) if shot.clear_bonus > 0 => (
-                "Unused-shot bonus".into(),
-                format!("+{} points", shot.clear_bonus),
-            ),
-            (Status::Won, _) => (
-                "Last-shot clear".into(),
-                "You used every shot in the rack.".into(),
-            ),
-            (Status::OutOfShots, _) => (
-                "Out of shots".into(),
-                "Clear the rack within the shot budget.".into(),
-            ),
-            (Status::BankGoalMissed, _) => (
-                "Bank goal missed".into(),
-                "A bank match bounces off a wall and pops a group.".into(),
-            ),
-            (Status::HitDangerLine, _) => (
-                "Danger line reached".into(),
-                "A bubble crossed the dashed line. Clear the low rows first.".into(),
-            ),
-            (Status::Playing, Some(shot)) if !shot.popped.is_empty() => {
+        let (title, detail) = match self.progress.last_shot.as_ref() {
+            Some(shot) if !shot.popped.is_empty() => {
                 let mut title = format!("{} popped", shot.popped.len());
                 if !shot.dropped.is_empty() {
                     title.push_str(&format!(" · {} dropped", shot.dropped.len()));
@@ -789,11 +828,11 @@ impl GameView {
                 }
                 (title, detail)
             }
-            (Status::Playing, Some(_)) => (
+            Some(_) => (
                 "Bubble placed".into(),
                 "Join three matching marks to pop the cluster.".into(),
             ),
-            (Status::Playing, None) => (
+            None => (
                 "Line up a shot".into(),
                 if self.progress.mode() == Mode::Challenge {
                     "Score with pops, drops, bank shots, and unused shots.".into()

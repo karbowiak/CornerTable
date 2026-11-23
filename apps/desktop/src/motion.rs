@@ -5,14 +5,14 @@ pub fn enabled(cx: &App) -> bool {
 }
 
 pub fn sync_from_system(cx: &mut App) {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(test)))]
     cx.set_reduce_motion(system_reduces_motion());
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(not(target_os = "macos"), test))]
     let _ = cx;
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn system_reduces_motion() -> bool {
     use objc2::{
         MainThreadMarker, class, msg_send,
@@ -27,7 +27,8 @@ fn system_reduces_motion() -> bool {
     reduced.as_bool()
 }
 
-#[cfg(not(target_os = "macos"))]
+// Headless tests set the preference on the GPUI context.
+#[cfg(any(not(target_os = "macos"), test))]
 fn system_reduces_motion() -> bool {
     false
 }
