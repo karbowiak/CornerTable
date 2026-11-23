@@ -466,6 +466,10 @@ impl Guide {
                         "Finish the field",
                         "Clear every safe square to win. After hitting a mine, choose Replay field to practice the same layout. New field gives you a fresh layout, and Restart begins the daily board again. In Time trial you can still finish the field after the countdown reaches zero.",
                     ),
+                    (
+                        "Share a field",
+                        "After your first reveal in Classic or Logic only, use Copy field code to share the layout and opening square. Copy a code you received and choose Play from clipboard to practice that field. Use Return to my field to resume your own round.",
+                    ),
                 ],
             },
             "peg-solitaire" => Self {
