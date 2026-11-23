@@ -2,18 +2,21 @@ use std::time::Duration;
 
 use corner_table_chess::{Color, File, Move, Piece, Rank, Square};
 use gpui::{
-    Animation, AnimationExt, AppContext as _, BoxShadow, Context, Div, EntityId, FontWeight, Img,
-    ObjectFit, Render, Role, Stateful, Window, div, ease_out_quint, img, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt, AppContext as _, Background, BoxShadow, Context, Div, EntityId,
+    FontWeight, Img, ObjectFit, Render, Role, Stateful, Window, div, ease_out_quint, img,
+    linear_color_stop, linear_gradient, prelude::*, px, rgb, rgba,
 };
 
 use crate::{motion, theme};
 
 use super::{GameView, PROMOTIONS, Promotion, piece_name, side_name};
 
-pub(super) const FRAME: f32 = 23.;
+pub(super) const FRAME: f32 = 21.;
 const FRAME_INK: u32 = 0x192e39;
 const CREAM: u32 = 0xf3e8ce;
 const BRASS: u32 = 0xf8d785;
+const SLATE: (u32, u32) = (0x7697a2, 0x537482);
+const IVORY: (u32, u32) = (0xf1e5ca, 0xd9c8a4);
 
 impl GameView {
     pub(super) fn board(&self, tile: f32, window: &Window, cx: &Context<Self>) -> Stateful<Div> {
@@ -51,10 +54,17 @@ impl GameView {
             .flex_none()
             .rounded(px(10.))
             .overflow_hidden()
-            .bg(rgb(FRAME_INK))
-            .shadow(vec![BoxShadow::new(px(0.), px(7.), rgba(0x15232a45).into()).blur_radius(px(18.))])
+            .bg(finish(0x3b5560, FRAME_INK))
+            .shadow(vec![BoxShadow::new(px(0.), px(6.), rgba(0x15232a45).into()).blur_radius(px(15.))])
             .child(
-                div().absolute().inset(px(4.)).rounded(px(7.)).border_1().border_color(rgb(0x59727b)),
+                div().absolute().inset(px(3.)).rounded(px(7.)).border_1().border_color(rgb(0x718b90)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset(px(FRAME - 2.))
+                    .border(px(2.))
+                    .border_color(rgb(0x13252c)),
             )
             .child(file_labels(files, tile))
             .children(ranks.into_iter().enumerate().map(|(row, rank)| {
@@ -99,13 +109,13 @@ impl GameView {
                 played.movement.from == square || played.movement.to == square
             });
         let dark = (square.rank() as u8 + square.file() as u8).is_multiple_of(2);
-        let surface = match (checked, last, dark) {
-            (true, _, true) => 0xa7524c,
-            (true, _, false) => 0xdd9a87,
-            (false, true, true) => 0x81804d,
-            (false, true, false) => 0xeed4a0,
-            (false, false, true) => 0x5d8190,
-            (false, false, false) => 0xe6dbbe,
+        let (top, bottom) = match (checked, last, dark) {
+            (true, _, true) => (0xbb7061, 0x9f4f46),
+            (true, _, false) => (0xe6ad96, 0xca7d6e),
+            (false, true, true) => (0x9b9568, 0x7a7950),
+            (false, true, false) => (0xf4dea9, 0xe4c48b),
+            (false, false, true) => SLATE,
+            (false, false, false) => IVORY,
         };
         let label = occupant.map_or_else(
             || format!("{square}, empty"),
@@ -155,9 +165,10 @@ impl GameView {
                     view.activate(square, window, cx);
                 }))
             })
-            .when(legal_source || target.is_some(), |cell| {
-                cell.cursor_pointer()
-                    .hover(move |style| style.bg(rgb(if dark { 0x71919e } else { 0xf1e7cf })))
+            .when(active && (legal_source || target.is_some()), |cell| {
+                cell.cursor_pointer().hover(move |style| {
+                    style.bg(finish(top, if checked || last { bottom } else { top }))
+                })
             })
             .relative()
             .size(px(tile))
@@ -165,9 +176,17 @@ impl GameView {
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgb(surface))
+            .bg(finish(top, bottom))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .border_t_1()
+                    .border_l_1()
+                    .border_color(rgba(0xffffff25)),
+            )
             .when_some(occupant, |cell, (color, piece)| {
-                let image = piece_image(color, piece, tile * 0.91);
+                let image = piece_image(color, piece, tile * 0.97);
                 if let Some(movement) = arrival.filter(|movement| movement.to == square) {
                     let direction = if self.table.flipped { -1. } else { 1. };
                     let file = movement.from.file() as i8 - square.file() as i8;
@@ -194,10 +213,11 @@ impl GameView {
                 cell.child(
                     div()
                         .absolute()
-                        .left_0()
-                        .top_0()
+                        .left(px(2.))
+                        .bottom(px(2.))
                         .h(px(3.))
                         .w(px(tile * 0.34))
+                        .rounded_full()
                         .bg(rgb(BRASS)),
                 )
             })
@@ -303,6 +323,7 @@ impl GameView {
             .tab_index(0)
             .absolute()
             .inset_0()
+            .rounded(px(10.))
             .bg(rgba(0x10232bb3))
             .flex()
             .items_center()
@@ -354,7 +375,30 @@ impl GameView {
                                         .bg(rgb(palette.paper))
                                         .hover(|style| style.bg(rgb(palette.hover)))
                                         .focus_visible(|style| style.border_color(rgb(palette.ink)))
-                                        .child(piece_image(color, piece, 42.))
+                                        .child(
+                                            div()
+                                                .relative()
+                                                .m_1()
+                                                .h(px(43.))
+                                                .w(px(49.))
+                                                .rounded(px(3.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .bg(piece_background())
+                                                .child(piece_image(color, piece, 42.))
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top(px(1.))
+                                                        .right(px(3.))
+                                                        .text_size(px(10.))
+                                                        .line_height(px(12.))
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .text_color(rgb(0x122a34))
+                                                        .child(key),
+                                                ),
+                                        )
                                         .child(
                                             div()
                                                 .text_size(px(11.))
@@ -377,6 +421,18 @@ impl GameView {
                     ),
             )
     }
+}
+
+pub(super) fn piece_background() -> Background {
+    finish(SLATE.0, SLATE.1)
+}
+
+fn finish(top: u32, bottom: u32) -> Background {
+    linear_gradient(
+        165.,
+        linear_color_stop(rgb(top), 0.),
+        linear_color_stop(rgb(bottom), 1.),
+    )
 }
 
 fn is_en_passant(view: &GameView, movement: Move) -> bool {

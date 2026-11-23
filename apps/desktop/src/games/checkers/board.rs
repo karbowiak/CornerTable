@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use corner_table_checkers::{Outcome, Piece, Side, Square, Step};
 use gpui::{
-    Animation, AnimationExt, Context, Div, FontWeight, Img, ObjectFit, Role, Stateful, Window, div,
-    ease_out_quint, img, prelude::*, px, rgb, rgba,
+    Animation, AnimationExt, BoxShadow, Context, Div, FontWeight, Img, ObjectFit, Role, Stateful,
+    Window, div, ease_out_quint, img, prelude::*, px, rgb, rgba,
 };
 
 use crate::motion;
@@ -15,6 +15,7 @@ const BOARD: &str = "games/checkers/board.webp";
 const RIM: f32 = 56. / 1024.;
 const SELECTED: u32 = 0xffd37e;
 const KEY_FOCUS: u32 = 0xe4fff3;
+const WALNUT: u32 = 0x402b21;
 
 impl GameView {
     pub(super) fn board(
@@ -65,7 +66,7 @@ impl GameView {
             .rounded(px(9.))
             .overflow_hidden()
             .bg(rgb(0x70442d))
-            .shadow_lg()
+            .shadow(vec![BoxShadow::new(px(0.), px(6.), rgba(0x321d1745).into()).blur_radius(px(15.))])
             .child(div().absolute().inset_0().child(img(BOARD).size_full().object_fit(ObjectFit::Fill)))
             .children(coordinates)
             .child(
@@ -144,7 +145,7 @@ impl GameView {
             .items_center()
             .justify_center()
             .when(last, |square| {
-                square.child(div().absolute().inset_0().bg(rgba(0xcbd7ac31)))
+                square.child(div().absolute().inset_0().bg(rgba(0xffdb9833)))
             })
             .when(available || landing.is_some(), |square| {
                 square
@@ -159,7 +160,7 @@ impl GameView {
                 }))
             })
             .when_some(piece, |cell, piece| {
-                let image = checker(piece, side * 0.97);
+                let image = checker(piece, side * 1.02);
                 if let Some(step) = arrival.filter(|step| step.to == square) {
                     let offset = (side * 0.13).min(8.);
                     let dx = if step.from.column() < square.column() {
@@ -186,6 +187,18 @@ impl GameView {
                     cell.child(image)
                 }
             })
+            .when(last && !selected, |square| {
+                square.child(
+                    div()
+                        .absolute()
+                        .left(px(3.))
+                        .bottom(px(3.))
+                        .w(px(side * 0.28))
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(rgb(SELECTED)),
+                )
+            })
             .when(available && !selected, |square| {
                 let dot = (side * 0.13).clamp(5., 9.);
                 square.child(
@@ -197,15 +210,22 @@ impl GameView {
                         .rounded_full()
                         .bg(rgb(SELECTED))
                         .border_1()
-                        .border_color(rgb(0x402b21)),
+                        .border_color(rgb(WALNUT)),
                 )
             })
             .when_some(landing, |square, step| {
                 square.child(target(step.captured().is_some(), side))
             })
-            .when(selected, |square| square.child(outline(2., 2., SELECTED)))
+            .when(selected, |square| {
+                square
+                    .child(outline(1., 3., WALNUT))
+                    .child(outline(2., 2., SELECTED))
+            })
             .when(keyed && show_cursor, |square| {
-                square.child(outline(if selected { 6. } else { 3. }, 2., KEY_FOCUS))
+                let inset = if selected { 5. } else { 2. };
+                square
+                    .child(outline(inset, 3., WALNUT))
+                    .child(outline(inset + 1., 2., KEY_FOCUS))
             })
     }
 }

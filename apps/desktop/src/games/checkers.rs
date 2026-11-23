@@ -214,7 +214,7 @@ impl GameView {
         }
     }
 
-    fn status(&self, width: f32, legal: &[Step], cx: &Context<Self>) -> AnyElement {
+    fn status(&self, beside: bool, legal: &[Step], cx: &Context<Self>) -> AnyElement {
         let game = self.table.game();
         if let Some((outcome, title, detail)) = result_copy(game, self.table.mode) {
             return round_result(
@@ -233,8 +233,8 @@ impl GameView {
             .role(Role::Status)
             .aria_label(format!("{title}. {detail}"))
             .flex()
-            .items_center()
-            .justify_between()
+            .when(beside, |panel| panel.flex_col())
+            .when(!beside, |panel| panel.items_center().justify_between())
             .gap_2()
             .px_3()
             .py_2()
@@ -242,7 +242,7 @@ impl GameView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(t::display_type(title, if width < 400. { 19. } else { 22. }))
+                    .child(t::display_type(title, 20.))
                     .child(
                         div()
                             .mt_1()
@@ -260,6 +260,7 @@ impl GameView {
                     .children([Side::Red, Side::Light].map(|side| {
                         let (pieces, kings) = game.material(side);
                         side_count(side, pieces, kings, game.side() == side, colors)
+                            .when(beside, |count| count.flex_1())
                     })),
             )
             .into_any_element()
@@ -363,7 +364,7 @@ impl GameView {
             row.child(
                 div()
                     .id("checkers-move-record")
-                    .ml_auto()
+                    .w_full()
                     .text_size(px(12.))
                     .text_color(rgb(colors.muted))
                     .child(format!("{lead}  {path}")),
@@ -378,8 +379,8 @@ impl GameView {
             .w_full()
             .flex()
             .flex_col()
-            .gap_3()
-            .p_4()
+            .gap_2()
+            .p_3()
             .child(t::display_type("Match", 20.))
             .child(
                 div()
@@ -430,14 +431,14 @@ impl GameView {
                 div()
                     .border_t_1()
                     .border_color(rgb(colors.border))
-                    .pt_3()
+                    .pt_2()
                     .flex()
                     .flex_col()
                     .gap_2()
                     .child(t::display_type("How to play", 17.))
                     .child(
                         rule_note(colors)
-                            .child("Move one square diagonally forward. Take any available jump, then keep jumping with that piece while you can."),
+                            .child("Move one square diagonally forward. Jump when you can, chaining with the same piece."),
                     )
                     .child(
                         div()
@@ -449,7 +450,7 @@ impl GameView {
                                 rule_note(colors)
                                     .flex_1()
                                     .min_w_0()
-                                    .child("Reach the far edge to crown a king and end your turn. Kings move and jump both ways."),
+                                    .child("Crowning at the far edge ends your turn. Kings move and jump both ways."),
                             ),
                     ),
             )
@@ -463,10 +464,12 @@ impl Render for GameView {
         let available = super::board_space(window) + 30.;
         let height = f32::from(window.viewport_size().height);
         let panel = if available < 690. { 244. } else { 268. };
-        let side_by_side = available - panel - 24.;
-        let wide = side_by_side >= 322.;
-        let board_room = if wide { side_by_side } else { available };
-        let side = board_room.min((height - 210.).max(322.)).min(630.).floor();
+        let gap = if available < 690. { 16. } else { 22. };
+        let side_by_side = available - panel - gap;
+        let beside = side_by_side >= 322.;
+        let board_room = if beside { side_by_side } else { available };
+        let height_budget = height - if beside { 114. } else { 210. };
+        let side = board_room.min(height_budget.max(322.)).min(630.).floor();
         let playing = self.table.game().outcome() == Outcome::Playing;
         let legal = if self.player_turn() {
             self.table.game().legal_steps()
@@ -474,43 +477,44 @@ impl Render for GameView {
             Vec::new()
         };
 
-        div()
-            .w_full()
-            .flex()
-            .items_start()
-            .gap_6()
-            .justify_center()
-            .when(!wide, |layout| layout.flex_col().items_center().gap_4())
-            .child(
-                div()
-                    .w(px(side))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(self.status(side, &legal, cx))
-                    .child(self.board(side, &legal, window, cx))
-                    .when(playing, |column| {
-                        column.child(div().mt_1().child(self.actions(cx)))
-                    })
-                    .child(
-                        div()
-                            .text_color(rgb(colors.muted))
-                            .text_size(px(12.))
-                            .line_height(px(17.))
-                            .child(if playing {
-                                "Arrow keys to move · Enter or Space to act · U to undo"
-                            } else {
-                                "Arrow keys to review · U to undo"
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .w(px(if wide { panel } else { side }))
-                    .flex_none()
+        let status = self.status(beside, &legal, cx);
+        let board = self.board(side, &legal, window, cx);
+        let keyboard_help = div()
+            .text_color(rgb(colors.muted))
+            .text_size(px(12.))
+            .line_height(px(17.))
+            .child(if playing {
+                "Arrow keys to move · Enter or Space to act · U to undo"
+            } else {
+                "Arrow keys to review · U to undo"
+            });
+        let layout = div().w_full().flex().gap(px(gap));
+        let board_column = div().w(px(side)).flex_none().flex().flex_col().gap_2();
+        if beside {
+            layout
+                .items_start()
+                .child(board_column.child(board).child(keyboard_help))
+                .child(
+                    div()
+                        .w(px(panel))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(status)
+                        .when(playing, |column| column.child(self.actions(cx)))
+                        .child(self.match_panel(cx)),
+                )
+        } else {
+            layout.flex_col().items_center().child(
+                board_column
+                    .child(status)
+                    .child(board)
+                    .when(playing, |column| column.child(self.actions(cx)))
+                    .child(keyboard_help)
                     .child(self.match_panel(cx)),
             )
+        }
     }
 }
 
@@ -548,7 +552,7 @@ fn result_copy(game: &Game, mode: Mode) -> Option<(RecordOutcome, &'static str, 
     Some((
         outcome,
         title,
-        format!("{reason} Pieces left — Red {red}, Maple {maple}."),
+        format!("{reason}\nRed {red}, Maple {maple} remaining."),
     ))
 }
 
@@ -597,9 +601,11 @@ fn side_count(
     div()
         .id(("checkers-count", usize::from(side == Side::Light)))
         .role(Role::Group)
-        .aria_label(format!(
-            "{name}, {pieces} {piece_label}, {kings} {king_label}"
-        ))
+        .aria_label(if active {
+            format!("{name} to move, {pieces} {piece_label}, {kings} {king_label}")
+        } else {
+            format!("{name}, {pieces} {piece_label}, {kings} {king_label}")
+        })
         .flex_none()
         .flex()
         .flex_col()
@@ -609,7 +615,7 @@ fn side_count(
         .py_1()
         .border_1()
         .border_color(rgb(if active {
-            colors.border
+            colors.gold_text
         } else {
             colors.surface
         }))
@@ -622,15 +628,25 @@ fn side_count(
                 .text_size(px(15.))
                 .line_height(px(18.))
                 .font_weight(FontWeight::BOLD)
-                .child(checker(Piece { side, king: false }, 22.))
+                .child(checker(
+                    Piece {
+                        side,
+                        king: kings > 0,
+                    },
+                    24.,
+                ))
                 .child(pieces.to_string()),
         )
         .child(
             div()
-                .text_color(rgb(colors.muted))
+                .text_color(rgb(if active { colors.ink } else { colors.muted }))
                 .text_size(px(11.))
                 .line_height(px(13.))
-                .child(name),
+                .child(if kings > 0 {
+                    format!("{name} · {kings} {king_label}")
+                } else {
+                    name.to_owned()
+                }),
         )
 }
 
@@ -739,8 +755,11 @@ mod tests {
             view
         });
         cx.run_until_parked();
-        cx.update_window(window.into(), |_, window, cx| window.focus_prev(cx))
-            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.focus_next(cx);
+            window.focus_next(cx);
+        })
+        .unwrap();
         let enter = Keystroke::parse("enter").unwrap();
         cx.dispatch_keystroke(window.into(), enter.clone());
         cx.update_window(window.into(), |_, window, cx| {

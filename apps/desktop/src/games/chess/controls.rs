@@ -4,7 +4,12 @@ use gpui::{AnyElement, Context, Div, FontWeight, Role, div, prelude::*, px, rgb}
 use crate::{games::round_result, storage::Outcome, theme};
 
 use super::super::themed_control;
-use super::{Confirmation, GameView, board::piece_image, side_name, state::Mode};
+use super::{
+    Confirmation, GameView,
+    board::{piece_background, piece_image},
+    side_name,
+    state::Mode,
+};
 
 impl GameView {
     pub(super) fn status(&self, cx: &Context<Self>) -> AnyElement {
@@ -31,36 +36,46 @@ impl GameView {
         theme::panel(cx)
             .w_full()
             .px_3()
-            .py_3()
+            .py_2()
+            .when(status.in_check, |panel| {
+                panel.border_color(rgb(palette.danger))
+            })
             .child(
                 div()
                     .id("chess-status")
                     .role(Role::Status)
                     .aria_label(format!("{}. {}", status.title, status.detail))
                     .flex()
-                    .gap_2()
-                    .items_start()
-                    .child(piece_image(status.side, Piece::King, 34.))
+                    .flex_col()
+                    .gap_1()
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
                             .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(theme::display_type(status.title, 20.))
+                            .items_center()
+                            .gap(px(6.))
                             .child(
                                 div()
-                                    .text_size(px(13.))
-                                    .line_height(px(18.))
-                                    .min_h(px(36.))
-                                    .text_color(rgb(if status.in_check {
-                                        palette.danger
-                                    } else {
-                                        palette.muted
-                                    }))
-                                    .child(status.detail),
-                            ),
+                                    .size(px(24.))
+                                    .rounded(px(5.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(piece_background())
+                                    .child(piece_image(status.side, Piece::King, 23.)),
+                            )
+                            .child(theme::display_type(status.title, 17.).min_w_0()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(rgb(if status.in_check {
+                                palette.danger
+                            } else {
+                                palette.muted
+                            }))
+                            .child(status.detail),
                     ),
             )
             .into_any_element()
@@ -70,11 +85,7 @@ impl GameView {
         let mover = self.game().side_to_move();
         let side = side_name(mover);
         let checked = self.game().checked_king();
-        let title = if self.computer.is_some() {
-            "Black is thinking".into()
-        } else {
-            format!("{side} to move")
-        };
+        let title = format!("{side} to move");
         let detail = if let Some(promotion) = self.promotion {
             format!("Choose the piece for {}.", promotion.movement.to)
         } else if self.claim_mode {
@@ -82,7 +93,7 @@ impl GameView {
         } else if let Some(notice) = &self.notice {
             notice.clone()
         } else if self.computer.is_some() {
-            "Computer plays Black.".into()
+            "Computer is thinking.".into()
         } else if let Some(square) = self.selected {
             format!("{square} selected. Choose a marked square.")
         } else if self.table.mode == Mode::Computer {
@@ -179,27 +190,55 @@ impl GameView {
             })
         };
 
-        div().w_full().flex().flex_col().gap_3()
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_3()
             .child(
-                div().id("chess-modes").role(Role::Group).aria_label("Opponent").flex().flex_wrap().gap_2()
-                    .children([
-                        (Mode::Local, "chess-local", "Two players"),
-                        (Mode::Computer, "chess-computer", "Computer"),
-                    ].map(|(mode, id, label)| {
-                        let chosen = self.table.mode == mode;
-                        themed_control(cx, id, label, !choice_blocked)
-                            .px_2()
-                            .text_size(px(12.))
-                            .aria_toggled(chosen.into())
-                            .when(chosen, |button| button.bg(rgb(palette.hover)).border_color(rgb(palette.gold_text)))
-                            .when(!choice_blocked, |button| button.on_click(cx.listener(move |view, _, _, cx| view.choose_mode(mode, cx))))
-                    })),
+                div()
+                    .id("chess-modes")
+                    .role(Role::Group)
+                    .aria_label("Opponent")
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(
+                        [
+                            (Mode::Local, "chess-local", "Two players"),
+                            (Mode::Computer, "chess-computer", "Computer"),
+                        ]
+                        .map(|(mode, id, label)| {
+                            let chosen = self.table.mode == mode;
+                            themed_control(cx, id, label, !choice_blocked)
+                                .px_2()
+                                .text_size(px(12.))
+                                .aria_toggled(chosen.into())
+                                .when(chosen, |button| {
+                                    button
+                                        .bg(rgb(palette.hover))
+                                        .border_color(rgb(palette.gold_text))
+                                })
+                                .when(!choice_blocked, |button| {
+                                    button.on_click(
+                                        cx.listener(move |view, _, _, cx| {
+                                            view.choose_mode(mode, cx)
+                                        }),
+                                    )
+                                })
+                        }),
+                    ),
             )
             .child(actions)
-            .when(!ended, |controls| controls.child(
-                div().text_size(px(12.)).line_height(px(17.)).text_color(rgb(palette.muted))
-                    .child("Tab to the board. Use arrows to move the cursor and Enter to select or play."),
-            ))
+            .when(!ended, |controls| {
+                controls.child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(17.))
+                        .text_color(rgb(palette.muted))
+                        .child("Tab to the board. Arrows move the cursor. Enter selects or plays."),
+                )
+            })
     }
 
     fn confirmation_controls(&self, confirmation: Confirmation, cx: &Context<Self>) -> Div {

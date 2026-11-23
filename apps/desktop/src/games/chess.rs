@@ -458,18 +458,11 @@ impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let available = board_space(window);
         let height = f32::from(window.viewport_size().height);
-        let wide = available >= 686.;
-        let compact_rail = !wide && available >= 534. && height < 730.;
-        let rail = if compact_rail {
-            180.
-        } else if available >= 850. {
-            250.
-        } else {
-            220.
-        };
-        let gap = if wide { 22. } else { 14. };
-        let width = available - if wide || compact_rail { rail + gap } else { 0. };
-        let height_budget = height - if wide { 124. } else { 204. };
+        let beside = available >= 534.;
+        let rail = if available >= 850. { 250. } else { 196. };
+        let gap = if available >= 850. { 22. } else { 16. };
+        let width = available - if beside { rail + gap } else { 0. };
+        let height_budget = height - if beside { 114. } else { 190. };
         let tile = ((width.min(height_budget) - 2. * board::FRAME) / 8.)
             .floor()
             .clamp(34., 80.);
@@ -490,36 +483,18 @@ impl Render for GameView {
                     view.promotion_key(event, window, cx);
                 }
             }));
-        if wide {
+        if beside {
             layout.gap(px(gap)).child(board).child(
                 div()
                     .w(px(rail))
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .gap_4()
+                    .gap_3()
                     .child(status)
                     .child(controls)
                     .children(journal),
             )
-        } else if compact_rail {
-            layout
-                .flex_col()
-                .gap_3()
-                .max_w(px(board_width + gap + rail))
-                .child(status)
-                .child(
-                    div().flex().items_start().gap(px(gap)).child(board).child(
-                        div()
-                            .w(px(rail))
-                            .flex_none()
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .child(controls)
-                            .children(journal),
-                    ),
-                )
         } else {
             layout
                 .flex_col()
