@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use corner_table_api::{FixtureApi, GameId};
 use gpui::{
-    AnyView, Context, Entity, FocusHandle, MouseButton, NavigationDirection, Pixels, Point,
-    ScrollHandle, Task, Window, div, point, prelude::*, px, rgb,
+    Context, Entity, FocusHandle, MouseButton, NavigationDirection, Pixels, Point, ScrollHandle,
+    Task, Window, div, point, prelude::*, px, rgb,
 };
 
-use crate::games::{GameEntry, GameLaunch};
+use crate::games::{GameEntry, GameHost, GameLaunch};
 use crate::library_search::{QueryChanged, SearchInput};
 use crate::{audio, pages, storage, theme, widgets};
 
@@ -71,7 +71,7 @@ pub struct Desktop {
     scroll: ScrollHandle,
     back: Vec<Visit>,
     forward: Vec<Visit>,
-    games: HashMap<GameLaunch, AnyView>,
+    games: HashMap<GameLaunch, Entity<GameHost>>,
     current_size: storage::WindowSize,
     remember_size: Option<Task<()>>,
     reload_records: Option<Task<()>>,
@@ -215,6 +215,11 @@ impl Desktop {
         if self.page != previous {
             self.guide.dismiss();
             self.focus.focus(window, cx);
+            if let Page::Game(launch) = &self.page
+                && let Some(host) = self.games.get(launch)
+            {
+                host.update(cx, |host, cx| host.restore_focus(&self.focus, cx));
+            }
             if matches!(self.page, Page::Records | Page::DailyChallenge) {
                 self.refresh_records(cx);
             }
@@ -324,13 +329,14 @@ impl Render for Desktop {
                 if !self.games.contains_key(launch)
                     && let Some(view) = crate::games::open(launch, cx)
                 {
-                    self.games.insert(launch.clone(), view);
+                    let host = cx.new(|cx| GameHost::new(view, window, cx));
+                    self.games.insert(launch.clone(), host);
                 }
                 let compact_header = window.viewport_size().width < px(900.);
                 pages::game(
                     self,
                     launch,
-                    self.games.get(launch).cloned(),
+                    self.games.get(launch).cloned().map(Into::into),
                     compact_header,
                     cx,
                 )

@@ -5,6 +5,7 @@ mod bubble_shooter;
 mod checkers;
 mod gem_cascade;
 mod hearts;
+mod host;
 mod jigsaw;
 mod kakuro;
 mod mahjong;
@@ -28,6 +29,8 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{app::Desktop, theme};
+
+pub use host::GameHost;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case", tag = "kind", content = "id")]
