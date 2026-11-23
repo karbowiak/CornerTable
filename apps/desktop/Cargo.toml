@@ -1,0 +1,10 @@
+[package]
+name = "corner-table"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1"
+corner-table-api = { path = "../../crates/api" }
+gpui = "=0.2.2"
+include_dir = "0.7"

@@ -1,0 +1,11 @@
+[workspace]
+members = ["apps/desktop", "crates/api"]
+default-members = ["apps/desktop"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[profile.dev]
+debug = 0

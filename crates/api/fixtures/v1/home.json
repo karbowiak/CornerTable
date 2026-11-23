@@ -1,0 +1,9 @@
+{
+  "guest": {"id": "guest-maple-pine", "name": "MaplePine", "initials": "MP"},
+  "challenge": {
+    "id": "fixture-mahjong-001",
+    "game_id": "mahjong",
+    "title": "Mahjong",
+    "description": "Clear a layered board of botanical tiles. Every player gets the same layout."
+  }
+}

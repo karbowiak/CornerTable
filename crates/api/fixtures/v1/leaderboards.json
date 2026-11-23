@@ -1,0 +1,42 @@
+[
+  {
+    "game_id": "mahjong",
+    "period": "today",
+    "leaders": [
+      {"player_id": "tea-and-tiles", "name": "TeaAndTiles", "rank": 1, "score": 9840, "elapsed_seconds": 151},
+      {"player_id": "quiet-robin", "name": "QuietRobin", "rank": 2, "score": 9610, "elapsed_seconds": 167},
+      {"player_id": "north-star", "name": "NorthStar", "rank": 3, "score": 9420, "elapsed_seconds": 182},
+      {"player_id": "moss-fox", "name": "MossFox", "rank": 4, "score": 9110, "elapsed_seconds": 200},
+      {"player_id": "blue-heron", "name": "BlueHeron", "rank": 5, "score": 8950, "elapsed_seconds": 219}
+    ],
+    "guest_standing": {"player_id": "guest-maple-pine", "name": "MaplePine", "rank": 24, "score": 7430, "elapsed_seconds": 252}
+  },
+  {
+    "game_id": "mahjong",
+    "period": "this-week",
+    "leaders": [
+      {"player_id": "north-star", "name": "NorthStar", "rank": 1, "score": 9950, "elapsed_seconds": 149},
+      {"player_id": "tea-and-tiles", "name": "TeaAndTiles", "rank": 2, "score": 9840, "elapsed_seconds": 151},
+      {"player_id": "blue-heron", "name": "BlueHeron", "rank": 3, "score": 9720, "elapsed_seconds": 158}
+    ],
+    "guest_standing": {"player_id": "guest-maple-pine", "name": "MaplePine", "rank": 31, "score": 7820, "elapsed_seconds": 244}
+  },
+  {
+    "game_id": "mahjong",
+    "period": "all-time",
+    "leaders": [
+      {"player_id": "paper-boats", "name": "PaperBoats", "rank": 1, "score": 10540, "elapsed_seconds": 134},
+      {"player_id": "north-star", "name": "NorthStar", "rank": 2, "score": 10290, "elapsed_seconds": 141},
+      {"player_id": "moss-fox", "name": "MossFox", "rank": 3, "score": 10030, "elapsed_seconds": 153}
+    ]
+  },
+  {
+    "game_id": "solitaire",
+    "period": "today",
+    "leaders": [
+      {"player_id": "paper-boats", "name": "PaperBoats", "rank": 1, "score": 6240, "elapsed_seconds": 202},
+      {"player_id": "moss-fox", "name": "MossFox", "rank": 2, "score": 6000, "elapsed_seconds": 245}
+    ],
+    "guest_standing": {"player_id": "guest-maple-pine", "name": "MaplePine", "rank": 18, "score": 5320, "elapsed_seconds": 367}
+  }
+]
