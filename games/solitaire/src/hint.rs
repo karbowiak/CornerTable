@@ -356,15 +356,6 @@ fn draw_hint(game: &Game, require_safe_foundation: bool) -> Option<Hint> {
     })
 }
 
-fn foundation(card: Card) -> Place {
-    Place::Foundation(
-        Suit::ALL
-            .iter()
-            .position(|&suit| suit == card.suit)
-            .unwrap(),
-    )
-}
-
 fn played(game: &Game, action: Move) -> Option<Game> {
     let mut next = game.clone();
     next.play(action).then_some(next)

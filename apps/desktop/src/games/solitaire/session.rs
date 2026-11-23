@@ -531,6 +531,9 @@ mod tests {
         visual.simulate_click(finish.center(), Modifiers::none());
         draw(&mut visual);
         assert!(visual.debug_bounds("solitaire-finish-button").is_none());
+        assert!(visual.debug_bounds("solitaire-won").is_some());
+        assert!(visual.debug_bounds("solitaire-finish-replay").is_some());
+        assert!(visual.debug_bounds("solitaire-finish-new").is_some());
         let restored = Deal::open(&launch, mode, launch.seed());
         assert!(restored.game.won());
         let won_in = before.moves + number_collected;
@@ -555,7 +558,19 @@ mod tests {
             .read_with(cx, |view, _| assert_eq!(view.deal.game, before))
             .unwrap();
         assert_eq!(Deal::open(&launch, mode, launch.seed()).game, before);
-        assert!(visual.debug_bounds("solitaire-finish-button").is_some());
+        assert!(visual.debug_bounds("solitaire-won").is_none());
+
+        let finish = visual.debug_bounds("solitaire-finish-button").unwrap();
+        visual.simulate_click(finish.center(), Modifiers::none());
+        draw(&mut visual);
+        assert!(visual.debug_bounds("solitaire-won").is_some());
+        assert_eq!(
+            storage::recent_results(usize::MAX)
+                .iter()
+                .filter(|result| result.game == launch.game)
+                .count(),
+            1,
+        );
     }
 
     #[cfg(debug_assertions)]

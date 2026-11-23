@@ -1,22 +1,27 @@
+mod motion;
 mod session;
 mod style;
 mod suggestion;
+#[cfg(all(test, debug_assertions))]
+mod tests;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use corner_table_solitaire::{Card, DealMode, Game, Move, Place, Suit, Variant};
 use gpui::{
     BoxShadow, Context, Div, EntityId, FocusHandle, FontWeight, KeyDownEvent, ObjectFit, Render,
-    Role, SharedString, Stateful, Window, div, img, prelude::*, px, relative, rgb, rgba, svg,
+    Role, SharedString, Stateful, Window, div, img, prelude::*, px, relative, rgb, rgba,
 };
 
 use crate::{
     audio::{self, Effect},
     games::{GameEntry, GameLaunch},
+    storage::Outcome,
     theme as t,
 };
 
 use self::{
+    motion::{Anchor, DealFrame, DealMotion, fan_len},
     session::{Deal, TableSession},
     style::{TablePalette, TableStyle},
     suggestion::{Marker, Suggestion},
@@ -50,12 +55,34 @@ impl CardSize {
     fn back_step(self) -> f32 {
         self.width * 0.155
     }
+
+    fn stack_step(self, face_up: bool) -> f32 {
+        if face_up {
+            self.face_step
+        } else {
+            self.back_step()
+        }
+    }
+
+    fn waste_step(self, mode: DealMode) -> f32 {
+        if mode == DealMode::KlondikeDrawThree {
+            self.width * 0.46
+        } else {
+            0.
+        }
+    }
 }
 
 struct TableSize {
     card: CardSize,
     padding: f32,
     min_height: f32,
+}
+
+struct BoardFrame<'a> {
+    size: CardSize,
+    interactive: bool,
+    flight: Option<DealFrame<'a>>,
 }
 
 impl TableSize {
@@ -111,6 +138,7 @@ pub struct GameView {
     focus: FocusHandle,
     initial_focus: bool,
     suggestion: Option<Suggestion>,
+    deal_motion: Option<DealMotion>,
 }
 
 impl GameView {
@@ -130,6 +158,7 @@ impl GameView {
             focus: cx.focus_handle(),
             initial_focus: true,
             suggestion: None,
+            deal_motion: None,
         }
     }
 
@@ -152,13 +181,15 @@ impl GameView {
 
     fn board_changed(&mut self) {
         self.suggestion = None;
+        self.deal_motion = None;
         self.revision += 1;
     }
 
     fn show_hint(&mut self, cx: &mut Context<Self>) {
-        if self.deal.game.won() {
+        if self.deal.game.won() || self.deal.game.stalled() {
             return;
         }
+        self.deal_motion = None;
         self.deal.selected = None;
         self.deal.status = "";
         self.suggestion = Some(
@@ -171,11 +202,15 @@ impl GameView {
 
     fn apply(&mut self, action: Move, cx: &mut Context<Self>) -> bool {
         let runs = self.deal.game.runs;
+        let before_draw =
+            (action == Move::Draw && motion::enabled(cx)).then(|| self.deal.game.clone());
         if !self.deal.apply(action) {
             return false;
         }
         self.board_changed();
         let game = &self.deal.game;
+        self.deal_motion = before_draw
+            .and_then(|before| DealMotion::from_draw(before, game, cx.background_executor().now()));
         let effect = if game.won() {
             Effect::Complete
         } else if game.runs > runs
@@ -193,7 +228,7 @@ impl GameView {
     }
 
     fn play_at(&mut self, place: Place, cx: &mut Context<Self>) {
-        if self.deal.game.won() {
+        if self.deal.game.won() || self.deal.game.stalled() {
             return;
         }
         let choosing_source = self.deal.selected.is_none()
@@ -283,10 +318,7 @@ impl GameView {
         let CardFace::Up(card) = face else {
             return None;
         };
-        if game.won()
-            || !game.selectable(from)
-            || (game.variant == Variant::Pyramid && card.rank == 13)
-        {
+        if !game.selectable(from) || (game.variant == Variant::Pyramid && card.rank == 13) {
             return None;
         }
         let cards = if let Place::Tableau(column, index) = from {
@@ -310,7 +342,7 @@ impl GameView {
         &self,
         place: Place,
         face: CardFace,
-        size: CardSize,
+        board: &BoardFrame<'_>,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let owner = cx.entity_id();
@@ -322,7 +354,8 @@ impl GameView {
             .suggestion
             .as_ref()
             .and_then(|hint| hint.marker(game, place));
-        let clickable = !game.won()
+        let size = board.size;
+        let clickable = board.interactive
             && match place {
                 Place::Stock | Place::Foundation(_) | Place::Cell(_) => true,
                 Place::Tableau(..) => {
@@ -332,13 +365,19 @@ impl GameView {
                 }
                 Place::Layout(_) | Place::Waste => game.selectable(place),
             };
-        let drag = self.drag_source(place, face, size, owner);
+        let drag = board
+            .interactive
+            .then(|| self.drag_source(place, face, size, owner))
+            .flatten();
         let draggable = drag.is_some();
         card_surface(face, size, selected, palette)
             .when_some(marker, |surface, marker| {
                 marker.mark(surface, size, palette)
             })
             .id(SharedString::from(format!("solitaire-{place:?}")))
+            .when(cfg!(test), |element| {
+                element.debug_selector(move || format!("solitaire-slot-{place:?}"))
+            })
             .block_mouse_except_scroll()
             .when(clickable, |element| {
                 element
@@ -407,11 +446,12 @@ impl GameView {
             }))
     }
 
-    fn stock(&self, size: CardSize, cx: &Context<Self>) -> Div {
+    fn stock(&self, board: &BoardFrame<'_>, cx: &Context<Self>) -> Div {
         let game = &self.deal.game;
-        let face = if game.stock.is_empty() {
+        let recycling = board.flight.as_ref().is_some_and(DealFrame::recycling);
+        let face = if game.stock.is_empty() || recycling {
             CardFace::Empty(
-                if game.variant == Variant::Klondike && !game.waste.is_empty() {
+                if !recycling && game.variant == Variant::Klondike && !game.waste.is_empty() {
                     Slot::Recycle
                 } else {
                     Slot::Plain
@@ -422,72 +462,98 @@ impl GameView {
         };
         labeled(
             format!("Stock  {}", game.stock.len()),
-            self.card(Place::Stock, face, size, cx),
+            div()
+                .relative()
+                .child(self.card(Place::Stock, face, board, cx))
+                .children(
+                    board
+                        .flight
+                        .as_ref()
+                        .map(|flight| flight.measure(Anchor::Stock)),
+                ),
             cx,
         )
+        .flex_shrink_0()
     }
 
-    fn waste(&self, size: CardSize, cx: &Context<Self>) -> Div {
+    fn waste(&self, board: &BoardFrame<'_>, cx: &Context<Self>) -> Div {
         let game = &self.deal.game;
-        let face = game
-            .waste
-            .last()
-            .copied()
-            .map_or(CardFace::Empty(Slot::Plain), CardFace::Up);
-        let top = self.card(Place::Waste, face, size, cx);
-        if game.mode() != DealMode::KlondikeDrawThree {
-            return labeled("Waste", top, cx);
-        }
-
+        let size = board.size;
         let palette = TableStyle::active(cx).palette();
-        let step = size.width * 0.46;
-        let waste = &game.waste[game.waste.len().saturating_sub(3)..];
-        let past_cards = waste.len().saturating_sub(1);
+        let step = size.waste_step(game.mode());
+        let previous = board.flight.as_ref().and_then(DealFrame::previous_waste);
+        let waste = previous.unwrap_or(&game.waste);
+        let start = waste.len() - fan_len(game.mode(), waste.len());
         let fan = div()
             .relative()
             .w(px(size.width + step * 2.))
             .h(px(size.height()))
+            .when(waste.is_empty(), |fan| {
+                let slot = CardFace::Empty(Slot::Plain);
+                if previous.is_some() {
+                    fan.child(card_surface(slot, size, false, palette))
+                } else {
+                    fan.child(self.card(Place::Waste, slot, board, cx))
+                }
+            })
             .children(
-                waste[..past_cards]
+                waste[start..]
                     .iter()
                     .enumerate()
-                    .map(|(index, &card)| {
-                        div()
-                            .absolute()
-                            .left(px(index as f32 * step))
-                            .child(card_surface(CardFace::Up(card), size, false, palette))
+                    .filter_map(|(index, &card)| {
+                        let waste_index = start + index;
+                        if previous.is_none()
+                            && board
+                                .flight
+                                .as_ref()
+                                .is_some_and(|deal| deal.waste_pending(waste_index))
+                        {
+                            return None;
+                        }
+                        let face = CardFace::Up(card);
+                        let surface = if previous.is_none() && waste_index + 1 == waste.len() {
+                            self.card(Place::Waste, face, board, cx).into_any_element()
+                        } else {
+                            card_surface(face, size, false, palette).into_any_element()
+                        };
+                        Some(
+                            div()
+                                .absolute()
+                                .left(px(index as f32 * step))
+                                .child(surface),
+                        )
                     }),
             )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(past_cards as f32 * step))
-                    .child(top),
+            .children(
+                board
+                    .flight
+                    .as_ref()
+                    .map(|flight| flight.measure(Anchor::Waste)),
             );
         labeled("Waste", fan, cx)
     }
 
-    fn foundations(&self, size: CardSize, cx: &Context<Self>) -> Div {
+    fn foundations(&self, board: &BoardFrame<'_>, cx: &Context<Self>) -> Div {
         labeled(
             "Foundations",
             div()
                 .flex()
-                .gap(px(size.gap))
+                .gap(px(board.size.gap))
                 .children(Suit::ALL.into_iter().enumerate().map(|(index, kind)| {
                     let face = self.deal.game.foundations[index]
                         .last()
                         .copied()
                         .map_or(CardFace::Empty(Slot::Foundation(kind)), CardFace::Up);
-                    self.card(Place::Foundation(index), face, size, cx)
+                    self.card(Place::Foundation(index), face, board, cx)
                 })),
             cx,
         )
     }
 
-    fn cells(&self, size: CardSize, cx: &Context<Self>) -> Div {
+    fn cells(&self, board: &BoardFrame<'_>, cx: &Context<Self>) -> Div {
         labeled(
             "Free cells",
-            div().flex().gap(px(size.gap)).children(
+            div().flex().gap(px(board.size.gap)).children(
                 self.deal
                     .game
                     .cells
@@ -497,7 +563,7 @@ impl GameView {
                         self.card(
                             Place::Cell(index),
                             card.map_or(CardFace::Empty(Slot::Plain), CardFace::Up),
-                            size,
+                            board,
                             cx,
                         )
                     }),
@@ -506,8 +572,11 @@ impl GameView {
         )
     }
 
-    fn tableau(&self, size: CardSize, cx: &Context<Self>) -> Div {
+    fn tableau(&self, board: &BoardFrame<'_>, cx: &Context<Self>) -> Div {
+        let size = board.size;
+        let palette = TableStyle::active(cx).palette();
         div()
+            .relative()
             .flex()
             .gap(px(size.gap))
             .children(
@@ -517,12 +586,17 @@ impl GameView {
                     .iter()
                     .enumerate()
                     .map(|(column, stack)| {
+                        let previous = board
+                            .flight
+                            .as_ref()
+                            .and_then(|deal| deal.previous_column(column));
+                        let stack = previous.unwrap_or(stack);
                         let frame = div().relative().w(px(size.width)).flex_shrink_0();
                         if stack.is_empty() {
                             return frame.h(px(size.height())).child(self.card(
                                 Place::Tableau(column, 0),
                                 CardFace::Empty(Slot::Plain),
-                                size,
+                                board,
                                 cx,
                             ));
                         }
@@ -535,27 +609,31 @@ impl GameView {
                             } else {
                                 CardFace::Back
                             };
-                            if index + 1 < stack.len() {
-                                offset += if entry.face_up {
-                                    size.face_step
-                                } else {
-                                    size.back_step()
-                                };
+                            if index + 1 < stack.len() || previous.is_some() {
+                                offset += size.stack_step(entry.face_up);
                             }
-                            div().absolute().top(px(top)).left_0().child(self.card(
-                                Place::Tableau(column, index),
-                                face,
-                                size,
-                                cx,
-                            ))
+                            let surface = if previous.is_some() {
+                                card_surface(face, size, false, palette).into_any_element()
+                            } else {
+                                self.card(Place::Tableau(column, index), face, board, cx)
+                                    .into_any_element()
+                            };
+                            div().absolute().top(px(top)).left_0().child(surface)
                         });
                         let frame = frame.children(cards);
                         frame.h(px(size.height() + offset))
                     }),
             )
+            .children(
+                board
+                    .flight
+                    .as_ref()
+                    .map(|deal| deal.measure(Anchor::Tableau)),
+            )
     }
 
-    fn layout(&self, size: CardSize, cx: &Context<Self>) -> Div {
+    fn layout(&self, table: &BoardFrame<'_>, cx: &Context<Self>) -> Div {
+        let size = table.size;
         let game = &self.deal.game;
         let pyramid = game.variant == Variant::Pyramid;
         let row_step = size.width * if pyramid { 0.43 } else { 0.51 };
@@ -591,7 +669,7 @@ impl GameView {
                         .absolute()
                         .top(px(row as f32 * row_step))
                         .left(px(x * size.stride()))
-                        .child(self.card(place, face, size, cx)),
+                        .child(self.card(place, face, table, cx)),
                 );
             }
             offset += count;
@@ -659,9 +737,14 @@ impl GameView {
         )
     }
 
-    fn undo_button(&self, cx: &Context<Self>) -> Stateful<Div> {
+    fn undo_button(&self, on_table: bool, cx: &Context<Self>) -> Stateful<Div> {
         let can_undo = self.deal.can_undo();
-        super::themed_control(cx, "solitaire-undo", "Undo", can_undo)
+        let button = if on_table {
+            super::control("solitaire-undo", "Undo", can_undo)
+        } else {
+            super::themed_control(cx, "solitaire-undo", "Undo", can_undo)
+        };
+        button
             .when(cfg!(test), |button| {
                 button.debug_selector(|| "solitaire-undo-button".into())
             })
@@ -679,23 +762,19 @@ impl GameView {
     }
 
     fn hint_button(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let active = !self.deal.game.won();
-        super::themed_control(cx, "solitaire-hint", "Hint", active)
+        super::themed_control(cx, "solitaire-hint", "Hint", true)
             .when(cfg!(test), |button| {
                 button.debug_selector(|| "solitaire-hint-button".into())
             })
-            .when(active, |button| {
-                button
-                    .aria_label("Hint (H)")
-                    .child(
-                        div()
-                            .pl_2()
-                            .text_size(px(11.))
-                            .text_color(rgb(t::colors(cx).muted))
-                            .child("H"),
-                    )
-                    .on_click(cx.listener(|view, _, _, cx| view.show_hint(cx)))
-            })
+            .aria_label("Hint (H)")
+            .child(
+                div()
+                    .pl_2()
+                    .text_size(px(11.))
+                    .text_color(rgb(t::colors(cx).muted))
+                    .child("H"),
+            )
+            .on_click(cx.listener(|view, _, _, cx| view.show_hint(cx)))
     }
 
     fn finish_button(&self, cx: &Context<Self>) -> Option<Stateful<Div>> {
@@ -723,6 +802,9 @@ impl GameView {
             super::themed_control(cx, id, "Replay", true)
         };
         button
+            .when(cfg!(test), |button| {
+                button.debug_selector(move || id.into())
+            })
             .aria_label("Replay this deal")
             .on_click(cx.listener(|view, _, _, cx| {
                 view.restart(None);
@@ -730,10 +812,13 @@ impl GameView {
             }))
     }
 
-    fn new_deal_button(id: &'static str, on_table: bool, cx: &Context<Self>) -> Stateful<Div> {
-        let focus_color = if on_table { t::INK } else { t::colors(cx).ink };
+    fn new_deal_button(id: &'static str, cx: &Context<Self>) -> Stateful<Div> {
+        let focus_color = t::colors(cx).ink;
         div()
             .id(id)
+            .when(cfg!(test), |button| {
+                button.debug_selector(move || id.into())
+            })
             .role(Role::Button)
             .aria_label("New deal")
             .tab_index(0)
@@ -758,14 +843,15 @@ impl GameView {
             }))
     }
 
-    fn rack(&self, size: CardSize, cx: &Context<Self>) -> Div {
+    fn rack(&self, board: &BoardFrame<'_>, cx: &Context<Self>) -> Div {
+        let size = board.size;
         let variant = self.deal.game.variant;
         let draws = || {
             div()
                 .flex()
                 .gap(px(size.gap))
-                .child(self.stock(size, cx))
-                .child(self.waste(size, cx))
+                .child(self.stock(board, cx))
+                .child(self.waste(board, cx))
         };
         let rack = div()
             .w(px(size.span()))
@@ -774,55 +860,61 @@ impl GameView {
             .justify_between()
             .gap(px(size.gap));
         match variant {
-            Variant::Klondike => rack.child(draws()).child(self.foundations(size, cx)),
+            Variant::Klondike => rack.child(draws()).child(self.foundations(board, cx)),
             Variant::FreeCell => rack
-                .child(self.cells(size, cx))
-                .child(self.foundations(size, cx)),
-            Variant::Spider => rack.child(self.stock(size, cx)),
+                .child(self.cells(board, cx))
+                .child(self.foundations(board, cx)),
+            Variant::Spider => rack.child(self.stock(board, cx)),
             Variant::Pyramid | Variant::TriPeaks => rack.justify_center().child(draws()),
         }
     }
 
-    fn finish(&self, cx: &Context<Self>) -> Div {
-        let moves = self.deal.game.moves;
-        let palette = TableStyle::active(cx).palette();
-        div()
-            .flex_1()
-            .w_full()
-            .min_h(px(176.))
-            .py_4()
+    fn result(&self, outcome: Outcome, cx: &Context<Self>) -> Div {
+        let game = &self.deal.game;
+        let won = outcome == Outcome::Won;
+        let (title, detail) = if won {
+            ("Table cleared", format!("Won in {} moves.", game.moves))
+        } else {
+            let detail = match game.variant {
+                Variant::Klondike => "The stock is empty and no cards can be moved.",
+                Variant::Spider if game.stock.is_empty() => {
+                    "The stock is empty and no card or suited run can move."
+                }
+                Variant::Spider => "A stock row can’t be dealt and no card or suited run can move.",
+                Variant::FreeCell => "No transfer is available from the columns or free cells.",
+                Variant::Pyramid => "The stock is empty and there are no available pairs or kings.",
+                Variant::TriPeaks => {
+                    "The stock is empty and no exposed card can be played on the waste."
+                }
+            };
+            ("No moves left", detail.to_owned())
+        };
+        let actions = div()
             .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
+            .flex_wrap()
             .gap_2()
-            .text_center()
-            .child(
-                svg()
-                    .path("icons/solitaire.svg")
-                    .size(px(30.))
-                    .text_color(rgb(palette.accent)),
-            )
-            .child(t::display_type("Table cleared", 31.).text_color(rgb(0xfff3d9)))
-            .child(
-                div()
-                    .text_color(rgb(palette.text))
-                    .child(format!("Won in {moves} moves")),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .flex()
-                    .gap_2()
-                    .child(Self::replay_button("solitaire-finish-replay", true, cx))
-                    .child(Self::new_deal_button("solitaire-finish-new", true, cx)),
-            )
+            .when(self.deal.can_undo(), |actions| {
+                actions.child(self.undo_button(true, cx))
+            })
+            .child(Self::replay_button("solitaire-finish-replay", true, cx))
+            .child(Self::new_deal_button("solitaire-finish-new", cx));
+        let id = if won {
+            "solitaire-won"
+        } else {
+            "solitaire-blocked"
+        };
+        div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .when(won, |result| result.flex_1().min_h(px(176.)).items_center())
+            .when(cfg!(test), |result| {
+                result.debug_selector(move || id.into())
+            })
+            .child(super::round_result(cx, id, outcome, title, detail, actions))
     }
 
-    fn note(&self, stalled: bool) -> &'static str {
-        if stalled {
-            return "No moves left. Undo a move or start a new deal.";
-        }
+    fn note(&self) -> &'static str {
         if !self.deal.status.is_empty() {
             return self.deal.status;
         }
@@ -861,34 +953,70 @@ impl Render for GameView {
                 }
             });
         }
+        let now = cx.background_executor().now();
+        if self
+            .deal_motion
+            .as_ref()
+            .is_some_and(|deal| deal.finished(now) || !motion::enabled(cx))
+        {
+            self.deal_motion = None;
+        }
+        if self.deal_motion.is_some() {
+            window.request_animation_frame();
+        }
         let game = &self.deal.game;
         let style = TableStyle::active(cx);
         let palette = style.palette();
         let table = TableSize::new(game, window, self.show_title);
         let won = game.won();
-        let stalled = game.layout_stalled();
-        let note: SharedString = self.suggestion.as_ref().map_or_else(
-            || self.note(stalled).into(),
-            |hint| hint.message(game).into(),
-        );
+        let stalled = game.stalled();
+        let outcome = if self.deal_motion.is_some() {
+            None
+        } else if won {
+            Some(Outcome::Won)
+        } else if stalled {
+            Some(Outcome::Lost)
+        } else {
+            None
+        };
+        let board = BoardFrame {
+            size: table.card,
+            interactive: !won && !stalled,
+            flight: self.deal_motion.as_ref().map(|deal| deal.frame(now)),
+        };
+        let note: SharedString = self
+            .suggestion
+            .as_ref()
+            .map_or_else(|| self.note().into(), |hint| hint.message(game).into());
         let has_layout = !game.layout.is_empty();
         let field = div()
             .flex_1()
             .flex()
             .flex_col()
             .items_center()
-            .when(has_layout, |field| field.justify_center())
+            .when(has_layout && outcome.is_none(), |field| {
+                field.justify_center()
+            })
             .gap(px((table.card.width * 0.17).clamp(12., 21.)));
-        let field = match (has_layout, won) {
-            (true, true) => field.child(self.finish(cx)),
-            (true, false) => field
-                .child(self.layout(table.card, cx))
-                .child(self.rack(table.card, cx)),
-            (false, _) => field.child(self.rack(table.card, cx)).child(if won {
-                self.finish(cx)
-            } else {
-                self.tableau(table.card, cx)
-            }),
+        let field = match (has_layout, outcome) {
+            (true, Some(Outcome::Won)) => field.child(self.result(Outcome::Won, cx)),
+            (false, Some(Outcome::Won)) => field
+                .child(self.rack(&board, cx))
+                .child(self.result(Outcome::Won, cx)),
+            (false, Some(Outcome::Lost)) if game.variant == Variant::Spider => field
+                .child(
+                    self.rack(&board, cx)
+                        .child(self.result(Outcome::Lost, cx).flex_1().min_w_0()),
+                )
+                .child(self.tableau(&board, cx)),
+            (true, _) => field
+                .children(outcome.map(|outcome| self.result(outcome, cx)))
+                .child(self.layout(&board, cx))
+                .child(self.rack(&board, cx)),
+            (false, _) => field
+                .children(outcome.map(|outcome| self.result(outcome, cx)))
+                .child(self.rack(&board, cx))
+                .child(self.tableau(&board, cx)),
         };
         div()
             .w_full()
@@ -898,6 +1026,7 @@ impl Render for GameView {
                     && !event.keystroke.modifiers.modified()
                     && !event.is_held
                     && !view.deal.game.won()
+                    && !view.deal.game.stalled()
                 {
                     view.show_hint(cx);
                     cx.stop_propagation();
@@ -906,28 +1035,35 @@ impl Render for GameView {
             .flex()
             .flex_col()
             .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .when(self.show_title, |row| {
-                        row.child(t::display_type(game.variant.title(), 24.).mr_2())
-                    })
-                    .children(self.mode_picker(cx))
-                    .child(
+            .when(
+                outcome.is_none() || self.show_title || game.variant.deal_modes().len() > 1,
+                |view| {
+                    view.child(
                         div()
                             .flex()
                             .flex_wrap()
-                            .ml_auto()
+                            .items_center()
                             .gap_2()
-                            .child(self.hint_button(cx))
-                            .child(self.undo_button(cx))
-                            .children(self.finish_button(cx))
-                            .child(Self::replay_button("solitaire-replay", false, cx))
-                            .child(Self::new_deal_button("solitaire-new", false, cx)),
-                    ),
+                            .when(self.show_title, |row| {
+                                row.child(t::display_type(game.variant.title(), 24.).mr_2())
+                            })
+                            .children(self.mode_picker(cx))
+                            .when(outcome.is_none(), |row| {
+                                row.child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .ml_auto()
+                                        .gap_2()
+                                        .child(self.hint_button(cx))
+                                        .child(self.undo_button(false, cx))
+                                        .children(self.finish_button(cx))
+                                        .child(Self::replay_button("solitaire-replay", false, cx))
+                                        .child(Self::new_deal_button("solitaire-new", cx)),
+                                )
+                            }),
+                    )
+                },
             )
             .child(
                 div()
@@ -971,7 +1107,7 @@ impl Render for GameView {
                             .text_color(rgb(t::SURFACE))
                             .child(score_strip(game, self.deal.best_moves(), style))
                             .child(field)
-                            .when(!won, |table| {
+                            .when(outcome.is_none(), |table| {
                                 table.child(
                                     div()
                                         .border_t_1()
@@ -980,8 +1116,7 @@ impl Render for GameView {
                                         .text_size(px(13.))
                                         .line_height(px(19.))
                                         .text_color(rgb(
-                                            if stalled
-                                                || self.suggestion.is_some()
+                                            if self.suggestion.is_some()
                                                 || !self.deal.status.is_empty()
                                             {
                                                 palette.accent
@@ -1011,6 +1146,12 @@ impl Render for GameView {
                                         ),
                                 )
                             }),
+                    )
+                    .children(
+                        board
+                            .flight
+                            .as_ref()
+                            .map(|deal| deal.layer(board.size, game.mode(), palette)),
                     ),
             )
     }

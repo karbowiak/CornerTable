@@ -14,15 +14,23 @@ pub(super) fn play(game: &mut Game, action: Move) -> bool {
     let Some((card, count)) = game.card_run(from) else {
         return false;
     };
+    if !accepts(game, from, to, card, count) {
+        return false;
+    }
+    let run = game.remove_run(from);
     match to {
-        Place::Foundation(index) if count == 1 && foundation_accepts(game, index, card) => {
-            game.remove_run(from);
-            game.foundations[index].push(card);
-        }
-        Place::Cell(index) if count == 1 && game.cells.get(index) == Some(&None) => {
-            game.remove_run(from);
-            game.cells[index] = Some(card);
-        }
+        Place::Foundation(index) => game.foundations[index].push(card),
+        Place::Cell(index) => game.cells[index] = Some(card),
+        Place::Tableau(column, _) => game.tableau[column].extend(run),
+        _ => unreachable!(),
+    }
+    true
+}
+
+pub(super) fn accepts(game: &Game, from: Place, to: Place, card: Card, count: usize) -> bool {
+    match to {
+        Place::Foundation(index) => count == 1 && foundation_accepts(game, index, card),
+        Place::Cell(index) => count == 1 && game.cells.get(index) == Some(&None),
         Place::Tableau(column, _) if !matches!(from, Place::Tableau(source, _) if source == column) =>
         {
             let Some(stack) = game.tableau.get(column) else {
@@ -36,17 +44,11 @@ pub(super) fn play(game: &mut Game, action: Move) -> bool {
                 .filter(|(index, stack)| *index != column && stack.is_empty())
                 .count();
             let capacity = (empty_cells + 1) << empty_columns;
-            if count > capacity
-                || stack
+            count <= capacity
+                && stack
                     .last()
-                    .is_some_and(|top| !alternating_on(top.card, card))
-            {
-                return false;
-            }
-            let run = game.remove_run(from);
-            game.tableau[column].extend(run);
+                    .is_none_or(|top| alternating_on(top.card, card))
         }
-        _ => return false,
+        _ => false,
     }
-    true
 }

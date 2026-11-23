@@ -229,6 +229,23 @@ impl Game {
         }
     }
 
+    /// A live deal is stalled only when neither drawing nor any transfer or clear is legal.
+    pub fn stalled(&self) -> bool {
+        if self.won() {
+            return false;
+        }
+        match self.variant {
+            Variant::Pyramid | Variant::TriPeaks => self.layout_stalled(),
+            Variant::Spider => !spider::has_move(self),
+            Variant::Klondike => {
+                self.stock.is_empty()
+                    && self.waste.is_empty()
+                    && !self.has_foundation_game_transfer()
+            }
+            Variant::FreeCell => !self.has_foundation_game_transfer(),
+        }
+    }
+
     /// The stock is exhausted and neither a clear nor a pair is possible.
     /// Only Pyramid and TriPeaks have these layout rules.
     pub fn layout_stalled(&self) -> bool {
@@ -243,6 +260,31 @@ impl Game {
 
     pub fn foundation_count(&self) -> usize {
         self.foundations.iter().map(Vec::len).sum()
+    }
+
+    fn has_foundation_game_transfer(&self) -> bool {
+        let accepts = match self.variant {
+            Variant::Klondike => klondike::accepts,
+            Variant::FreeCell => freecell::accepts,
+            _ => unreachable!(),
+        };
+        let rack = (0..4).map(|index| match self.variant {
+            Variant::Klondike => Place::Foundation(index),
+            _ => Place::Cell(index),
+        });
+        let tableau = self.tableau.iter().enumerate().flat_map(|(column, stack)| {
+            (0..stack.len())
+                .rev()
+                .map(move |index| Place::Tableau(column, index))
+        });
+        rack.chain(tableau).any(|from| {
+            self.card_run(from).is_some_and(|(card, count)| {
+                std::iter::once(foundation(card))
+                    .chain((0..self.tableau.len()).map(|column| Place::Tableau(column, 0)))
+                    .chain(self.cells.iter().position(Option::is_none).map(Place::Cell))
+                    .any(|to| accepts(self, from, to, card, count))
+            })
+        })
     }
 
     fn card_run(&self, place: Place) -> Option<(Card, usize)> {
@@ -359,6 +401,15 @@ fn foundation_accepts(game: &Game, index: usize, card: Card) -> bool {
         .is_some_and(|stack| Suit::ALL[index] == card.suit && card.rank as usize == stack.len() + 1)
 }
 
+fn foundation(card: Card) -> Place {
+    Place::Foundation(
+        Suit::ALL
+            .iter()
+            .position(|&suit| suit == card.suit)
+            .unwrap(),
+    )
+}
+
 fn alternating_on(destination: Card, card: Card) -> bool {
     destination.rank == card.rank + 1 && destination.suit.red() != card.suit.red()
 }
@@ -456,6 +507,71 @@ mod tests {
         assert_eq!(game.runs, 1);
         assert!(game.tableau[1].is_empty());
         assert!(!game.play(Move::Draw));
+    }
+
+    #[test]
+    fn spider_stalls_only_without_a_legal_row_or_transfer() {
+        let mut game = Game::new(Variant::Spider, 266);
+        for _ in 0..5 {
+            assert!(!game.stalled());
+            assert!(game.play(Move::Draw));
+        }
+        assert!(game.stalled());
+        assert!(!game.won());
+
+        game.tableau = vec![vec![face_up(heart(8))]; 10];
+        game.tableau[0] = vec![face_up(heart(7)), face_up(spade(6))];
+        assert!(game.stalled(), "a mixed-suit run cannot move together");
+        game.tableau[0][0].card.suit = Suit::Spades;
+        assert!(!game.stalled(), "a suited run can move onto another suit");
+        assert!(transfer(
+            &mut game,
+            Place::Tableau(0, 0),
+            Place::Tableau(1, 0)
+        ));
+        assert!(!game.stalled(), "the empty column accepts a legal transfer");
+
+        game.tableau = vec![vec![face_up(heart(8))]; 10];
+        game.stock = vec![spade(3); 9];
+        assert!(game.stalled(), "a partial row cannot be dealt");
+        game.stock.push(spade(3));
+        assert!(!game.stalled(), "dealing a full row is a legal move");
+
+        game.tableau[9].clear();
+        assert!(!game.play(Move::Draw));
+        assert!(
+            !game.stalled(),
+            "even a whole column can move into an empty slot"
+        );
+        game.tableau[0].push(face_up(heart(5)));
+        assert!(transfer(
+            &mut game,
+            Place::Tableau(0, 1),
+            Place::Tableau(9, 0)
+        ));
+        assert!(game.play(Move::Draw));
+    }
+
+    #[test]
+    fn foundation_games_count_their_legal_moves_before_declaring_a_stall() {
+        let mut klondike = Game::new(Variant::Klondike, 1);
+        klondike.tableau = vec![vec![face_up(spade(7))]; 7];
+        klondike.stock.clear();
+        assert!(klondike.stalled());
+        klondike.waste.push(spade(9));
+        assert!(!klondike.stalled(), "recycling the waste is still legal");
+        klondike.waste.clear();
+        klondike.foundations[1] = (1..=6).map(heart).collect();
+        assert!(!klondike.stalled(), "a card can return from a foundation");
+
+        let mut freecell = Game::new(Variant::FreeCell, 1);
+        freecell.tableau = vec![vec![face_up(spade(7))]; 8];
+        freecell.cells = [Some(spade(8)); 4];
+        assert!(freecell.stalled());
+        freecell.cells[0] = None;
+        assert!(!freecell.stalled(), "a card can move into a free cell");
+        freecell.cells[0] = Some(heart(6));
+        assert!(!freecell.stalled(), "a card can move out of a free cell");
     }
 
     #[test]

@@ -32,28 +32,30 @@ pub(super) fn play(game: &mut Game, action: Move) -> bool {
     let Some((card, count)) = game.card_run(from) else {
         return false;
     };
+    if !accepts(game, from, to, card, count) {
+        return false;
+    }
+    let run = game.remove_run(from);
     match to {
-        Place::Foundation(index)
-            if from != to && count == 1 && foundation_accepts(game, index, card) =>
-        {
-            game.remove_run(from);
-            game.foundations[index].push(card);
-        }
-        Place::Tableau(column, _) if !matches!(from, Place::Tableau(source, _) if source == column) =>
-        {
-            let Some(stack) = game.tableau.get(column) else {
-                return false;
-            };
-            if !stack
-                .last()
-                .map_or(card.rank == 13, |top| alternating_on(top.card, card))
-            {
-                return false;
-            }
-            let run = game.remove_run(from);
-            game.tableau[column].extend(run);
-        }
-        _ => return false,
+        Place::Foundation(index) => game.foundations[index].push(card),
+        Place::Tableau(column, _) => game.tableau[column].extend(run),
+        _ => unreachable!(),
     }
     true
+}
+
+pub(super) fn accepts(game: &Game, from: Place, to: Place, card: Card, count: usize) -> bool {
+    match to {
+        Place::Foundation(index) => {
+            from != to && count == 1 && foundation_accepts(game, index, card)
+        }
+        Place::Tableau(column, _) if !matches!(from, Place::Tableau(source, _) if source == column) => {
+            game.tableau.get(column).is_some_and(|stack| {
+                stack
+                    .last()
+                    .map_or(card.rank == 13, |top| alternating_on(top.card, card))
+            })
+        }
+        _ => false,
+    }
 }
