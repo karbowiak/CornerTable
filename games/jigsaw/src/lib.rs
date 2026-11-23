@@ -1,0 +1,152 @@
+//! Rules for the picture-tile puzzle.
+
+pub const COLUMNS: usize = 4;
+pub const ROWS: usize = 3;
+pub const PIECE_COUNT: usize = COLUMNS * ROWS;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    Ignored,
+    Selected,
+    Cleared,
+    Swapped,
+    Completed,
+}
+
+pub struct Puzzle {
+    pieces: [usize; PIECE_COUNT],
+    selected: Option<usize>,
+    moves: usize,
+}
+
+impl Puzzle {
+    pub fn shuffled(seed: u64) -> Self {
+        let mut pieces = std::array::from_fn(|index| index);
+        let mut state = seed;
+
+        // Swapping with strictly earlier positions makes a single cycle with no fixed pieces.
+        for position in (1..PIECE_COUNT).rev() {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let other = ((state >> 32) % position as u64) as usize;
+            pieces.swap(position, other);
+        }
+
+        Self {
+            pieces,
+            selected: None,
+            moves: 0,
+        }
+    }
+
+    pub fn pieces(&self) -> &[usize; PIECE_COUNT] {
+        &self.pieces
+    }
+
+    pub fn selected(&self) -> Option<usize> {
+        self.selected
+    }
+
+    pub fn moves(&self) -> usize {
+        self.moves
+    }
+
+    pub fn placed_count(&self) -> usize {
+        self.pieces
+            .iter()
+            .enumerate()
+            .filter(|(position, piece)| *position == **piece)
+            .count()
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.placed_count() == PIECE_COUNT
+    }
+
+    pub fn select(&mut self, position: usize) -> Selection {
+        let Some(&piece) = self.pieces.get(position) else {
+            return Selection::Ignored;
+        };
+
+        if piece == position {
+            return Selection::Ignored;
+        }
+
+        match self.selected.take() {
+            None => {
+                self.selected = Some(position);
+                Selection::Selected
+            }
+            Some(previous) if previous == position => Selection::Cleared,
+            Some(previous) => {
+                self.pieces.swap(previous, position);
+                self.moves += 1;
+
+                if self.is_complete() {
+                    Selection::Completed
+                } else {
+                    Selection::Swapped
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shuffle_preserves_all_pieces_and_displaces_each_one() {
+        for seed in 0..128 {
+            let puzzle = Puzzle::shuffled(seed);
+            let mut pieces = *puzzle.pieces();
+            pieces.sort_unstable();
+            assert_eq!(pieces, std::array::from_fn(|index| index));
+            assert_eq!(puzzle.placed_count(), 0);
+        }
+        assert_eq!(Puzzle::shuffled(62).pieces(), Puzzle::shuffled(62).pieces());
+        assert_ne!(Puzzle::shuffled(62).pieces(), Puzzle::shuffled(63).pieces());
+    }
+
+    #[test]
+    fn reselecting_a_piece_cancels_without_a_move() {
+        let mut puzzle = Puzzle::shuffled(0);
+        assert_eq!(puzzle.select(PIECE_COUNT), Selection::Ignored);
+        assert_eq!(puzzle.select(0), Selection::Selected);
+        assert_eq!(puzzle.selected(), Some(0));
+        assert_eq!(puzzle.select(0), Selection::Cleared);
+        assert_eq!(puzzle.moves(), 0);
+        assert_eq!(puzzle.selected(), None);
+    }
+
+    #[test]
+    fn correct_pieces_lock_and_the_last_swap_completes_the_picture() {
+        let mut puzzle = Puzzle::shuffled(0);
+        for position in 0..PIECE_COUNT {
+            if puzzle.pieces()[position] == position {
+                continue;
+            }
+            let source = puzzle
+                .pieces()
+                .iter()
+                .position(|&piece| piece == position)
+                .unwrap();
+            assert_eq!(puzzle.select(source), Selection::Selected);
+            let result = puzzle.select(position);
+            assert_eq!(puzzle.select(position), Selection::Ignored);
+            assert_eq!(
+                result,
+                if puzzle.is_complete() {
+                    Selection::Completed
+                } else {
+                    Selection::Swapped
+                }
+            );
+        }
+        assert!(puzzle.is_complete());
+        assert_eq!(puzzle.moves(), PIECE_COUNT - 1);
+        assert_eq!(puzzle.selected(), None);
+    }
+}
