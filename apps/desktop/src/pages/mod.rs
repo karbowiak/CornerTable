@@ -1,12 +1,14 @@
+mod guide;
 mod leaderboard;
 mod library;
 mod solitaire;
 
+pub use guide::GuideOverlay;
 pub use leaderboard::leaderboard;
 pub use library::library;
 pub use solitaire::solitaire;
 
-use gpui::{AnyView, Context, Div, div, prelude::*, px, rgb};
+use gpui::{AnyView, Context, Div, Role, div, prelude::*, px, rgb};
 
 use crate::app::{Action, Desktop, Page};
 use crate::games::{GameEntry, GameLaunch};
@@ -81,9 +83,12 @@ pub fn game(
     app: &Desktop,
     launch: &GameLaunch,
     view: Option<AnyView>,
+    compact: bool,
     cx: &Context<Desktop>,
 ) -> Div {
     let favorite = app.favorites.contains(&launch.game);
+    let daily = daily::from_launch(launch);
+    let compact_daily = compact && daily.is_some();
     let (title, description) = app
         .api
         .game(&launch.game)
@@ -119,22 +124,37 @@ pub fn game(
             .items_center()
             .justify_between()
             .gap_2()
-            .child(t::display_type(title.to_owned(), 30.))
+            .child(t::display_type(
+                title.to_owned(),
+                if compact_daily { 25. } else { 30. },
+            ))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap_2()
-                    .children(daily::from_launch(launch).map(|puzzle| {
+                    .gap(px(if compact_daily { 6. } else { 8. }))
+                    .children(daily.map(|puzzle| {
+                        let date = puzzle.date.format("%b %-d, %Y");
+                        let full_label = format!("Daily puzzle · {date}");
+                        let label = if compact {
+                            format!("Daily · {}", puzzle.date.format("%b %-d"))
+                        } else {
+                            full_label.clone()
+                        };
                         div()
-                            .text_size(px(13.))
+                            .id("game-daily-date")
+                            .role(Role::Label)
+                            .aria_label(full_label)
+                            .text_size(px(if compact_daily { 12. } else { 13. }))
                             .text_color(rgb(t::colors(cx).muted))
-                            .child(format!(
-                                "Daily puzzle · {}",
-                                puzzle.date.format("%b %-d, %Y")
-                            ))
+                            .child(label)
                     }))
+                    .children(
+                        app.guide
+                            .button(launch, cx)
+                            .map(|button| button.when(compact_daily, |button| button.px_2())),
+                    )
                     .child(
                         widgets::button(
                             "game-favorite",
@@ -147,7 +167,9 @@ pub fn game(
                             false,
                             cx,
                         )
-                        .min_h(px(34.)),
+                        .min_h(px(34.))
+                        .when(compact, |button| button.px_3().text_size(px(13.)))
+                        .when(compact_daily, |button| button.px_2()),
                     ),
             ),
     );

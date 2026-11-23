@@ -43,6 +43,8 @@ pub enum Action {
     ToggleFavorite(GameId),
     ShowFavorites(bool),
     SetAppearance(theme::Appearance),
+    OpenGuide,
+    CloseGuide,
 }
 
 struct Visit {
@@ -63,6 +65,7 @@ pub struct Desktop {
     pub favorites: Vec<GameId>,
     pub favorites_only: bool,
     pub appearance: theme::Appearance,
+    pub guide: pages::GuideOverlay,
     scroll: ScrollHandle,
     back: Vec<Visit>,
     forward: Vec<Visit>,
@@ -99,6 +102,7 @@ impl Desktop {
             favorites,
             favorites_only: false,
             appearance,
+            guide: pages::GuideOverlay::new(cx),
             scroll: ScrollHandle::new(),
             back: Vec::new(),
             forward: Vec::new(),
@@ -147,8 +151,15 @@ impl Desktop {
                     theme::apply(appearance, window, cx);
                 }
             }
+            Action::OpenGuide => {
+                if let Page::Game(launch) = &self.page {
+                    self.guide.open(launch, &self.focus, window, cx);
+                }
+            }
+            Action::CloseGuide => self.guide.close(window, cx),
         }
         if self.page != previous {
+            self.guide.dismiss();
             self.focus.focus(window, cx);
         }
         cx.notify();
@@ -223,8 +234,19 @@ impl Render for Desktop {
                 {
                     self.games.insert(launch.clone(), view);
                 }
-                pages::game(self, launch, self.games.get(launch).cloned(), cx)
+                let compact_header = window.viewport_size().width < px(900.);
+                pages::game(
+                    self,
+                    launch,
+                    self.games.get(launch).cloned(),
+                    compact_header,
+                    cx,
+                )
             }
+        };
+        let guide = match &self.page {
+            Page::Game(launch) => self.guide.render(launch, window, cx),
+            _ => None,
         };
 
         div()
@@ -284,6 +306,7 @@ impl Render for Desktop {
                             .child(content),
                     ),
             )
+            .children(guide)
     }
 }
 
