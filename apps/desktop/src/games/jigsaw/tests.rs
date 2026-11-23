@@ -1,5 +1,8 @@
 use corner_table_api::GameId;
-use gpui::{Modifiers, TestAppContext, VisualTestContext, size};
+use gpui::{
+    AppContext, ClipboardItem, ExternalPaths, FileDropEvent, Modifiers, PlatformInput,
+    TestAppContext, VisualTestContext, size,
+};
 
 use super::*;
 use crate::games::GameEntry;
@@ -141,4 +144,68 @@ fn swap_result_appears_after_the_final_tile_exchange(cx: &mut TestAppContext) {
             assert_eq!(view.round().swap.moves(), 0);
         })
         .unwrap();
+}
+
+#[gpui::test]
+fn accepts_dropped_photos_and_copied_paths_without_the_picker(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("Pear on a blue plate.png");
+    let photos = directory.path().join("gallery");
+    image::RgbImage::from_pixel(24, 16, image::Rgb([76, 121, 160]))
+        .save(&source)
+        .unwrap();
+    let launch = GameLaunch {
+        game: GameId("jigsaw-picker-fallback-test".into()),
+        entry: GameEntry::Classic,
+    };
+    let window = cx.open_window(size(px(760.), px(540.)), |_, cx| {
+        let mut view = GameView::new(&launch, cx);
+        view.gallery = Gallery::load(Some(photos.clone()));
+        view.gallery.tab = gallery::Tab::Photos;
+        view
+    });
+    cx.run_until_parked();
+    let mut ui = VisualTestContext::from_window(window.into(), cx);
+    click(&mut ui, "jigsaw-add-photo");
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| None);
+    cx.run_until_parked();
+
+    let position = ui.debug_bounds("jigsaw-add-photo").unwrap().center();
+    let paths = ExternalPaths([source.clone()].into_iter().collect());
+    cx.update_window(window.into(), |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::FileDrop(FileDropEvent::Entered { position, paths }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::FileDrop(FileDropEvent::Submit { position }),
+            cx,
+        );
+    })
+    .unwrap();
+    ui.run_until_parked();
+    window
+        .read_with(&ui, |view, _| {
+            assert_eq!(view.gallery.photos().len(), 1);
+            assert_eq!(view.key.painting, GALLERY.len());
+        })
+        .unwrap();
+
+    window
+        .update(&mut ui, |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(format!(
+                "\"{}\"",
+                source.display()
+            )));
+        })
+        .unwrap();
+    click(&mut ui, "jigsaw-paste-photo");
+    window
+        .read_with(&ui, |view, _| {
+            assert_eq!(view.gallery.photos().len(), 2);
+            assert_eq!(view.key.painting, GALLERY.len() + 1);
+        })
+        .unwrap();
+    assert_eq!(photos::stored(&photos).unwrap().len(), 2);
 }

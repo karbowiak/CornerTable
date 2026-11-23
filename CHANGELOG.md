@@ -17,6 +17,10 @@ All notable changes to Corner Table are recorded here. The format follows
 - Picture Logic reaches 45 prints across Pocket, Postcard, and Full Sheet.
   Each new print has a unique solution that can be found without guessing.
 
+### Fixed
+
+- Jigsaw can import a dropped image or a copied file path when the system file picker is unavailable.
+
 ## [0.1.1] - 2026-11-23
 
 ### Added

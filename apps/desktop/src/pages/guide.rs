@@ -341,7 +341,7 @@ impl Guide {
                     ),
                     (
                         "Use your own picture",
-                        "Open My photos and choose Add Photo to turn a JPEG, PNG, or WebP into a puzzle. The gallery keeps a cropped copy on this device. Choose either puzzle mode and size as you would with a painting.",
+                        "Drop a JPEG, PNG, or WebP onto the gallery, or choose Add photo. In My photos you can also import an image file or its full path from the clipboard. The gallery keeps a cropped copy on this device.",
                     ),
                 ],
             },

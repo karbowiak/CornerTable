@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use gpui::{Context, Div, PathPromptOptions, Role, div, prelude::*};
+use gpui::{
+    ClipboardEntry, ClipboardItem, Context, Div, ExternalPaths, PathPromptOptions, Role, div,
+    prelude::*, rgb,
+};
 
 use super::{
     AFTER_DARK_START, GALLERY, GameView, Painting, PictureSource, PuzzleKey, action_button, photos,
@@ -42,6 +45,7 @@ enum ImportStatus {
     Choosing,
     Importing,
     Added,
+    PickerUnavailable,
     Error(String),
 }
 
@@ -51,6 +55,10 @@ impl ImportStatus {
             Self::Idle | Self::Choosing => None,
             Self::Importing => Some(("Preparing your photo…", Role::Status)),
             Self::Added => Some(("Photo added to your gallery.", Role::Status)),
+            Self::PickerUnavailable => Some((
+                "The file picker is unavailable. Drop an image here or import a copied file path.",
+                Role::Alert,
+            )),
             Self::Error(message) => Some((message, Role::Alert)),
         }
     }
@@ -166,47 +174,62 @@ impl GameView {
         if self.gallery.import.pending() {
             return;
         }
-        let Some(directory) = self.gallery.directory.clone() else {
+        if self.gallery.directory.is_none() {
             self.gallery.import =
                 ImportStatus::Error("Couldn’t find a local folder for your photos.".into());
             cx.notify();
             return;
-        };
+        }
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some("Add Photo".into()),
         });
-        let executor = cx.background_executor().clone();
         self.gallery.import = ImportStatus::Choosing;
         cx.notify();
         cx.spawn(async move |view, cx| {
-            let result = match picker.await {
-                Ok(Ok(paths)) => match paths.and_then(|paths| paths.into_iter().next()) {
-                    Some(source) => {
-                        if view
-                            .update(cx, |view, cx| {
-                                view.gallery.import = ImportStatus::Importing;
-                                cx.notify();
-                            })
-                            .is_err()
-                        {
-                            return;
+            let selection = picker.await;
+            view.update(cx, |view, cx| {
+                match selection {
+                    Ok(Ok(paths)) => {
+                        view.gallery.import = ImportStatus::Idle;
+                        if let Some(path) = paths.and_then(|paths| paths.into_iter().next()) {
+                            view.import_photo(path, cx);
                         }
-                        Some(
-                            executor
-                                .spawn(async move { photos::import(&source, &directory) })
-                                .await,
-                        )
                     }
-                    None => None,
-                },
-                _ => Some(Err(anyhow::anyhow!("Couldn’t open the file picker."))),
-            };
+                    Ok(Err(_)) | Err(_) => {
+                        view.gallery.tab = Tab::Photos;
+                        view.gallery.import = ImportStatus::PickerUnavailable;
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn import_photo(&mut self, source: PathBuf, cx: &mut Context<Self>) {
+        if self.gallery.import.pending() {
+            return;
+        }
+        let Some(directory) = self.gallery.directory.clone() else {
+            self.gallery.import =
+                ImportStatus::Error("Couldn’t find a local folder for your photos.".into());
+            cx.notify();
+            return;
+        };
+        self.gallery.import = ImportStatus::Importing;
+        cx.notify();
+        let import = cx
+            .background_executor()
+            .spawn(async move { photos::import(&source, &directory) });
+        cx.spawn(async move |view, cx| {
+            let result = import.await;
             view.update(cx, |view, cx| {
                 view.gallery.import = match result {
-                    Some(Ok(photo)) => {
+                    Ok(photo) => {
                         let painting = view.gallery.add(photo);
                         view.gallery.reveal(painting);
                         view.choose(PuzzleKey {
@@ -215,8 +238,7 @@ impl GameView {
                         });
                         ImportStatus::Added
                     }
-                    Some(Err(error)) => ImportStatus::Error(error.to_string()),
-                    None => ImportStatus::Idle,
+                    Err(error) => ImportStatus::Error(error.to_string()),
                 };
                 cx.notify();
             })
@@ -225,14 +247,41 @@ impl GameView {
         .detach();
     }
 
+    fn import_copied_photo(&mut self, cx: &mut Context<Self>) {
+        if self.gallery.import.pending() {
+            return;
+        }
+        if let Some(path) = cx.read_from_clipboard().as_ref().and_then(copied_path) {
+            self.import_photo(path, cx);
+        } else {
+            self.gallery.import =
+                ImportStatus::Error("Copy one image file or its full path, then try again.".into());
+            cx.notify();
+        }
+    }
+
     pub(super) fn gallery_panel(&self, available: f32, cx: &Context<Self>) -> Div {
         let gallery = &self.gallery;
         let pending = gallery.import.pending();
         let show_photos = gallery.tab == Tab::Photos;
+        let palette = crate::theme::colors(cx);
         div()
             .flex()
             .flex_col()
             .gap_2()
+            .when(!pending, |panel| {
+                panel
+                    .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(rgb(palette.hover)))
+                    .on_drop(cx.listener(|view, paths: &ExternalPaths, _, cx| {
+                        if let [path] = paths.paths() {
+                            view.import_photo(path.clone(), cx);
+                        } else {
+                            view.gallery.import =
+                                ImportStatus::Error("Drop one image at a time.".into());
+                            cx.notify();
+                        }
+                    }))
+            })
             .child(
                 div()
                     .flex()
@@ -269,8 +318,24 @@ impl GameView {
                                     .cursor_default()
                                     .aria_description("A photo import is in progress.")
                             })
+                            .when(cfg!(test), |button| {
+                                button.debug_selector(|| "jigsaw-add-photo".into())
+                            })
                             .on_click(cx.listener(|view, _, _, cx| view.add_photo(cx))),
-                    ),
+                    )
+                    .when(show_photos, |header| {
+                        header.child(
+                            action_button("jigsaw-paste-photo", "Import copied path", !pending, cx)
+                                .when(cfg!(test), |button| {
+                                    button.debug_selector(|| "jigsaw-paste-photo".into())
+                                })
+                                .when(!pending, |button| {
+                                    button.on_click(cx.listener(|view, _, _, cx| {
+                                        view.import_copied_photo(cx);
+                                    }))
+                                }),
+                        )
+                    }),
             )
             .when_some(gallery.import.message(), |panel, (message, role)| {
                 panel.child(
@@ -281,7 +346,7 @@ impl GameView {
                 )
             })
             .when(show_photos && gallery.photos.is_empty(), |panel| {
-                let message = "Choose a JPEG, PNG, or WebP to save a puzzle on this device.";
+                let message = "Drop a JPEG, PNG, or WebP here, or choose Add photo.";
                 panel.child(
                     small_text(message, cx)
                         .id("jigsaw-photo-empty")
@@ -327,4 +392,21 @@ impl GameView {
                 (page + 1 < pages).then_some(page + 1),
             ))
     }
+}
+
+fn copied_path(item: &ClipboardItem) -> Option<PathBuf> {
+    if let Some(paths) = item.entries().iter().find_map(|entry| match entry {
+        ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
+        _ => None,
+    }) {
+        let [path] = paths else { return None };
+        return Some(path.clone());
+    }
+    let text = item.text()?;
+    let text = text.trim();
+    if text.lines().count() != 1 {
+        return None;
+    }
+    let path = PathBuf::from(text.trim_matches('"'));
+    path.is_absolute().then_some(path)
 }
