@@ -296,7 +296,7 @@ impl GameView {
                 matches!(source, MoveSource::Input).then_some(Effect::Move)
             }
             Fall::Locked(result) => {
-                let cleared = !result.waves.is_empty();
+                let waves = result.waves.len();
                 if run.game.is_over() {
                     self.session.record_result(
                         run.record.attempt,
@@ -307,7 +307,7 @@ impl GameView {
                 }
                 if !cx.reduce_motion() {
                     let started = Instant::now();
-                    if cleared {
+                    if waves > 0 {
                         self.cascade = Some(Cascade {
                             started,
                             waves: result
@@ -327,11 +327,11 @@ impl GameView {
                 }
                 self.save();
                 self.reset_clock(window, cx);
-                (!matches!(source, MoveSource::Timer)).then_some(if cleared {
-                    Effect::Clear
+                if waves > 0 {
+                    Some(Effect::gems(waves))
                 } else {
-                    Effect::Move
-                })
+                    (!matches!(source, MoveSource::Timer)).then_some(Effect::Move)
+                }
             }
         };
         if let Some(effect) = effect {

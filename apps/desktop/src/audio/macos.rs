@@ -9,12 +9,41 @@ use objc2_foundation::NSData;
 
 use super::Effect;
 
-// In ascending priority, matching the Effect variants.
-const CLIPS: [&[u8]; 4] = [
-    include_bytes!("../../assets/sounds/move.wav"),
-    include_bytes!("../../assets/sounds/invalid-move.wav"),
-    include_bytes!("../../assets/sounds/clear.wav"),
-    include_bytes!("../../assets/sounds/complete.wav"),
+macro_rules! bundled {
+    ($name:literal) => {
+        include_bytes!(concat!("../../assets/sounds/", $name, ".wav"))
+    };
+}
+
+macro_rules! local_or_bundled {
+    ($name:literal) => {
+        include_bytes!(concat!(env!("OUT_DIR"), "/", $name, ".wav"))
+    };
+}
+
+// In ascending priority, matching the Effect variants. build.rs selects
+// a local override or its bundled fallback for each optional cue.
+const CLIPS: [&[u8]; Effect::Complete as usize + 1] = [
+    local_or_bundled!("move"),
+    bundled!("card-place"),
+    bundled!("card-slide"),
+    bundled!("ceramic-tap"),
+    bundled!("wood-tap"),
+    bundled!("reveal"),
+    local_or_bundled!("flag"),
+    local_or_bundled!("unflag"),
+    bundled!("bubble-land"),
+    local_or_bundled!("invalid-move"),
+    bundled!("clear"),
+    bundled!("card-collect"),
+    bundled!("ceramic-pair"),
+    bundled!("wood-pair"),
+    local_or_bundled!("bubble-pop"),
+    local_or_bundled!("bubble-chain"),
+    local_or_bundled!("gem-clear"),
+    local_or_bundled!("gem-chain"),
+    local_or_bundled!("gem-chain-long"),
+    bundled!("complete"),
 ];
 const VOLUME: f32 = 0.35;
 
@@ -128,5 +157,25 @@ impl Playback {
             // SAFETY: The worker owns the player and stops it on the same thread.
             unsafe { player.stop() };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_effects_decode_as_short_one_shots() {
+        autoreleasepool(|_| {
+            let playback = Playback::new(VOLUME);
+            for (index, player) in playback.clips.iter().enumerate() {
+                let player = player
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("Could not decode audio cue {index}"));
+                // SAFETY: The player was created here and never leaves this thread.
+                let duration = unsafe { player.duration() };
+                assert!((0.01..0.75).contains(&duration), "Audio cue {index}");
+            }
+        });
     }
 }

@@ -354,10 +354,14 @@ impl GameView {
             if outcome == Outcome::Won {
                 Effect::Complete
             } else {
-                Effect::Move
+                Effect::InvalidMove
             }
         } else {
-            Effect::Move
+            match action {
+                Move::Flag if tile == Some(Tile::Flagged) => Effect::Unflag,
+                Move::Flag => Effect::Flag,
+                Move::Reveal => Effect::Reveal,
+            }
         };
         audio::play(cx, effect);
     }

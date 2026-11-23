@@ -232,7 +232,7 @@ impl GameView {
                     if status == Status::Won {
                         Effect::Complete
                     } else {
-                        Effect::Clear
+                        Effect::gems(turn.cascades.len())
                     },
                 );
                 Some(turn)

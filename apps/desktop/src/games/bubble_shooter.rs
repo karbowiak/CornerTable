@@ -152,13 +152,16 @@ impl GameView {
     fn resolve_shot(&mut self, angle: Angle, landing: Option<BubbleCell>, cx: &Context<Self>) {
         if let Some(shot) = self.progress.fire(angle) {
             let popped = !shot.popped.is_empty();
+            let chained = shot.streak > 1 || !shot.dropped.is_empty();
             self.impact = landing.map(|landing| Impact::new(landing, shot));
             let effect = if self.progress.round.status() == Status::Won {
                 Effect::Complete
+            } else if chained {
+                Effect::BubbleChain
             } else if popped {
-                Effect::Clear
+                Effect::BubblePop
             } else {
-                Effect::Move
+                Effect::BubbleLand
             };
             audio::play(cx, effect);
         }

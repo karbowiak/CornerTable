@@ -7,13 +7,40 @@ mod macos;
 impl gpui::Global for macos::AudioWorker {}
 
 /// The sound for a game action. Pick the strongest applicable effect per action.
+/// Keep the order in sync with the macOS clip table, from taps to completion.
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
 pub enum Effect {
     Move,
+    CardPlace,
+    CardSlide,
+    CeramicTap,
+    WoodTap,
+    Reveal,
+    Flag,
+    Unflag,
+    BubbleLand,
     InvalidMove,
     Clear,
+    CardCollect,
+    CeramicPair,
+    WoodPair,
+    BubblePop,
+    BubbleChain,
+    GemClear,
+    GemChain,
+    GemChainLong,
     Complete,
+}
+
+impl Effect {
+    pub fn gems(waves: usize) -> Self {
+        match waves {
+            0 | 1 => Self::GemClear,
+            2 => Self::GemChain,
+            _ => Self::GemChainLong,
+        }
+    }
 }
 
 /// Whether sound effects are implemented on this platform.

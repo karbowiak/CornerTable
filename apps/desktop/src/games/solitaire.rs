@@ -182,9 +182,11 @@ impl GameView {
             || (matches!(game.variant, Variant::Pyramid | Variant::TriPeaks)
                 && action != Move::Draw)
         {
-            Effect::Clear
+            Effect::CardCollect
+        } else if action == Move::Draw {
+            Effect::CardSlide
         } else {
-            Effect::Move
+            Effect::CardPlace
         };
         audio::play(cx, effect);
         true

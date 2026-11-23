@@ -72,11 +72,12 @@ impl GameView {
             _ => None,
         };
         match turn {
-            Turn::Pass { .. } | Turn::Play { .. } => audio::play(cx, Effect::Move),
+            Turn::Pass { .. } => audio::play(cx, Effect::CardSlide),
+            Turn::Play { .. } => audio::play(cx, Effect::CardPlace),
             Turn::Collect => {
                 let effect = match self.session.game().phase() {
                     Phase::HandComplete(_) => Effect::Complete,
-                    _ => Effect::Clear,
+                    _ => Effect::CardCollect,
                 };
                 audio::play(cx, effect);
             }

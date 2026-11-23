@@ -170,7 +170,10 @@ impl GameView {
                 };
                 (self.idle_status(reason).into(), Some(Effect::InvalidMove))
             }
-            MoveResult::Selected => (format!("{face} selected. Choose its match."), None),
+            MoveResult::Selected => (
+                format!("{face} selected. Choose its match."),
+                Some(Effect::CeramicTap),
+            ),
             MoveResult::Deselected => (self.idle_status(INSTRUCTION).into(), None),
             MoveResult::DifferentFace => (
                 format!("Faces differ. {face} is selected."),
@@ -203,7 +206,7 @@ impl GameView {
                     );
                     Effect::Complete
                 } else {
-                    Effect::Clear
+                    Effect::CeramicPair
                 };
                 self.save();
                 (self.idle_status("Pair matched.").into(), Some(effect))
@@ -262,7 +265,7 @@ impl GameView {
             self.departure = None;
             self.status = "Last pair restored.".into();
             self.save();
-            audio::play(cx, Effect::Move);
+            audio::play(cx, Effect::CeramicPair);
         }
     }
 

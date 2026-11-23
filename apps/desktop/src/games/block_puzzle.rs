@@ -538,7 +538,7 @@ impl GameView {
             self.clear_input();
             self.feedback = Some(Feedback::Undone);
             self.save();
-            audio::play(cx, Effect::Move);
+            audio::play(cx, Effect::WoodTap);
         }
     }
 
@@ -635,7 +635,7 @@ impl GameView {
             match result {
                 Some(Outcome::Won) => Effect::Complete,
                 _ if placement.lines > 0 => Effect::Clear,
-                _ => Effect::Move,
+                _ => Effect::WoodTap,
             },
         );
     }

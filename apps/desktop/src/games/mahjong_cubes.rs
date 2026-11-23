@@ -230,12 +230,12 @@ impl GameView {
                 Some("That cube needs a clear top and an open side."),
                 Effect::InvalidMove,
             ),
-            MoveResult::Selected if self.hinted.is_some() => (Some(HINT_CHOOSE), Effect::Move),
+            MoveResult::Selected if self.hinted.is_some() => (Some(HINT_CHOOSE), Effect::WoodTap),
             MoveResult::Selected => (
                 Some("Choose a free cube with the same marks."),
-                Effect::Move,
+                Effect::WoodTap,
             ),
-            MoveResult::Deselected => (None, Effect::Move),
+            MoveResult::Deselected => (None, Effect::WoodTap),
             MoveResult::DifferentFace => (
                 Some("Different marks. Your last cube is selected."),
                 Effect::InvalidMove,
@@ -264,7 +264,14 @@ impl GameView {
                     ids,
                     at: Instant::now(),
                 });
-                (None, if won { Effect::Complete } else { Effect::Clear })
+                (
+                    None,
+                    if won {
+                        Effect::Complete
+                    } else {
+                        Effect::WoodPair
+                    },
+                )
             }
         };
         self.feedback = feedback;
@@ -313,7 +320,7 @@ impl GameView {
             self.keyed = None;
             self.feedback = Some("Last pair returned.");
             self.save();
-            audio::play(cx, Effect::Move);
+            audio::play(cx, Effect::WoodPair);
         }
     }
 
