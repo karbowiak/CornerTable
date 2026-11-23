@@ -18,6 +18,8 @@ All notable changes to Corner Table are recorded here. The format follows
   Each new print has a unique solution that can be found without guessing.
 - Jigsaw Assemble uses an open worktable with a corner pile, a dimmed reference, and an
   optional grid. Loose pieces can be moved around freely and keep their positions when you resume.
+- Jigsaw Assemble can zoom in up to 400% and pan while the corner pile stays in view.
+  Each puzzle remembers its zoom and pan position.
 
 ### Fixed
 

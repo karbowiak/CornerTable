@@ -1,7 +1,9 @@
 use corner_table_jigsaw::{Assembly, Placement, Puzzle, Size};
 use serde::{Deserialize, Serialize};
 
-use super::{AttemptId, GALLERY, GameView, LoosePiece, Mode, PuzzleKey, Reference, Round, Tray};
+use super::{
+    AttemptId, Camera, GALLERY, GameView, LoosePiece, Mode, PuzzleKey, Reference, Round, Tray,
+};
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct SavedGallery {
@@ -62,6 +64,8 @@ struct SavedAssembly {
     moves: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     loose: Vec<LoosePiece>,
+    #[serde(default)]
+    camera: Camera,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -84,6 +88,7 @@ impl SavedRound {
                 attempt: round.assembly_attempt,
                 moves: round.assembly_moves,
                 loose: round.loose.clone(),
+                camera: round.camera,
             },
             swap: SavedSwap {
                 seed: round.swap_deal,
@@ -151,6 +156,11 @@ impl SavedRound {
             swap_attempt,
             assembly_moves,
             loose,
+            camera: if valid {
+                self.assembly.camera.restore()
+            } else {
+                Camera::default()
+            },
             tray: Tray {
                 hints_used,
                 ..Tray::default()

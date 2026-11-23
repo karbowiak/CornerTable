@@ -340,6 +340,10 @@ impl Guide {
                         "In Assemble, drag pieces out of the corner pile and leave them anywhere on the worktable. Pieces snap into their matching spots. Grid toggles the guides, and Ghost shows a dim reference. Hint marks a fitting spot, and Undo removes the last snapped piece.",
                     ),
                     (
+                        "Look closer",
+                        "Use + and − to zoom, or pinch or hold Ctrl or Command while scrolling over the table. Turn on Pan and drag the table, or drag with the middle mouse button. When the table has keyboard focus, use the arrow keys to pan. Choose Fit to return to the full table.",
+                    ),
+                    (
                         "Use your own picture",
                         "Drop a JPEG, PNG, or WebP onto the gallery, or choose Add photo. In My photos you can also import an image file or its full path from the clipboard. The gallery keeps a cropped copy on this device.",
                     ),

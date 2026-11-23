@@ -13,6 +13,7 @@ use crate::{
 };
 
 use super::artwork::PieceArt;
+use super::camera::TableBounds;
 use super::{
     Artwork, FRAME_PADDING, GameView, LoosePiece, Mode, PuzzleKey, Reference, Round, action_button,
     framed_board, segment, segments, small_text,
@@ -283,6 +284,7 @@ impl GameView {
         window: &mut Window,
         cx: &mut Context<Self>,
         capacity: usize,
+        bounds: &TableBounds,
     ) {
         let Some(piece) = self.round().tray.selected else {
             return;
@@ -316,6 +318,7 @@ impl GameView {
         let tray = &mut self.round_mut().tray;
         tray.cursor = target;
         tray.missed = None;
+        self.reveal_target(target, bounds, cx);
         cx.notify();
         cx.stop_propagation();
     }
@@ -346,57 +349,125 @@ impl GameView {
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
-        let surface = Rc::new(Cell::new(Bounds::default()));
-        let measure_surface = surface.clone();
-        let picture = Rc::new(Cell::new(Bounds::default()));
-        let measure_picture = picture.clone();
+        let bounds = Rc::new(TableBounds::default());
+        let measure_viewport = bounds.clone();
+        let measure_world = bounds.clone();
+        let measure_pile = bounds.clone();
+        let drop_bounds = bounds.clone();
         let pile = self.reference_panel(layout.tray.width, layout.height, cx);
         let round = self.round();
+        let camera = round.camera;
+        let [left, top] = camera.offset();
+        let zoom = camera.zoom();
+        let mut world_layout = layout;
+        world_layout.picture = (layout.picture.0 * zoom, layout.picture.1 * zoom);
 
+        let clip = || div().absolute().inset_0().overflow_hidden();
+        let world = || {
+            div()
+                .absolute()
+                .left(relative(left))
+                .top(relative(top))
+                .w(relative(zoom))
+                .h(relative(zoom))
+        };
+        let picture = clip()
+            .child(
+                canvas(
+                    move |bounds, _, _| measure_viewport.viewport.set(bounds),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(
+                world()
+                    .child(
+                        canvas(
+                            move |bounds, _, _| measure_world.world.set(bounds),
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .child(self.assembly_board(world_layout, art, bounds.clone(), window, cx)),
+            );
+        let loose = art
+            .filter(|_| round.loose_on_table().next().is_some())
+            .map(|pieces| {
+                clip().child(world().children(round.loose_on_table().map(|loose| {
+                    self.loose_piece(loose, &pieces[loose.piece], world_layout.picture, cx)
+                })))
+            });
+        let pile = div()
+            .relative()
+            .w(px(layout.tray.width))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .py_2()
+            .ml_auto()
+            .when(!camera.is_fit(), |pile| pile.bg(rgb(BOARD)))
+            .child(
+                canvas(
+                    move |bounds, _, _| measure_pile.pile.set(bounds),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(pile)
+            .children(art.map(|pieces| {
+                self.piece_tray(
+                    layout.tray,
+                    world_layout.picture,
+                    pieces,
+                    bounds.clone(),
+                    cx,
+                )
+            }));
+        let layers = if camera.is_fit() {
+            [Some(pile), loose]
+        } else {
+            [loose, Some(pile)]
+        };
+        let table = div()
+            .id("jigsaw-worktable")
+            .debug_selector(|| "jigsaw-worktable".into())
+            .relative()
+            .w_full()
+            .flex();
+        let table = self.camera_interactions(table, &bounds, cx);
         framed_board(
             div().w_full().child(
-                div()
-                    .id("jigsaw-worktable")
-                    .debug_selector(|| "jigsaw-worktable".into())
-                    .relative()
-                    .w_full()
-                    .flex()
+                table
                     .gap(px(SURFACE_GAP))
                     .items_start()
                     .when(!layout.wide, |table| table.flex_col())
                     .bg(rgb(BOARD))
                     .on_drop(cx.listener(move |view, drag: &DraggedPiece, window, cx| {
-                        view.drop_piece(drag, surface.get(), picture.get(), window, cx);
+                        if !camera.is_fit()
+                            && drop_bounds.pile.get().contains(&window.mouse_position())
+                        {
+                            return;
+                        }
+                        view.drop_piece(
+                            drag,
+                            drop_bounds.world.get(),
+                            drop_bounds.picture.get(),
+                            window,
+                            cx,
+                        );
                     }))
                     .child(
-                        canvas(
-                            move |bounds, _, _| measure_surface.set(bounds),
-                            |_, (), _, _| {},
-                        )
-                        .absolute()
-                        .inset_0()
-                        .size_full(),
-                    )
-                    .child(self.assembly_board(layout, art, measure_picture, window, cx))
-                    .child(
                         div()
-                            .w(px(layout.tray.width))
-                            .flex_none()
-                            .flex()
-                            .flex_col()
-                            .gap_3()
-                            .py_2()
-                            .when(!layout.wide, |corner| corner.ml_auto())
-                            .child(pile)
-                            .children(art.map(|pieces| {
-                                self.piece_tray(layout.tray, layout.picture, pieces, cx)
-                            })),
+                            .w(px(layout.picture.0))
+                            .h(px(layout.picture.1))
+                            .flex_none(),
                     )
-                    .children(art.into_iter().flat_map(|pieces| {
-                        round.loose_on_table().map(move |loose| {
-                            self.loose_piece(loose, &pieces[loose.piece], layout.picture, cx)
-                        })
-                    })),
+                    .child(picture)
+                    .children(layers.into_iter().flatten()),
             ),
         )
     }
@@ -455,7 +526,7 @@ impl GameView {
         &self,
         layout: TableLayout,
         art: Option<&[PieceArt]>,
-        picture_bounds: Rc<Cell<Bounds<Pixels>>>,
+        bounds: Rc<TableBounds>,
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
@@ -497,6 +568,7 @@ impl GameView {
         let has_cursor = selected && self.board_focus.is_focused(window);
         let settling = self.settling_piece.filter(|_| motion::enabled(cx));
         let show_grid = self.show_grid;
+        let key_bounds = bounds.clone();
         let outlines: Vec<_> = art
             .iter()
             .enumerate()
@@ -531,7 +603,7 @@ impl GameView {
                 .size_full()
                 .relative()
                 .on_key_down(cx.listener(move |view, event, window, cx| {
-                    view.board_key(event, window, cx, capacity);
+                    view.board_key(event, window, cx, capacity, &key_bounds);
                 }))
                 .when(self.reference() != Reference::Off, |board| {
                     board.child(
@@ -565,7 +637,7 @@ impl GameView {
                     )
                 }))
                 .child(canvas(
-                    move |bounds, _, _| picture_bounds.set(bounds),
+                    move |picture, _, _| bounds.picture.set(picture),
                     move |bounds, _, window, _| paint_outlines(bounds, (cell_width, cell_height), &outlines, window),
                 ).absolute().inset_0().size_full())
                 .children((0..self.key.size.piece_count()).map(|target| {
@@ -594,11 +666,12 @@ impl GameView {
         )
     }
 
-    pub(super) fn piece_tray(
+    fn piece_tray(
         &self,
         layout: TrayLayout,
         board: (f32, f32),
         art: &[PieceArt],
+        bounds: Rc<TableBounds>,
         cx: &Context<Self>,
     ) -> Div {
         let round = self.round();
@@ -662,6 +735,7 @@ impl GameView {
                                 button.on_click(cx.listener(
                                     move |view, event: &gpui::ClickEvent, window, cx| {
                                         view.use_hint(fallback);
+                                        view.reveal_target(view.round().tray.cursor, &bounds, cx);
                                         if event.is_keyboard() {
                                             view.board_focus.focus(window, cx);
                                         }

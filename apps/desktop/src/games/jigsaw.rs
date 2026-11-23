@@ -1,5 +1,6 @@
 mod artwork;
 mod assemble;
+mod camera;
 mod gallery;
 mod photos;
 mod progress;
@@ -22,6 +23,7 @@ use crate::theme as t;
 use super::{GameLaunch, board_space, round_result, themed_control};
 use artwork::PieceArt;
 use assemble::{TableLayout, TrayLayout};
+use camera::Camera;
 use gallery::Gallery;
 use progress::SavedGallery;
 
@@ -218,6 +220,7 @@ struct Round {
     swap_attempt: AttemptId,
     assembly_moves: u64,
     loose: Vec<LoosePiece>,
+    camera: Camera,
     tray: Tray,
 }
 
@@ -232,6 +235,7 @@ impl Round {
             swap_attempt: AttemptId::default(),
             assembly_moves: 0,
             loose: Vec::new(),
+            camera: Camera::default(),
             tray: Tray::default(),
         }
     }
@@ -254,6 +258,10 @@ pub struct GameView {
     mode: Mode,
     reference: Reference,
     show_grid: bool,
+    pan_mode: bool,
+    pan_gesture: Option<(gpui::MouseButton, gpui::Point<gpui::Pixels>)>,
+    pinch_start: Option<Camera>,
+    view_focus: FocusHandle,
     confirm_restart: bool,
     settling_piece: Option<usize>,
     board_focus: FocusHandle,
@@ -282,6 +290,10 @@ impl GameView {
             mode: Mode::Assemble,
             reference: Reference::Ghost,
             show_grid: true,
+            pan_mode: false,
+            pan_gesture: None,
+            pinch_start: None,
+            view_focus: cx.focus_handle(),
             confirm_restart: false,
             settling_piece: None,
             board_focus: cx.focus_handle(),
@@ -320,6 +332,9 @@ impl GameView {
         self.confirm_restart = false;
         if self.key != key {
             self.settling_piece = None;
+            self.pan_mode = false;
+            self.pan_gesture = None;
+            self.pinch_start = None;
             self.key = key;
             self.artwork
                 .retain(|cached, _| cached.painting < GALLERY.len() || *cached == key);
@@ -361,6 +376,9 @@ impl GameView {
     fn restart(&mut self) {
         self.confirm_restart = false;
         self.settling_piece = None;
+        self.pan_mode = false;
+        self.pan_gesture = None;
+        self.pinch_start = None;
         self.seed = self.seed.wrapping_add(1);
         let (size, seed) = (self.key.size, self.seed);
         let mode = self.mode;
@@ -372,6 +390,7 @@ impl GameView {
                 round.assembly_attempt = AttemptId::default();
                 round.assembly_moves = 0;
                 round.loose.clear();
+                round.camera = Camera::default();
                 round.tray = Tray::default();
             }
             Mode::Swap => {
@@ -448,6 +467,9 @@ impl GameView {
                                         if view.mode != mode {
                                             view.mode = mode;
                                             view.settling_piece = None;
+                                            view.pan_mode = false;
+                                            view.pan_gesture = None;
+                                            view.pinch_start = None;
                                             view.save();
                                             view.mode_focus.focus(window, cx);
                                         }
@@ -489,10 +511,11 @@ impl GameView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .when(self.mode == Mode::Assemble && !self.is_complete(), |row| {
-                        row.child(
+                        row.child(self.camera_controls(cx)).child(
                             segments(cx).child(
                                 segment("jigsaw-grid", "Grid", self.show_grid, cx)
                                     .debug_selector(|| "jigsaw-grid".into())
