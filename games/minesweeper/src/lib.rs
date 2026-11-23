@@ -4,13 +4,17 @@
 pub enum Difficulty {
     Meadow,
     Highlands,
+    Summit,
 }
 
 impl Difficulty {
+    pub const ALL: [Self; 3] = [Self::Meadow, Self::Highlands, Self::Summit];
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Meadow => "Meadow",
             Self::Highlands => "Highlands",
+            Self::Summit => "Summit",
         }
     }
 
@@ -18,6 +22,7 @@ impl Difficulty {
         match self {
             Self::Meadow => (9, 9),
             Self::Highlands => (16, 12),
+            Self::Summit => (22, 16),
         }
     }
 
@@ -25,6 +30,7 @@ impl Difficulty {
         match self {
             Self::Meadow => 10,
             Self::Highlands => 30,
+            Self::Summit => 70,
         }
     }
 }
@@ -129,28 +135,67 @@ impl Board {
         let Some(index) = self.index(x, y) else {
             return false;
         };
-        if self.cells[index].flagged || matches!(self.status, Status::Won | Status::Lost) {
+        if self.cells[index].flagged
+            || self.cells[index].open
+            || matches!(self.status, Status::Won | Status::Lost)
+        {
             return false;
         }
         if self.status == Status::Ready {
             self.place_mines(index);
             self.status = Status::Playing;
         }
-        if self.cells[index].open {
+        if self.cells[index].mine {
+            self.detonate(index);
+        } else {
+            self.open_area(index);
+            self.check_win();
+        }
+        true
+    }
+
+    /// Open the unflagged neighbors of an open clue when its flag count matches.
+    /// A misplaced flag can cause the chord to hit an unflagged mine.
+    pub fn chord(&mut self, x: usize, y: usize) -> bool {
+        let Some(index) = self.index(x, y) else {
+            return false;
+        };
+        let cell = self.cells[index];
+        if self.status != Status::Playing || !cell.open || cell.adjacent_mines == 0 {
             return false;
         }
-        if self.cells[index].mine {
-            self.status = Status::Lost;
-            self.detonated = Some(index);
-            return true;
+
+        let (width, height) = self.difficulty.dimensions();
+        let adjacent = neighbors(index, width, height);
+        let flags = adjacent.clone().filter(|&i| self.cells[i].flagged).count();
+        if flags != usize::from(cell.adjacent_mines) {
+            return false;
         }
 
-        self.open_area(index);
+        let covered: Vec<_> = adjacent
+            .filter(|&i| !self.cells[i].open && !self.cells[i].flagged)
+            .collect();
+        if let Some(&mine) = covered.iter().find(|&&i| self.cells[i].mine) {
+            self.detonate(mine);
+            return true;
+        }
+        for &neighbor in &covered {
+            self.open_area(neighbor);
+        }
+        self.check_win();
+        !covered.is_empty()
+    }
+
+    fn detonate(&mut self, index: usize) {
+        self.status = Status::Lost;
+        self.detonated = Some(index);
+    }
+
+    fn check_win(&mut self) {
         if self.safe_remaining == 0 {
             self.status = Status::Won;
             self.flags = self.difficulty.mines();
         }
-        true
     }
 
     fn index(&self, x: usize, y: usize) -> Option<usize> {
@@ -194,7 +239,7 @@ impl Board {
     }
 }
 
-fn neighbors(index: usize, width: usize, height: usize) -> impl Iterator<Item = usize> {
+fn neighbors(index: usize, width: usize, height: usize) -> impl Iterator<Item = usize> + Clone {
     let x = index % width;
     let y = index / width;
     (y.saturating_sub(1)..=(y + 1).min(height - 1)).flat_map(move |row| {
@@ -219,7 +264,7 @@ mod tests {
 
     #[test]
     fn first_reveal_clears_its_neighborhood_and_places_the_full_mine_count() {
-        for difficulty in [Difficulty::Meadow, Difficulty::Highlands] {
+        for difficulty in Difficulty::ALL {
             let (width, height) = difficulty.dimensions();
             for y in 0..height {
                 for x in 0..width {
@@ -265,6 +310,82 @@ mod tests {
         assert!(matches!(board.tile(1, 0), Some(Tile::Open(_))));
         assert!(!board.toggle_flag(1, 0));
         assert!(!board.reveal(usize::MAX, usize::MAX));
+    }
+
+    #[test]
+    fn chord_opens_safe_neighbors_only_when_the_flag_count_matches() {
+        let mut board = Board::new(Difficulty::Meadow, 19);
+        assert!(!board.chord(0, 0));
+        board.reveal(0, 0);
+        assert!(!board.chord(0, 0));
+        assert!(!board.chord(9, 0));
+
+        let (clue, mine, safe) = chord_setup(&board);
+        let remaining = board.safe_remaining();
+        assert!(!board.chord(clue % 9, clue / 9));
+        assert_eq!(board.safe_remaining(), remaining);
+
+        assert!(board.toggle_flag(mine % 9, mine / 9));
+        assert!(board.chord(clue % 9, clue / 9));
+        assert_eq!(board.tile(mine % 9, mine / 9), Some(Tile::Flagged));
+        assert!(matches!(
+            board.tile(safe % 9, safe / 9),
+            Some(Tile::Open(_))
+        ));
+        assert!(!board.chord(clue % 9, clue / 9));
+    }
+
+    #[test]
+    fn chord_with_a_misplaced_flag_detonates_the_unflagged_mine() {
+        let mut board = Board::new(Difficulty::Meadow, 19);
+        board.reveal(0, 0);
+        let (clue, mine, safe) = chord_setup(&board);
+        let remaining = board.safe_remaining();
+
+        assert!(board.toggle_flag(safe % 9, safe / 9));
+        assert!(board.chord(clue % 9, clue / 9));
+        assert_eq!(board.status(), Status::Lost);
+        assert_eq!(board.safe_remaining(), remaining);
+        assert_eq!(board.tile(mine % 9, mine / 9), Some(Tile::Detonated));
+        assert_eq!(board.tile(safe % 9, safe / 9), Some(Tile::Misflagged));
+        assert!(!board.chord(clue % 9, clue / 9));
+    }
+
+    #[test]
+    fn chording_the_last_safe_square_wins() {
+        let mut board = Board::new(Difficulty::Meadow, 19);
+        board.reveal(0, 0);
+        let (clue, mine, safe) = chord_setup(&board);
+        board.toggle_flag(safe % 9, safe / 9);
+        for index in 0..81 {
+            if !board.cells[index].mine {
+                board.reveal(index % 9, index / 9);
+            }
+        }
+        assert_eq!(board.safe_remaining(), 1);
+
+        assert!(board.toggle_flag(safe % 9, safe / 9));
+        assert!(board.toggle_flag(mine % 9, mine / 9));
+        assert!(board.chord(clue % 9, clue / 9));
+        assert_eq!(board.status(), Status::Won);
+        assert_eq!(board.flags(), Difficulty::Meadow.mines());
+    }
+
+    fn chord_setup(board: &Board) -> (usize, usize, usize) {
+        board
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| cell.open && cell.adjacent_mines == 1)
+            .find_map(|(clue, _)| {
+                let mine = neighbors(clue, 9, 9).find(|&i| board.cells[i].mine)?;
+                let safe = neighbors(clue, 9, 9).find(|&i| {
+                    let cell = board.cells[i];
+                    !cell.open && !cell.mine
+                })?;
+                Some((clue, mine, safe))
+            })
+            .expect("fixture contains an open 1 next to a mine and a covered safe cell")
     }
 
     #[test]
