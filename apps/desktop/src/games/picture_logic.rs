@@ -200,6 +200,7 @@ impl GameView {
         let before = play.board.snapshot();
         play.cursor = hint.index;
         play.board.paint(hint.index, hint.cell);
+        play.mark_hint();
         self.hover = None;
         self.notice = Some(Notice::Hint(hint));
         self.commit(before, cx);
@@ -208,8 +209,8 @@ impl GameView {
 
     fn commit(&mut self, before: String, cx: &mut Context<Self>) {
         if self.book.edit().commit_turn(before) {
-            self.book.save();
             if self.book.play().solved {
+                self.book.record_completion();
                 self.hover = None;
                 self.notice = None;
                 self.reveal_at = Some(Instant::now());
@@ -217,6 +218,7 @@ impl GameView {
             } else {
                 audio::play(cx, Effect::Move);
             }
+            self.book.save();
         }
     }
 

@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use corner_table_picture_logic::{Board, Cell, PUZZLES, Puzzle};
 use serde::{Deserialize, Serialize};
 
-use crate::{games::GameLaunch, storage::Session};
+use crate::{
+    games::GameLaunch,
+    storage::{AttemptId, Outcome, ResultMetric, Session},
+};
 
 const UNDO_LIMIT: usize = 32;
 
@@ -24,6 +27,12 @@ struct SavedPlate {
     cells: String,
     cursor: usize,
     undo: Vec<String>,
+    #[serde(default)]
+    attempt: AttemptId,
+    #[serde(default)]
+    moves: u64,
+    #[serde(default)]
+    used_hint: bool,
 }
 
 pub(super) struct Play {
@@ -31,6 +40,9 @@ pub(super) struct Play {
     pub cursor: usize,
     pub solved: bool,
     undo: Vec<String>,
+    attempt: AttemptId,
+    moves: u64,
+    used_hint: bool,
 }
 
 impl Notebook {
@@ -66,10 +78,26 @@ impl Notebook {
             plates: self
                 .plays
                 .iter()
-                .filter(|play| play.started() || play.can_undo())
+                .filter(|play| play.started() || play.moves != 0)
                 .map(|play| (play.board.puzzle().id.to_owned(), play.saved()))
                 .collect(),
         });
+    }
+
+    pub fn record_completion(&self) {
+        let play = self.play();
+        let title = play.board.puzzle().title;
+        let mode = if play.used_hint {
+            format!("{title} · With hints")
+        } else {
+            title.to_owned()
+        };
+        self.session.record_result(
+            play.attempt,
+            mode,
+            Outcome::Won,
+            ResultMetric::Moves(play.moves),
+        );
     }
 
     /// Look ahead in collection order and wrap to any earlier unfinished plate.
@@ -86,10 +114,16 @@ impl Play {
         let mut board = Board::new(puzzle);
         let mut cursor = 0;
         let mut undo = Vec::new();
+        let mut attempt = AttemptId::default();
+        let mut moves = 0;
+        let mut used_hint = false;
         if let Some(saved) = saved
             && board.restore(&saved.cells)
         {
             cursor = saved.cursor.min(board.cells().len() - 1);
+            attempt = saved.attempt;
+            moves = saved.moves;
+            used_hint = saved.used_hint;
             if !board.complete() {
                 let mut scratch = board.clone();
                 undo.extend(
@@ -105,6 +139,9 @@ impl Play {
             board,
             cursor,
             undo,
+            attempt,
+            moves,
+            used_hint,
         }
     }
 
@@ -113,6 +150,9 @@ impl Play {
             cells: self.board.snapshot(),
             cursor: self.cursor,
             undo: self.undo.clone(),
+            attempt: self.attempt,
+            moves: self.moves,
+            used_hint: self.used_hint,
         }
     }
 
@@ -128,6 +168,7 @@ impl Play {
         if before == self.board.snapshot() {
             return false;
         }
+        self.moves = self.moves.saturating_add(1);
         self.solved = self.board.complete();
         if self.solved {
             self.undo.clear();
@@ -138,6 +179,10 @@ impl Play {
             self.undo.push(before);
         }
         true
+    }
+
+    pub fn mark_hint(&mut self) {
+        self.used_hint = true;
     }
 
     pub fn undo(&mut self) -> bool {
