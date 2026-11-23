@@ -1,0 +1,261 @@
+use corner_table_hearts::{Action, Card, Game, Pass, Phase, Seat};
+use serde::{Deserialize, Serialize};
+
+use crate::{games::GameLaunch, storage::Session};
+
+// A change to deals, computer passes or the move format needs a new version.
+const VERSION: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "move")]
+pub(super) enum Turn {
+    Pass { cards: [u8; 3] },
+    Begin,
+    Play { card: u8 },
+    Collect,
+    Deal,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedMatch {
+    version: u32,
+    seed: u64,
+    turns: Vec<Turn>,
+    selected: Vec<u8>,
+    pause_tricks: bool,
+}
+
+impl SavedMatch {
+    fn new(seed: u64, pause_tricks: bool) -> Self {
+        Self {
+            version: VERSION,
+            seed,
+            turns: Vec::new(),
+            selected: Vec::new(),
+            pause_tricks,
+        }
+    }
+
+    fn restore(mut self) -> Option<(Round, Self)> {
+        if self.version != VERSION {
+            return None;
+        }
+        let mut round = Round::new(self.seed);
+        for &turn in &self.turns {
+            if !round.apply(turn) {
+                return None;
+            }
+        }
+        // A damaged draft selection should not invalidate a playable match.
+        let mut selected = Vec::new();
+        if round.game.phase() == Phase::Passing {
+            for code in self.selected {
+                if let Some(card) = Card::from_id(code)
+                    && !selected.contains(&code)
+                    && round.game.hand(Seat::You).contains(&card)
+                    && selected.len() < 3
+                {
+                    selected.push(code);
+                }
+            }
+        }
+        self.selected = selected;
+        Some((round, self))
+    }
+}
+
+struct Round {
+    game: Game,
+    ready_to_open: bool,
+}
+
+impl Round {
+    fn new(seed: u64) -> Self {
+        Self {
+            game: Game::new(seed),
+            ready_to_open: false,
+        }
+    }
+
+    fn apply(&mut self, turn: Turn) -> bool {
+        if self.ready_to_open {
+            if matches!(turn, Turn::Begin) {
+                self.ready_to_open = false;
+                return true;
+            }
+            return false;
+        }
+        let action = match turn {
+            Turn::Pass { cards: [a, b, c] } => {
+                let [Some(a), Some(b), Some(c)] = [a, b, c].map(Card::from_id) else {
+                    return false;
+                };
+                Action::Pass([a, b, c])
+            }
+            Turn::Begin => return false,
+            Turn::Play { card } => {
+                let Some(card) = Card::from_id(card) else {
+                    return false;
+                };
+                Action::Play(card)
+            }
+            Turn::Collect => Action::Collect,
+            Turn::Deal => Action::Deal,
+        };
+        if !self.game.apply(action) {
+            return false;
+        }
+        self.ready_to_open = matches!(action, Action::Pass(_))
+            || (action == Action::Deal && self.game.pass_direction() == Pass::Keep);
+        true
+    }
+}
+
+pub(super) struct TableSession {
+    store: Session,
+    saved: SavedMatch,
+    round: Round,
+}
+
+impl TableSession {
+    pub(super) fn open(launch: &GameLaunch) -> Self {
+        let store = Session::new(launch);
+        let (round, saved) = store
+            .load::<SavedMatch>()
+            .and_then(SavedMatch::restore)
+            .unwrap_or_else(|| {
+                let seed = launch.seed();
+                (Round::new(seed), SavedMatch::new(seed, false))
+            });
+        let table = Self {
+            store,
+            saved,
+            round,
+        };
+        table.save();
+        table
+    }
+
+    pub(super) fn game(&self) -> &Game {
+        &self.round.game
+    }
+
+    pub(super) fn ready_to_open(&self) -> bool {
+        self.round.ready_to_open
+    }
+
+    pub(super) fn selected(&self) -> Vec<Card> {
+        self.saved
+            .selected
+            .iter()
+            .filter_map(|&code| Card::from_id(code))
+            .collect()
+    }
+
+    pub(super) fn toggle(&mut self, card: Card) {
+        if self.game().phase() != Phase::Passing || !self.game().hand(Seat::You).contains(&card) {
+            return;
+        }
+        let code = card.id();
+        if let Some(index) = self.saved.selected.iter().position(|&held| held == code) {
+            self.saved.selected.remove(index);
+        } else if self.saved.selected.len() < 3 {
+            self.saved.selected.push(code);
+        } else {
+            return;
+        }
+        self.save();
+    }
+
+    pub(super) fn pass_turn(&self) -> Option<Turn> {
+        Some(Turn::Pass {
+            cards: self.saved.selected.as_slice().try_into().ok()?,
+        })
+    }
+
+    pub(super) fn pause_tricks(&self) -> bool {
+        self.saved.pause_tricks
+    }
+
+    pub(super) fn toggle_pause(&mut self) {
+        self.saved.pause_tricks = !self.saved.pause_tricks;
+        self.save();
+    }
+
+    pub(super) fn apply(&mut self, turn: Turn) -> bool {
+        if !self.round.apply(turn) {
+            return false;
+        }
+        self.saved.turns.push(turn);
+        self.saved.selected.clear();
+        self.save();
+        true
+    }
+
+    pub(super) fn restart(&mut self, seed: u64) {
+        self.round = Round::new(seed);
+        self.saved = SavedMatch::new(seed, self.saved.pause_tricks);
+        self.save();
+    }
+
+    fn save(&self) {
+        self.store.save(&self.saved);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_match_restores_draft_received_cards_and_the_completed_trick() {
+        let seed = 212;
+        let mut round = Round::new(seed);
+        let hand = round.game.hand(Seat::You);
+        let cards = [hand[0], hand[3], hand[8]].map(Card::id);
+        let mut saved = SavedMatch::new(seed, true);
+        saved.selected = vec![cards[0], 255, cards[1], cards[0]];
+        let (_, mut saved) = round_trip(&saved);
+        assert_eq!(saved.selected, cards[..2]);
+        assert!(saved.pause_tricks);
+
+        let pass = Turn::Pass { cards };
+        assert!(round.apply(pass));
+        saved.turns.push(pass);
+        let (restored, mut saved) = round_trip(&saved);
+        assert!(restored.ready_to_open);
+        assert!(saved.selected.is_empty());
+        assert_eq!(restored.game, round.game);
+
+        saved.turns.push(Turn::Begin);
+        assert!(round.apply(Turn::Begin));
+        for _ in 0..4 {
+            let turn = Turn::Play {
+                card: round.game.suggested_play().unwrap().id(),
+            };
+            assert!(round.apply(turn));
+            saved.turns.push(turn);
+        }
+        let (restored, _) = round_trip(&saved);
+        assert!(!restored.ready_to_open);
+        assert!(matches!(restored.game.phase(), Phase::TrickComplete(_)));
+        assert_eq!(restored.game, round.game);
+    }
+
+    #[test]
+    fn saved_match_rejects_out_of_order_or_invalid_turns() {
+        let mut saved = SavedMatch::new(3, false);
+        saved.turns.push(Turn::Play { card: 52 });
+        assert!(saved.restore().is_none());
+        let mut saved = SavedMatch::new(3, false);
+        saved.turns.push(Turn::Begin);
+        assert!(saved.restore().is_none());
+    }
+
+    fn round_trip(saved: &SavedMatch) -> (Round, SavedMatch) {
+        serde_json::from_slice::<SavedMatch>(&serde_json::to_vec(saved).unwrap())
+            .unwrap()
+            .restore()
+            .unwrap()
+    }
+}
