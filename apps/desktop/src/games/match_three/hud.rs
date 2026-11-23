@@ -65,8 +65,17 @@ impl GameView {
                         "Set off a chain".into(),
                         "A falling jewel must make another match.".into(),
                     ),
+                    Goal::ClearMarked(_) => (
+                        "Clear the marked cells".into(),
+                        if STAGES[self.journal.active].goals.len() > 1 {
+                            "Match on marked cells and collect the listed jewels."
+                        } else {
+                            "Match jewels on a marked cell to clear it."
+                        }
+                        .into(),
+                    ),
                 },
-                Feedback::Hint => ("Hint".into(), "Swap the two marked jewels.".into()),
+                Feedback::Hint => ("Hint".into(), "Swap the highlighted jewels.".into()),
                 Feedback::NoMatch => ("No match".into(), "Make a line of three or more.".into()),
                 Feedback::Turn {
                     points,
@@ -119,42 +128,7 @@ impl GameView {
                 if compact { 17. } else { 25. },
             ))
             .when(!self.challenge, |hud| {
-                hud.child(
-                    div()
-                        .flex()
-                        .gap(px(4.))
-                        .children(STAGES.iter().enumerate().map(|(index, stage)| {
-                            let cleared = self.journal.is_cleared(index);
-                            let unlocked = self.journal.is_unlocked(index);
-                            let current = self.journal.active == index;
-                            let label = format!(
-                                "Stage {}, {}{}",
-                                index + 1,
-                                stage.name,
-                                if !unlocked {
-                                    ", locked"
-                                } else if cleared {
-                                    ", cleared"
-                                } else {
-                                    ""
-                                },
-                            );
-                            self.button(
-                                Action::Stage(index),
-                                format!("{}", index + 1),
-                                current,
-                                unlocked && !current && !active_motion,
-                                cx,
-                            )
-                            .flex_1()
-                            .min_w_0()
-                            .aria_label(label)
-                            .aria_selected(current)
-                            .when(cleared && !current, |button| {
-                                button.bg(rgb(colors.hover)).text_color(rgb(colors.ink))
-                            })
-                        })),
-                )
+                hud.child(self.stage_picker(width, cx))
             })
             .child(
                 div()
@@ -268,6 +242,51 @@ impl GameView {
         })
     }
 
+    fn stage_picker(&self, width: f32, cx: &Context<Self>) -> Div {
+        let colors = t::colors(cx);
+        let columns = if width >= 236. { STAGES.len() } else { 4 };
+        let gap = 4.;
+        let cell_width = ((width + gap) / columns as f32 - gap).floor();
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(px(gap))
+            .children(STAGES.iter().enumerate().map(|(index, stage)| {
+                let cleared = self.journal.is_cleared(index);
+                let unlocked = self.journal.is_unlocked(index);
+                let current = self.journal.active == index;
+                let label = format!(
+                    "Stage {}, {}{}",
+                    index + 1,
+                    stage.name,
+                    if !unlocked {
+                        ", locked"
+                    } else if cleared {
+                        ", cleared"
+                    } else {
+                        ""
+                    },
+                );
+                self.button(
+                    Action::Stage(index),
+                    (index + 1).to_string(),
+                    current,
+                    unlocked && !current && self.motion.is_none(),
+                    cx,
+                )
+                .w(px(cell_width))
+                .min_w_0()
+                .aria_label(label)
+                .aria_selected(current)
+                .when(!unlocked, |button| {
+                    button.bg(rgb(colors.paper)).text_color(rgb(colors.muted))
+                })
+                .when(cleared && !current, |button| {
+                    button.bg(rgb(colors.hover)).text_color(rgb(colors.ink))
+                })
+            }))
+    }
+
     fn button(
         &self,
         action: Action,
@@ -362,15 +381,16 @@ fn metric(label: &'static str, value: String, urgent: bool, colors: t::Palette) 
 }
 
 fn goal_meter(goal: Goal, displayed: Progress, colors: t::Palette) -> Stateful<Div> {
-    let (name, jewel) = match goal {
-        Goal::Score(_) => ("Points goal", None),
-        Goal::Collect(gem, _) => (gem.name(), Some(gem)),
-        Goal::Chains(_) => ("2+ match chains", None),
+    let name = match goal {
+        Goal::Score(_) => "Points goal",
+        Goal::Collect(gem, _) => gem.name(),
+        Goal::Chains(_) => "2+ match chains",
+        Goal::ClearMarked(_) => "Marked cells",
     };
     let target = goal.target();
     let progress = displayed.value(goal).min(target);
     let position = format!("{} / {}", display_score(progress), display_score(target));
-    let percentage = progress as f32 / target as f32;
+    let percentage = progress as f32 / target.max(1) as f32;
     div()
         .id(name)
         .role(Role::ProgressIndicator)
@@ -393,7 +413,16 @@ fn goal_meter(goal: Goal, displayed: Progress, colors: t::Palette) -> Stateful<D
                         .flex()
                         .items_center()
                         .gap(px(3.))
-                        .children(jewel.map(|gem| field::jewel(gem).size(px(17.))))
+                        .when_some(
+                            match goal {
+                                Goal::Collect(gem, _) => {
+                                    Some(field::jewel(gem).size(px(17.)).into_any_element())
+                                }
+                                Goal::ClearMarked(_) => Some(field::inlay(17.).into_any_element()),
+                                _ => None,
+                            },
+                            |label, icon| label.child(icon),
+                        )
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(name),
                 )

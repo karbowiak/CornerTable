@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 use corner_table_match_three::{CELLS, Cascade, Cell, Gem, Progress, Turn};
 use gpui::{
     Div, Img, IntoElement, ObjectFit, ParentElement, PathBuilder, Styled, StyledImage, Window,
-    canvas, div, fill, img, linear_color_stop, linear_gradient, point, px, rgb, size,
+    canvas, div, fill, img, linear_color_stop, linear_gradient, point, prelude::FluentBuilder, px,
+    rgb, size,
 };
 
 const FIELD: u32 = 0x132a27;
@@ -77,7 +78,7 @@ fn corner(top: bool, left: bool) -> Div {
     }
 }
 
-pub fn well(step: f32, cell: Cell) -> Div {
+pub fn well(step: f32, cell: Cell, inlay_opacity: f32) -> Div {
     let fill = WELL[(cell.row + cell.col) % WELL.len()];
     div()
         .absolute()
@@ -88,6 +89,47 @@ pub fn well(step: f32, cell: Cell) -> Div {
         .border_1()
         .border_color(rgb(LIP))
         .bg(rgb(fill))
+        .when(inlay_opacity > 0., |well| {
+            well.child(inlay(step - 4.).opacity(inlay_opacity))
+        })
+}
+
+pub fn inlay(edge: f32) -> Div {
+    let corner = (edge * 0.23).clamp(4., 13.);
+    div()
+        .relative()
+        .size(px(edge))
+        .rounded(px((edge * 0.13).clamp(3., 7.)))
+        .bg(rgb(0x285553))
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, (), window, _| {
+                    let inset = px((edge * 0.08).clamp(2.5, 5.));
+                    let far = bounds.size.width - inset;
+                    let corner = px(corner);
+                    let bevel = corner * 0.48;
+                    let mut rim = PathBuilder::stroke(px((edge * 0.043).clamp(1.3, 2.5)));
+                    for (x, y, dx, dy) in [
+                        (inset, inset, 1., 1.),
+                        (far, inset, -1., 1.),
+                        (inset, far, 1., -1.),
+                        (far, far, -1., -1.),
+                    ] {
+                        let origin = bounds.origin + point(x, y);
+                        rim.move_to(origin + point(px(0.), corner * dy));
+                        rim.line_to(origin + point(px(0.), bevel * dy));
+                        rim.line_to(origin + point(bevel * dx, px(0.)));
+                        rim.line_to(origin + point(corner * dx, px(0.)));
+                    }
+                    if let Ok(path) = rim.build() {
+                        window.paint_path(path, rgb(0xaeefdb));
+                    }
+                },
+            )
+            .absolute()
+            .size_full(),
+        )
 }
 
 pub fn floor() -> Div {
@@ -116,6 +158,14 @@ pub enum Scene<'a> {
 }
 
 impl Scene<'_> {
+    pub fn inlay_opacity(self, cell: Cell, progress: Progress) -> f32 {
+        match self {
+            Self::Clear(cascade, fraction) if cascade.cleared_marks.contains(cell) => 1. - fraction,
+            _ if progress.remaining_marks.contains(cell) => 1.,
+            _ => 0.,
+        }
+    }
+
     pub fn board(self) -> [Gem; CELLS] {
         match self {
             Self::Still(board)

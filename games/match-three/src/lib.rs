@@ -40,13 +40,39 @@ pub enum Goal {
     Score(u32),
     Collect(Gem, u32),
     Chains(u32),
+    ClearMarked(MarkedCells),
 }
 
 impl Goal {
     pub fn target(self) -> u32 {
         match self {
             Self::Score(target) | Self::Collect(_, target) | Self::Chains(target) => target,
+            Self::ClearMarked(cells) => cells.count(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MarkedCells(u64);
+
+impl MarkedCells {
+    pub const fn from_indices(indices: &[usize]) -> Self {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < indices.len() {
+            assert!(indices[i] < CELLS);
+            bits |= 1 << indices[i];
+            i += 1;
+        }
+        Self(bits)
+    }
+
+    pub const fn count(self) -> u32 {
+        self.0.count_ones()
+    }
+
+    pub fn contains(self, cell: Cell) -> bool {
+        cell.index().is_some_and(|index| self.0 & (1 << index) != 0)
     }
 }
 
@@ -57,7 +83,7 @@ pub struct Stage {
     pub goals: &'static [Goal],
 }
 
-pub const STAGES: [Stage; 4] = [
+pub const STAGES: [Stage; 7] = [
     Stage {
         name: "Lantern Grotto",
         moves: MOVE_LIMIT,
@@ -81,6 +107,31 @@ pub const STAGES: [Stage; 4] = [
         moves: 24,
         goals: &[Goal::Collect(Gem::Moonstone, 18), Goal::Score(1_100)],
     },
+    Stage {
+        name: "Etched Gallery",
+        moves: 20,
+        goals: &[Goal::ClearMarked(MarkedCells::from_indices(&[
+            19, 20, 26, 29, 34, 37, 43, 44, 51, 52,
+        ]))],
+    },
+    Stage {
+        name: "Twin Seams",
+        moves: 26,
+        goals: &[
+            Goal::Collect(Gem::Aquamarine, 19),
+            Goal::Collect(Gem::Amethyst, 18),
+        ],
+    },
+    Stage {
+        name: "Deep Mosaic",
+        moves: 30,
+        goals: &[
+            Goal::ClearMarked(MarkedCells::from_indices(&[
+                18, 21, 27, 28, 34, 37, 41, 46, 50, 53, 59, 60,
+            ])),
+            Goal::Collect(Gem::Ruby, 16),
+        ],
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,14 +140,17 @@ pub struct Progress {
     collected: [u32; 6],
     pub chains: u32,
     pub best_chain: u32,
+    pub remaining_marks: MarkedCells,
 }
 
 impl Progress {
+    /// Progress toward a goal of this game.
     pub fn value(self, goal: Goal) -> u32 {
         match goal {
             Goal::Score(_) => self.score,
             Goal::Collect(gem, _) => self.collected[gem as usize],
             Goal::Chains(_) => self.chains,
+            Goal::ClearMarked(cells) => MarkedCells(cells.0 & !self.remaining_marks.0).count(),
         }
     }
 }
@@ -145,6 +199,7 @@ pub struct Cascade {
     pub before: [Gem; CELLS],
     pub cleared: [bool; CELLS],
     pub after: [Gem; CELLS],
+    pub cleared_marks: MarkedCells,
     /// Indexed by destination. New gems have origins above the board.
     pub fall_distance: [u8; CELLS],
     pub points: u32,
@@ -174,10 +229,16 @@ impl Game {
     }
 
     pub fn for_stage(seed: u64, stage: Stage) -> Self {
+        let mut progress = Progress::default();
+        for &goal in stage.goals {
+            if let Goal::ClearMarked(cells) = goal {
+                progress.remaining_marks.0 |= cells.0;
+            }
+        }
         let mut game = Self {
             board: [Gem::Ruby; CELLS],
             stage,
-            progress: Progress::default(),
+            progress,
             moves: stage.moves,
             rng: seed,
         };
@@ -229,22 +290,56 @@ impl Game {
         if self.status() != Status::Playing {
             return None;
         }
-        self.valid_swaps().max_by_key(|&(first, second)| {
+        let (pair, (wins, gain, _)) = self
+            .trials()
+            .map(|(pair, trial)| {
+                (
+                    pair,
+                    (
+                        trial.status() == Status::Won,
+                        self.goal_gain(&trial),
+                        trial.score(),
+                    ),
+                )
+            })
+            .max_by_key(|&(_, rank)| rank)?;
+        if wins || gain > 0 || self.moves <= 1 {
+            return Some(pair);
+        }
+
+        // An isolated mark or rare jewel can need a setup move. Look one move
+        // further if no current swap advances an unfinished goal.
+        self.trials()
+            .max_by_key(|(_, trial)| {
+                let follow_up = trial
+                    .trials()
+                    .map(|(_, next)| (next.status() == Status::Won, trial.goal_gain(&next)))
+                    .max()
+                    .unwrap_or_default();
+                (follow_up, trial.score())
+            })
+            .map(|(pair, _)| pair)
+    }
+
+    fn trials(&self) -> impl Iterator<Item = ((Cell, Cell), Self)> + '_ {
+        self.valid_swaps().map(|(first, second)| {
             let mut trial = self.clone();
             trial.swap(first, second).expect("a legal move");
-            let goal_progress: u64 = self
-                .stage
-                .goals
-                .iter()
-                .map(|&goal| {
-                    let target = goal.target();
-                    let before = self.progress.value(goal).min(target);
-                    let after = trial.progress.value(goal).min(target);
-                    1_000 * u64::from(after - before) / u64::from(target.max(1))
-                })
-                .sum();
-            (trial.status() == Status::Won, goal_progress, trial.score())
+            ((first, second), trial)
         })
+    }
+
+    fn goal_gain(&self, trial: &Self) -> u64 {
+        self.stage
+            .goals
+            .iter()
+            .map(|&goal| {
+                let target = goal.target();
+                let before = self.progress.value(goal).min(target);
+                let after = trial.progress.value(goal).min(target);
+                1_000 * u64::from(after - before) / u64::from(target.max(1))
+            })
+            .sum()
     }
 
     fn valid_swaps(&self) -> impl Iterator<Item = (Cell, Cell)> + '_ {
@@ -294,6 +389,7 @@ impl Game {
         };
         while cleared.contains(&true) {
             let before = self.board;
+            let marks_before = self.progress.remaining_marks;
             let (gems, points) = self.record_clear(&cleared, turn.cascades.len() as u32 + 1);
             let fall_distance = self.drop_and_refill(&cleared);
             turn.gems += gems;
@@ -302,6 +398,7 @@ impl Game {
                 before,
                 cleared,
                 after: self.board,
+                cleared_marks: MarkedCells(marks_before.0 & !self.progress.remaining_marks.0),
                 fall_distance,
                 points,
                 progress: self.progress,
@@ -318,9 +415,10 @@ impl Game {
 
     fn record_clear(&mut self, cleared: &[bool; CELLS], step: u32) -> (u32, u32) {
         let mut gems = 0;
-        for (&gem, &clear) in self.board.iter().zip(cleared) {
+        for (index, (&gem, &clear)) in self.board.iter().zip(cleared).enumerate() {
             if clear {
                 self.progress.collected[gem as usize] += 1;
+                self.progress.remaining_marks.0 &= !(1 << index);
                 gems += 1;
             }
         }
@@ -521,5 +619,91 @@ mod tests {
             );
             assert!(game.suggestion().is_none());
         }
+    }
+
+    #[test]
+    fn marks_stay_at_their_coordinates_and_count_only_once_across_cascades() {
+        const MARKS: Goal = Goal::ClearMarked(MarkedCells::from_indices(&[3, 11, 19]));
+        const STAGE: Stage = Stage {
+            name: "Last move",
+            moves: 1,
+            goals: &[MARKS, Goal::Collect(Gem::Amethyst, 3)],
+        };
+        let mut game = Game::for_stage(0, STAGE);
+        let first = Cell::from_index(11);
+        let second = Cell::from_index(19);
+        let turn = game.swap(first, second).unwrap();
+
+        let [initial, cascade] = turn.cascades.as_slice() else {
+            panic!("the last turn should have two matches");
+        };
+        assert_eq!(initial.cleared_marks, MarkedCells::from_indices(&[11]));
+        assert!(initial.progress.remaining_marks.contains(second));
+        assert_eq!(initial.progress.value(MARKS), 1);
+        assert!(cascade.cleared[11]);
+        assert_eq!(cascade.cleared_marks, MarkedCells::from_indices(&[3, 19]));
+        assert_eq!(cascade.progress.value(MARKS), 3);
+        assert_eq!(game.moves_left(), 0);
+        assert_eq!(game.status(), Status::Won);
+
+        let mut game = Game::for_stage(
+            0,
+            Stage {
+                goals: &[MARKS, Goal::Collect(Gem::Amethyst, 4)],
+                ..STAGE
+            },
+        );
+        game.swap(first, second).unwrap();
+        assert_eq!(game.progress().value(MARKS), 3);
+        assert_eq!(game.moves_left(), 0);
+        assert_eq!(game.status(), Status::Lost);
+        assert_eq!(game.swap(first, second).unwrap_err(), SwapError::Finished);
+    }
+
+    #[test]
+    fn a_hint_can_set_up_a_mark_that_no_current_swap_clears() {
+        const STAGE: Stage = Stage {
+            name: "Setup",
+            moves: 2,
+            goals: &[Goal::ClearMarked(MarkedCells::from_indices(&[0]))],
+        };
+        let mut game = Game::for_stage(0, STAGE);
+        assert!(
+            game.trials()
+                .all(|(_, trial)| trial.status() != Status::Won)
+        );
+
+        let (a, b) = game.suggestion().unwrap();
+        game.swap(a, b).unwrap();
+        assert_eq!(game.status(), Status::Playing);
+        let (a, b) = game.suggestion().unwrap();
+        game.swap(a, b).unwrap();
+        assert_eq!(game.status(), Status::Won);
+    }
+
+    #[test]
+    fn an_automatic_reshuffle_preserves_remaining_marks() {
+        const STAGE: Stage = Stage {
+            name: "Reshuffle",
+            moves: 1_000,
+            goals: &[
+                Goal::Score(u32::MAX),
+                Goal::ClearMarked(MarkedCells::from_indices(&[0, 7, 56, 63])),
+            ],
+        };
+        let mut game = Game::for_stage(1, STAGE);
+        while game.status() == Status::Playing {
+            let (a, b) = game.hint().unwrap();
+            let turn = game.swap(a, b).unwrap();
+            if turn.reshuffled {
+                let before_shuffle = turn.cascades.last().unwrap();
+                assert_ne!(game.board(), &before_shuffle.after);
+                assert_eq!(game.progress(), before_shuffle.progress);
+                assert_eq!(game.progress().remaining_marks.count(), 1);
+                assert!(game.hint().is_some());
+                return;
+            }
+        }
+        panic!("expected the deal to produce a reshuffle");
     }
 }

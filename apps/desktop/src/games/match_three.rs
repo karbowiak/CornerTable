@@ -4,7 +4,7 @@ mod journal;
 
 use std::{cell::Cell as ValueCell, rc::Rc, time::Instant};
 
-use corner_table_match_three::{CELLS, Cell, Game, SIDE, STAGES, Status, SwapError};
+use corner_table_match_three::{CELLS, Cell, Game, Progress, SIDE, STAGES, Status, SwapError};
 use gpui::{
     Bounds, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Role, Stateful, Window, canvas, div, prelude::*,
@@ -360,6 +360,7 @@ impl GameView {
         &self,
         step: f32,
         scene: Scene<'_>,
+        displayed: Progress,
         window: &Window,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
@@ -378,10 +379,15 @@ impl GameView {
         .role(Role::Grid)
         .aria_label("Match Three field")
         .aria_description(format!(
-            "Arrow keys move. Space selects a jewel. H shows a hint. Row {}, column {}, {}.",
+            "Arrow keys move. Space selects a jewel. H shows a hint. Row {}, column {}, {}{}.",
             self.cursor.row + 1,
             self.cursor.col + 1,
-            current_gem.name()
+            current_gem.name(),
+            if displayed.remaining_marks.contains(self.cursor) {
+                ", marked cell"
+            } else {
+                ""
+            },
         ))
         .track_focus(&self.focus)
         .on_key_down(cx.listener(Self::key_down))
@@ -427,7 +433,10 @@ impl GameView {
                         .absolute()
                         .size_full(),
                 )
-                .children((0..CELLS).map(|index| field::well(step, Cell::from_index(index))))
+                .children((0..CELLS).map(|index| {
+                    let cell = Cell::from_index(index);
+                    field::well(step, cell, scene.inlay_opacity(cell, displayed))
+                }))
                 .child(scene.sprites(step))
                 .children(scene.sparks(step))
                 .children(tiles.into_iter().enumerate().map(|(index, gem)| {
@@ -443,10 +452,15 @@ impl GameView {
                         .id(("match-three-jewel", index))
                         .role(Role::Button)
                         .aria_label(format!(
-                            "{} at row {}, column {}{}",
+                            "{} at row {}, column {}{}{}",
                             gem.name(),
                             cell.row + 1,
                             cell.col + 1,
+                            if displayed.remaining_marks.contains(cell) {
+                                ", marked cell"
+                            } else {
+                                ""
+                            },
                             if is_hint { ", hint pair" } else { "" },
                         ))
                         .aria_selected(armed)
@@ -535,7 +549,7 @@ impl Render for GameView {
                     .flex_col()
                     .gap(px(6.))
                     .flex_none()
-                    .child(self.board(step, scene, window, cx))
+                    .child(self.board(step, scene, displayed, window, cx))
                     .child(
                         div()
                             .flex()
