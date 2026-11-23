@@ -487,8 +487,8 @@ mod tests {
     fn a_blocked_spawn_ends_the_game() {
         let mut game = Game::new(0);
         game.active = Some(ActivePair::spawn([Ruby, Amethyst]));
-        for row in 2..ROWS {
-            game.board[row][SPAWN_COLUMN] = Some(if row % 2 == 0 { Amber } else { Jade });
+        for (row, gems) in game.board.iter_mut().enumerate().skip(2) {
+            gems[SPAWN_COLUMN] = Some(if row % 2 == 0 { Amber } else { Jade });
         }
         assert_eq!(game.drop_pair(), Some(Clear::default()));
         assert!(game.is_over());

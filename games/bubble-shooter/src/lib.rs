@@ -200,9 +200,14 @@ impl Round {
             let offset = round.random_index(2);
             let patches: [Color; COLUMNS / 2 + 1] =
                 std::array::from_fn(|_| Color::ALL[round.random_index(Color::ALL.len())]);
-            for row in top..(top + 2).min(STARTING_ROWS) {
+            for (row, bubbles) in round.grid[..STARTING_ROWS]
+                .iter_mut()
+                .enumerate()
+                .skip(top)
+                .take(2)
+            {
                 for cell in Cell::in_row(row) {
-                    round.grid[row][cell.column] = Some(patches[(cell.column + offset) / 2]);
+                    bubbles[cell.column] = Some(patches[(cell.column + offset) / 2]);
                 }
             }
         }
