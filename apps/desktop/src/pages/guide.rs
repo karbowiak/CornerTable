@@ -236,7 +236,7 @@ impl Guide {
                     ),
                     (
                         "Finish the round",
-                        "Classic is a high-score run that ends when no piece fits. Ten Trays is complete after you place all 30 pieces. If you get stuck, Undo takes back one placement. Restart replays the same board.",
+                        "Classic ends when no piece fits. Ten Trays is complete after you place all 30 pieces. Puzzle Boards give you a fixed set of pieces and a goal. Undo takes back one placement, and Restart replays the same board.",
                     ),
                 ],
             },
@@ -254,6 +254,10 @@ impl Guide {
                     (
                         "Watch the danger line",
                         "You win by clearing every bubble. The round ends if a bubble reaches the dashed line or you use all your shots. Tab to Restart and press Enter to retry, or choose New board when available.",
+                    ),
+                    (
+                        "Try a bank-shot puzzle",
+                        "Choose Puzzles to clear a small field in a fixed number of shots. A bank match must bounce off a side wall and then pop a group. Check the goal above each field.",
                     ),
                 ],
             },
@@ -506,6 +510,10 @@ impl Guide {
                         "Resolve mistakes",
                         "Underlines mark repeated digits. Undo takes back an edit. Hint (H) explains a deduction, and Enter applies it. Solve every square to finish. For the daily goal, finish without hints. Retry puzzle resets the daily grid.",
                     ),
+                    (
+                        "Solve Killer cages",
+                        "In Killer, each dashed cage has a sum. Use a different digit in every square of the cage and make the digits add up to that sum. The regular row, column, and box rules still apply.",
+                    ),
                 ],
             },
             "word-games" => Self {
@@ -549,7 +557,11 @@ impl Guide {
         );
         const TRY_AGAIN: (&str, &str) = (
             "Try another move",
-            "Undo takes back your last move. Replay starts this deal again. New deal shuffles a fresh board.",
+            "Press H to highlight a suggested move. Undo takes back your last move. Replay starts this deal again. New deal shuffles a fresh board.",
+        );
+        const FINISH: (&str, &str) = (
+            "Collect the last cards",
+            "When Finish appears, you can send all remaining cards to their foundations in one action. Undo takes back the whole collection.",
         );
         let sections: &'static [(&str, &str)] = match variant {
             Variant::Klondike => &[
@@ -562,6 +574,7 @@ impl Guide {
                     "Draw 1 and Draw 3 shuffle the deck. Verified Draw 1 starts from a shuffle with a proven route to a win. Play only the top card of the waste. When the stock runs out, click it again to recycle the waste.",
                 ),
                 MOVE_CARDS,
+                FINISH,
                 TRY_AGAIN,
             ],
             Variant::Spider => &[
@@ -586,6 +599,7 @@ impl Guide {
                     "Each free cell can hold one card. The more free cells and spare columns you leave empty, the longer the runs you can move.",
                 ),
                 MOVE_CARDS,
+                FINISH,
                 TRY_AGAIN,
             ],
             Variant::Pyramid => &[

@@ -6,16 +6,16 @@ Corner Table is an offline desktop games collection built in Rust and GPUI. The 
 
 | Game | Current features |
 | --- | --- |
-| Solitaire | Klondike, Spider, FreeCell, Pyramid, and TriPeaks. Card and stack dragging, illustrated court cards, three table styles, 1,024 Verified Draw 1 Klondike deals, and per-mode progress and undo. |
-| Mahjong | Solvable layouts, original illustrated ceramic tiles, keyboard controls, Clean Clear, hints, undo, and saved boards for both practice and Daily Challenge. |
+| Solitaire | Klondike, Spider, FreeCell, Pyramid, and TriPeaks. Card and stack dragging, twelve original court illustrations, three table styles, 1,024 Verified Draw 1 Klondike deals, hints, safe foundation collection, and per-mode progress and undo. |
+| Mahjong | Six solvable layouts from a 24-tile Tea Tray to a 144-tile Koi. Original ceramics, keyboard controls, Clean Clear, hints, undo, and saved practice and Daily boards. |
 | Minesweeper | Three fields, a clock and time trial, chording, undo-free replays, deduction-certified Logic only, and restored progress and bests. |
-| Sudoku | 9×9 and 6×6 practice, daily clean solves, deduction hints, notes, undo, and saved rounds. |
+| Sudoku | 9×9 and 6×6 practice, three uniquely solvable Killer puzzles, daily clean solves, deduction hints, notes, undo, and saved rounds. |
 | Jigsaw | Seven original scenes plus a gallery for local photo imports. Interlocking assembly and square swaps at three sizes, drag and keyboard controls, filters, hints, and gallery saves. |
 | Word Games | Letter Grove, Letter Rack, two crossword sizes, and Word Search with 96 themed layouts. Collection, daily puzzles, hints, and separate saves. |
 | Match Three | Seven campaign stages with points, collection, chains, and marked-cell objectives. Animated cascades, hints, keyboard controls, and exact resume. |
 | Block Puzzle | Classic, Ten Trays, and nine verified Puzzle Boards. Exact tray dragging, click and keyboard placement, animated line clears, and saved progress and bests. |
 | Mine Trails | Five rooms, branching routes, illustrated excavation, a finale, and saved expeditions. |
-| Bubble Shooter | Animated bank shots, six stages, keyboard fine aim, challenge scoring, and resumable progress. |
+| Bubble Shooter | Animated bank shots, six stages, four verified bank-shot puzzles, keyboard fine aim, challenge scoring, and resumable progress. |
 | Gem Cascade | Timed falling pairs, untimed practice, pause, chains, and saved runs and bests. |
 | Mahjong Cubes | Five solvable stacks, drag-to-turn and keyboard controls, precise face picking, a daily deal, undo, and saved progress. |
 | Reversi | Offline opponents or two people at the same board. Disc flips, automatic passes, saved matches, undo, and local results. |
