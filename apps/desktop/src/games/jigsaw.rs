@@ -1,9 +1,11 @@
 mod artwork;
 mod assemble;
+mod gallery;
+mod photos;
 mod progress;
 mod swap;
 
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap, path::Path, sync::Arc};
 
 use corner_table_jigsaw::{Assembly, Puzzle, Size, TrayFilter};
 use gpui::{
@@ -18,6 +20,7 @@ use crate::theme as t;
 use super::{GameLaunch, board_space, themed_control};
 use artwork::PieceArt;
 use assemble::TrayLayout;
+use gallery::Gallery;
 use progress::SavedGallery;
 
 const MAT: u32 = 0x25463e;
@@ -26,43 +29,76 @@ const WORKSPACE_GAP: f32 = 18.;
 const MAX_TABLE_WIDTH: f32 = 1092.;
 
 struct Painting {
-    id: &'static str,
-    title: &'static str,
-    asset: &'static str,
+    id: Cow<'static, str>,
+    title: Cow<'static, str>,
+    source: PictureSource,
+    thumbnail: Option<Arc<Path>>,
     aspect: f32,
 }
 
+#[derive(Clone)]
+enum PictureSource {
+    Bundled(&'static str),
+    Local(Arc<Path>),
+}
+
+impl PictureSource {
+    fn image(&self) -> gpui::Img {
+        match self {
+            Self::Bundled(asset) => img(*asset),
+            Self::Local(path) => img(path.clone()),
+        }
+    }
+}
+
+impl Painting {
+    const fn bundled(
+        id: &'static str,
+        title: &'static str,
+        asset: &'static str,
+        aspect: f32,
+    ) -> Self {
+        Self {
+            id: Cow::Borrowed(id),
+            title: Cow::Borrowed(title),
+            source: PictureSource::Bundled(asset),
+            thumbnail: None,
+            aspect,
+        }
+    }
+}
+
 const GALLERY: &[Painting] = &[
-    Painting {
-        id: "lighthouse",
-        title: "Lighthouse at Dusk",
-        asset: "games/jigsaw/lighthouse.jpg",
-        aspect: 4. / 3.,
-    },
-    Painting {
-        id: "harbor",
-        title: "Harbor Morning",
-        asset: "games/jigsaw/harbor.jpg",
-        aspect: 3. / 2.,
-    },
-    Painting {
-        id: "greenhouse-afternoon",
-        title: "Greenhouse Afternoon",
-        asset: "games/jigsaw/greenhouse-afternoon.jpg",
-        aspect: 1280. / 853.,
-    },
-    Painting {
-        id: "snowbound-station",
-        title: "Snowbound Station",
-        asset: "games/jigsaw/snowbound-station.jpg",
-        aspect: 1280. / 853.,
-    },
-    Painting {
-        id: "orchard-market",
-        title: "Orchard Market",
-        asset: "games/jigsaw/orchard-market.jpg",
-        aspect: 1280. / 853.,
-    },
+    Painting::bundled(
+        "lighthouse",
+        "Lighthouse at Dusk",
+        "games/jigsaw/lighthouse.jpg",
+        4. / 3.,
+    ),
+    Painting::bundled(
+        "harbor",
+        "Harbor Morning",
+        "games/jigsaw/harbor.jpg",
+        3. / 2.,
+    ),
+    Painting::bundled(
+        "greenhouse-afternoon",
+        "Greenhouse Afternoon",
+        "games/jigsaw/greenhouse-afternoon.jpg",
+        1280. / 853.,
+    ),
+    Painting::bundled(
+        "snowbound-station",
+        "Snowbound Station",
+        "games/jigsaw/snowbound-station.jpg",
+        1280. / 853.,
+    ),
+    Painting::bundled(
+        "orchard-market",
+        "Orchard Market",
+        "games/jigsaw/orchard-market.jpg",
+        1280. / 853.,
+    ),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -140,6 +176,7 @@ pub struct GameView {
     key: PuzzleKey,
     rounds: HashMap<PuzzleKey, Round>,
     storage: Session,
+    gallery: Gallery,
     artwork: HashMap<PuzzleKey, Artwork>,
     seed: u64,
     mode: Mode,
@@ -163,6 +200,7 @@ impl GameView {
             key,
             rounds: HashMap::new(),
             storage,
+            gallery: Gallery::load(photos::directory()),
             artwork: HashMap::new(),
             seed,
             mode: Mode::Assemble,
@@ -176,6 +214,7 @@ impl GameView {
         };
         if let Some(saved) = saved {
             view.restore(saved);
+            view.gallery.reveal(view.key.painting);
         }
         view.rounds
             .entry(view.key)
@@ -193,14 +232,16 @@ impl GameView {
             .expect("active puzzle exists")
     }
 
-    fn painting(&self) -> &'static Painting {
-        &GALLERY[self.key.painting]
+    fn painting(&self) -> &Painting {
+        self.gallery.painting(self.key.painting)
     }
 
     fn choose(&mut self, key: PuzzleKey) {
         self.confirm_restart = false;
         if self.key != key {
             self.key = key;
+            self.artwork
+                .retain(|cached, _| cached.painting < GALLERY.len() || *cached == key);
             self.rounds
                 .entry(key)
                 .or_insert_with(|| Round::new(key.size, self.seed));
@@ -210,22 +251,26 @@ impl GameView {
 
     fn prepare_artwork(&mut self, cx: &mut Context<Self>) {
         let key = self.key;
-        let asset = self.painting().asset;
+        let painting = self.painting();
+        let source = painting.source.clone();
+        let id = painting.id.clone();
         self.artwork.insert(key, Artwork::Cutting);
         let task = cx
             .background_executor()
-            .spawn(async move { artwork::cut_painting(asset, key.size) });
+            .spawn(async move { artwork::cut_painting(&source, key.size) });
         cx.spawn(async move |view, cx| {
             let state = match task.await {
                 Ok(pieces) => Artwork::Ready(pieces),
                 Err(error) => {
-                    eprintln!("Could not prepare {asset}: {error:#}");
+                    eprintln!("Could not prepare Jigsaw puzzle {id}: {error:#}");
                     Artwork::Failed
                 }
             };
             view.update(cx, |view, cx| {
-                view.artwork.insert(key, state);
-                cx.notify();
+                if let Some(artwork) = view.artwork.get_mut(&key) {
+                    *artwork = state;
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -408,7 +453,7 @@ impl GameView {
             )
     }
 
-    fn gallery(&self, available: f32, cx: &Context<Self>) -> Stateful<Div> {
+    fn gallery_row(&self, available: f32, cx: &Context<Self>) -> Stateful<Div> {
         const GAP: f32 = 7.;
         let width =
             ((available - GAP * (GALLERY.len() - 1) as f32) / GALLERY.len() as f32).min(138.);
@@ -417,10 +462,10 @@ impl GameView {
         div()
             .id("jigsaw-gallery")
             .role(Role::Group)
-            .aria_label("Paintings")
+            .aria_label(self.gallery.tab.label())
             .flex()
             .gap(px(GAP))
-            .children(GALLERY.iter().enumerate().map(|(index, painting)| {
+            .children(self.gallery.visible().map(|(index, painting)| {
                 let current = index == self.key.painting;
                 let key = PuzzleKey {
                     painting: index,
@@ -434,7 +479,7 @@ impl GameView {
                 div()
                     .id(("jigsaw-painting", index))
                     .role(Role::Button)
-                    .aria_label(painting.title)
+                    .aria_label(painting.title.as_ref().to_owned())
                     .aria_toggled(if current {
                         Toggled::True
                     } else {
@@ -472,9 +517,16 @@ impl GameView {
                         style.border_color(rgb(palette.ink)).bg(rgb(palette.hover))
                     })
                     .child(
-                        img(painting.asset)
+                        painting
+                            .thumbnail
+                            .as_ref()
+                            .map_or_else(|| painting.source.image(), |path| img(path.clone()))
                             .w_full()
-                            .h(px(48.))
+                            .h(px(if painting.thumbnail.is_some() {
+                                (width - 10.) / painting.aspect
+                            } else {
+                                48.
+                            }))
                             .rounded_sm()
                             .object_fit(ObjectFit::Cover),
                     )
@@ -491,7 +543,7 @@ impl GameView {
                                 } else {
                                     FontWeight::SEMIBOLD
                                 })
-                                .child(painting.title),
+                                .child(painting.title.as_ref().to_owned()),
                         ),
                     )
                     .child(
@@ -586,7 +638,9 @@ impl GameView {
                 let height = (width / self.painting().aspect).min(limit);
                 panel.child(
                     div().h(px(height)).flex().justify_center().child(
-                        img(self.painting().asset)
+                        self.painting()
+                            .source
+                            .image()
                             .w(px(height * self.painting().aspect))
                             .h_full()
                             .object_fit(ObjectFit::Fill)
@@ -794,7 +848,7 @@ impl Render for GameView {
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.gallery(available, cx))
+            .child(self.gallery_panel(available, cx))
             .child(div().h(px(1.)).bg(rgb(t::colors(cx).border)))
             .child(self.toolbar(tray_layout, cx))
             .child(

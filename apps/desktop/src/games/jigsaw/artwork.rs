@@ -1,10 +1,12 @@
-use std::{io::Cursor, sync::Arc};
+use std::{fs, io::Cursor, sync::Arc};
 
 use corner_table_jigsaw::{OutlinePoint, Size, piece_outline};
 use gpui::{AssetSource as _, RenderImage};
 use image::{DynamicImage, Frame, ImageDecoder as _, ImageFormat, ImageReader, RgbImage, Rgba};
 
 use crate::assets::Assets;
+
+use super::PictureSource;
 
 pub(super) struct PieceArt {
     pub outline: Arc<[OutlinePoint]>,
@@ -16,10 +18,13 @@ pub(super) struct PieceArt {
     pub aspect: f32,
 }
 
-pub(super) fn cut_painting(asset: &str, size: Size) -> anyhow::Result<Vec<PieceArt>> {
-    let bytes = Assets
-        .load(asset)?
-        .ok_or_else(|| anyhow::anyhow!("Missing painting {asset}"))?;
+pub(super) fn cut_painting(source: &PictureSource, size: Size) -> anyhow::Result<Vec<PieceArt>> {
+    let bytes = match source {
+        PictureSource::Bundled(asset) => Assets
+            .load(asset)?
+            .ok_or_else(|| anyhow::anyhow!("Missing painting {asset}"))?,
+        PictureSource::Local(path) => fs::read(path)?.into(),
+    };
     let mut decoder =
         ImageReader::with_format(Cursor::new(bytes), ImageFormat::Jpeg).into_decoder()?;
     let orientation = decoder.orientation()?;
@@ -106,6 +111,14 @@ fn cut_piece(painting: &RgbImage, size: Size, piece: usize) -> PieceArt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_bundled_paintings_still_resolve_and_cut() {
+        for painting in super::super::GALLERY {
+            let pieces = cut_painting(&painting.source, Size::Twelve).unwrap();
+            assert_eq!(pieces.len(), Size::Twelve.piece_count());
+        }
+    }
 
     #[test]
     fn the_cutouts_cover_each_source_pixel_once() {

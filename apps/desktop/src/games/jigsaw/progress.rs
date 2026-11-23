@@ -19,16 +19,17 @@ struct SavedKey {
 }
 
 impl SavedKey {
-    fn new(key: PuzzleKey) -> Self {
+    fn new(key: PuzzleKey, gallery: &super::Gallery) -> Self {
         Self {
-            painting: GALLERY[key.painting].id.into(),
+            painting: gallery.painting(key.painting).id.to_string(),
             pieces: key.size.piece_count(),
         }
     }
 
-    fn resolve(&self) -> Option<PuzzleKey> {
+    fn resolve(&self, gallery: &super::Gallery) -> Option<PuzzleKey> {
         let painting = GALLERY
             .iter()
+            .chain(gallery.photos())
             .position(|painting| painting.id == self.painting)?;
         let size = Size::ALL
             .into_iter()
@@ -65,9 +66,9 @@ struct SavedSwap {
 }
 
 impl SavedRound {
-    fn new(key: PuzzleKey, round: &Round) -> Self {
+    fn new(key: PuzzleKey, round: &Round, gallery: &super::Gallery) -> Self {
         Self {
-            key: SavedKey::new(key),
+            key: SavedKey::new(key, gallery),
             assembly: SavedAssembly {
                 seed: round.assembly_deal,
                 placements: round.assembly.placements().to_vec(),
@@ -84,8 +85,8 @@ impl SavedRound {
         }
     }
 
-    fn restore(self) -> Option<(PuzzleKey, Round)> {
-        let key = self.key.resolve()?;
+    fn restore(self, gallery: &super::Gallery) -> Option<(PuzzleKey, Round)> {
+        let key = self.key.resolve(gallery)?;
         let mut assembly = Assembly::new(key.size, self.assembly.seed);
         let valid = self.assembly.placements.into_iter().all(|piece| {
             matches!(
@@ -136,7 +137,7 @@ impl SavedRound {
 
 impl GameView {
     pub(super) fn restore(&mut self, saved: SavedGallery) {
-        if let Some(active) = saved.active.resolve() {
+        if let Some(active) = saved.active.resolve(&self.gallery) {
             self.key = active;
         }
         self.mode = saved.mode;
@@ -145,17 +146,17 @@ impl GameView {
         self.rounds = saved
             .rounds
             .into_iter()
-            .filter_map(SavedRound::restore)
+            .filter_map(|round| round.restore(&self.gallery))
             .collect();
     }
 
     pub(super) fn save(&self) {
-        let rounds = (0..GALLERY.len())
+        let rounds = (0..GALLERY.len() + self.gallery.photos().len())
             .flat_map(|painting| Size::ALL.map(|size| PuzzleKey { painting, size }))
-            .filter_map(|key| Some(SavedRound::new(key, self.rounds.get(&key)?)))
+            .filter_map(|key| Some(SavedRound::new(key, self.rounds.get(&key)?, &self.gallery)))
             .collect();
         self.storage.save(&SavedGallery {
-            active: SavedKey::new(self.key),
+            active: SavedKey::new(self.key, &self.gallery),
             mode: self.mode,
             reference: self.reference,
             seed: self.seed,
@@ -168,10 +169,12 @@ impl GameView {
 mod tests {
     use corner_table_jigsaw::{Selection, TrayFilter};
 
+    use super::super::Gallery;
     use super::*;
 
     #[test]
     fn round_trip_keeps_both_modes_and_the_assembly_undo_order() {
+        let gallery = Gallery::default();
         let key = PuzzleKey {
             painting: 4,
             size: Size::FortyEight,
@@ -184,11 +187,11 @@ mod tests {
         round.swap_deal = 99;
         round.swap = Puzzle::with_size(key.size, round.swap_deal);
         assert_eq!(round.swap.swap(2, 17), Selection::Swapped);
-        let saved = serde_json::to_string(&SavedRound::new(key, &round)).unwrap();
+        let saved = serde_json::to_string(&SavedRound::new(key, &round, &gallery)).unwrap();
         assert!(saved.contains("orchard-market"));
         let (loaded_key, mut loaded) = serde_json::from_str::<SavedRound>(&saved)
             .unwrap()
-            .restore()
+            .restore(&gallery)
             .unwrap();
 
         assert!(loaded_key == key);
@@ -237,6 +240,7 @@ mod tests {
 
     #[test]
     fn an_invalid_board_keeps_the_other_mode_playable() {
+        let gallery = Gallery::default();
         let key = PuzzleKey {
             painting: 2,
             size: Size::TwentyFour,
@@ -245,16 +249,47 @@ mod tests {
         round.assembly.place(0, 0);
         round.swap.swap(0, 1);
 
-        let mut saved = SavedRound::new(key, &round);
+        let mut saved = SavedRound::new(key, &round, &gallery);
         saved.assembly.placements.push(0);
-        let (_, restored) = saved.restore().unwrap();
+        let (_, restored) = saved.restore(&gallery).unwrap();
         assert_eq!(restored.assembly.placed_count(), 0);
         assert_eq!(restored.swap.moves(), 1);
 
-        let mut saved = SavedRound::new(key, &round);
+        let mut saved = SavedRound::new(key, &round, &gallery);
         saved.swap.tiles[1] = saved.swap.tiles[0];
-        let (_, restored) = saved.restore().unwrap();
+        let (_, restored) = saved.restore(&gallery).unwrap();
         assert_eq!(restored.assembly.placed_count(), 1);
         assert_eq!(restored.swap.moves(), 0);
+    }
+
+    #[test]
+    fn a_photo_round_resolves_by_id_if_its_gallery_position_changes() {
+        use super::super::photos;
+        use std::fs;
+
+        let directory = tempfile::tempdir().unwrap();
+        let add_photo = |id: &str| {
+            let path = directory.path().join(id);
+            fs::create_dir(&path).unwrap();
+            fs::File::create(path.join(photos::PICTURE)).unwrap();
+            fs::File::create(path.join(photos::THUMBNAIL)).unwrap();
+        };
+        add_photo("photo-002");
+        let gallery = Gallery::load(Some(directory.path().into()));
+        let key = PuzzleKey {
+            painting: GALLERY.len(),
+            size: Size::Twelve,
+        };
+        let mut round = Round::new(key.size, 20);
+        round.assembly.place(2, 2);
+        assert_eq!(round.swap.swap(0, 1), Selection::Swapped);
+        let saved = SavedRound::new(key, &round, &gallery);
+
+        add_photo("photo-001");
+        let gallery = Gallery::load(Some(directory.path().into()));
+        let (key, restored) = saved.restore(&gallery).unwrap();
+        assert_eq!(key.painting, GALLERY.len() + 1);
+        assert_eq!(restored.assembly.placements(), &[2]);
+        assert_eq!(restored.swap.pieces(), round.swap.pieces());
     }
 }

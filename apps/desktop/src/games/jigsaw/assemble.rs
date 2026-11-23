@@ -265,7 +265,9 @@ impl GameView {
         if round.assembly.is_complete() {
             return framed_board(
                 board.child(
-                    img(self.painting().asset)
+                    self.painting()
+                        .source
+                        .image()
                         .size_full()
                         .object_fit(ObjectFit::Fill),
                 ),
@@ -340,7 +342,7 @@ impl GameView {
                 }))
                 .when(self.reference() == Reference::Ghost, |board| {
                     board.child(
-                        img(self.painting().asset)
+                        self.painting().source.image()
                             .absolute()
                             .inset_0()
                             .size_full()

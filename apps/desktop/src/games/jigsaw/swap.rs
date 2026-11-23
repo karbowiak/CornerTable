@@ -1,20 +1,18 @@
 use corner_table_jigsaw::{Selection, Size};
-use gpui::{
-    Context, Div, ObjectFit, Render, Role, Stateful, Window, div, img, prelude::*, px, rgb,
-};
+use gpui::{Context, Div, ObjectFit, Render, Role, Stateful, Window, div, prelude::*, px, rgb};
 
 use crate::{
     audio::{self, Effect},
     theme as t,
 };
 
-use super::{GameView, Mode, PuzzleKey, framed_board};
+use super::{GameView, Mode, PictureSource, PuzzleKey, framed_board};
 
 const GAP: f32 = 2.;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct TileImage {
-    asset: &'static str,
+    source: PictureSource,
     size: Size,
     piece: usize,
     width: f32,
@@ -22,7 +20,7 @@ struct TileImage {
 }
 
 impl TileImage {
-    fn render(self) -> Div {
+    fn render(&self) -> Div {
         let (columns, rows) = self.size.dimensions();
         let image_width = self.width * columns as f32;
         let image_height = self.height * rows as f32;
@@ -35,7 +33,8 @@ impl TileImage {
             .relative()
             .overflow_hidden()
             .child(
-                img(self.asset)
+                self.source
+                    .image()
                     .absolute()
                     .left(px(-x))
                     .top(px(-y))
@@ -46,7 +45,7 @@ impl TileImage {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DraggedTile {
     key: PuzzleKey,
     deal: u64,
@@ -84,7 +83,7 @@ impl GameView {
         let selected = puzzle.selected() == Some(position);
         let placed = piece == position;
         let tile = TileImage {
-            asset: self.painting().asset,
+            source: self.painting().source.clone(),
             size: self.key.size,
             piece,
             width,
@@ -125,7 +124,7 @@ impl GameView {
                     position,
                     tile,
                 },
-                |drag, _, _, cx| cx.new(|_| *drag),
+                |drag, _, _, cx| cx.new(|_| drag.clone()),
             )
             .on_drop(cx.listener(move |view, dragged: &DraggedTile, _, cx| {
                 if view.mode == Mode::Swap
@@ -154,7 +153,9 @@ impl GameView {
                 .w(px(width))
                 .h(px(width / self.painting().aspect))
                 .child(
-                    img(self.painting().asset)
+                    self.painting()
+                        .source
+                        .image()
                         .size_full()
                         .object_fit(ObjectFit::Fill),
                 )
