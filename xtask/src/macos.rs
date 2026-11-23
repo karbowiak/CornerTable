@@ -57,6 +57,12 @@ pub fn bundle(root: &Path) -> Result<()> {
         Err(error) => return Err(error).context("read packaging/macos/icon.png"),
     }
     run(Command::new("plutil").arg("-lint").arg(&plist))?;
+    run(Command::new("codesign")
+        .args(["--force", "--sign", "-", "--timestamp=none"])
+        .arg(&staged_app))?;
+    run(Command::new("codesign")
+        .args(["--verify", "--strict"])
+        .arg(&staged_app))?;
 
     let destination = target.join(APPLICATION);
     let lock = fs::File::create(target.join(".corner-table-bundle.lock"))?;

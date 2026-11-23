@@ -27,8 +27,8 @@ open "target/Corner Table.app"
 The bundle contains a release build for your Mac's architecture, with the
 artwork, fonts, and sample data embedded in the executable. You can also open it
 in Finder. The app version comes from Cargo and the minimum macOS version
-comes from the executable's deployment target. This command builds an app for
-local use. Add or replace `packaging/macos/icon.png` with a 1024×1024 PNG and
+comes from the executable's deployment target. The command signs the bundle
+locally with an ad hoc signature. Add or replace `packaging/macos/icon.png` with a 1024×1024 PNG and
 rerun the command to update the app icon. The bundle uses the default macOS
 app icon when that file is absent.
 
