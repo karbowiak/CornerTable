@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use corner_table_api::{FixtureApi, GameId, Period};
+use corner_table_api::{FixtureApi, GameId};
 use gpui::{
     AnyView, Context, Entity, FocusHandle, MouseButton, NavigationDirection, Pixels, Point,
     ScrollHandle, Task, Window, div, point, prelude::*, px, rgb,
@@ -31,7 +31,7 @@ pub enum Page {
     Library,
     Solitaire,
     DailyChallenge,
-    Leaderboard,
+    Records,
     Game(GameLaunch),
 }
 
@@ -40,9 +40,7 @@ pub enum Action {
     Navigate(Page),
     History(NavigationDirection),
     OpenGame(GameId),
-    ToggleGamePicker,
-    SelectGame(GameId),
-    SelectPeriod(Period),
+    Record(pages::RecordAction),
     ToggleFavorite(GameId),
     FilterLibrary(pages::LibraryFilter),
     SetAppearance(theme::Appearance),
@@ -59,9 +57,7 @@ struct Visit {
 pub struct Desktop {
     pub api: FixtureApi,
     pub page: Page,
-    pub board_game: GameId,
-    pub board_period: Period,
-    pub game_picker_open: bool,
+    pub records: pages::Records,
     pub search: Entity<SearchInput>,
     pub recent: Option<GameLaunch>,
     pub favorites: Vec<GameId>,
@@ -75,6 +71,7 @@ pub struct Desktop {
     games: HashMap<GameLaunch, AnyView>,
     current_size: storage::WindowSize,
     remember_size: Option<Task<()>>,
+    reload_records: Option<Task<()>>,
     pub focus: FocusHandle,
 }
 
@@ -85,7 +82,6 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let board_game = api.home.challenge.game_id.clone();
         let recent = storage::recent_game().filter(|launch| api.game(&launch.game).is_some());
         let mut favorites = storage::favorites();
         favorites.retain(|id| api.game(id).is_some());
@@ -105,9 +101,7 @@ impl Desktop {
         Self {
             api,
             page: Page::Library,
-            board_game,
-            board_period: Period::Today,
-            game_picker_open: false,
+            records: pages::Records::default(),
             search,
             recent,
             favorites,
@@ -121,6 +115,7 @@ impl Desktop {
             games: HashMap::new(),
             current_size: Self::window_size(window),
             remember_size: None,
+            reload_records: None,
             focus,
         }
     }
@@ -161,12 +156,7 @@ impl Desktop {
                 game,
                 entry: GameEntry::Classic,
             })),
-            Action::ToggleGamePicker => self.game_picker_open = !self.game_picker_open,
-            Action::SelectGame(game) => {
-                self.board_game = game;
-                self.game_picker_open = false;
-            }
-            Action::SelectPeriod(period) => self.board_period = period,
+            Action::Record(action) => self.records.apply(action),
             Action::ToggleFavorite(game) => {
                 if let Some(index) = self.favorites.iter().position(|id| id == &game) {
                     self.favorites.remove(index);
@@ -205,6 +195,9 @@ impl Desktop {
         if self.page != previous {
             self.guide.dismiss();
             self.focus.focus(window, cx);
+            if matches!(self.page, Page::Records | Page::DailyChallenge) {
+                self.refresh_records(cx);
+            }
         }
         cx.notify();
     }
@@ -256,8 +249,21 @@ impl Desktop {
             storage::remember_game(launch);
             self.recent = Some(launch.clone());
         }
-        self.game_picker_open = false;
+        self.records.close_picker();
         self.scroll.set_offset(visit.scroll);
+    }
+
+    fn refresh_records(&mut self, cx: &mut Context<Self>) {
+        self.reload_records = Some(cx.spawn(async |desktop, cx| {
+            let history = cx
+                .background_executor()
+                .spawn(async { storage::recent_results(usize::MAX) })
+                .await;
+            let _ = desktop.update(cx, |desktop, cx| {
+                desktop.records.history = Some(history);
+                cx.notify();
+            });
+        }));
     }
 
     fn search_result(&self, cx: &Context<Self>) -> Option<GameId> {
@@ -285,8 +291,8 @@ impl Render for Desktop {
         let content = match &self.page {
             Page::Library => pages::library(self, window.viewport_size().width.into(), cx),
             Page::Solitaire => pages::solitaire(self, narrow, cx),
-            Page::DailyChallenge => pages::daily_challenge(cx),
-            Page::Leaderboard => pages::leaderboard(self, narrow, cx),
+            Page::DailyChallenge => pages::daily_challenge(self, cx),
+            Page::Records => pages::records(self, narrow, cx),
             Page::Game(launch) => {
                 if !self.games.contains_key(launch)
                     && let Some(view) = crate::games::open(launch, cx)
@@ -455,7 +461,7 @@ mod tests {
         );
         window
             .update(cx, |desktop, window, cx| {
-                desktop.dispatch(Action::Navigate(Page::Leaderboard), window, cx);
+                desktop.dispatch(Action::Navigate(Page::Records), window, cx);
                 assert!(!desktop.can_step_history(NavigationDirection::Forward));
             })
             .unwrap();

@@ -61,6 +61,7 @@ impl Default for AttemptId {
 pub enum Outcome {
     Won,
     Lost,
+    Draw,
     Finished,
 }
 
@@ -69,7 +70,9 @@ pub enum Outcome {
 pub enum ResultMetric {
     Moves(u64),
     Pairs(u64),
+    Discs(u64),
     Points(u64),
+    PenaltyPoints(u64),
     TimeMillis(u64),
 }
 

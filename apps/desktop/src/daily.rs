@@ -4,7 +4,7 @@ use chrono::{Datelike as _, Days, NaiveDate, Utc};
 use corner_table_api::GameId;
 
 use crate::games::{GameEntry, GameLaunch};
-use crate::storage::{self, Outcome};
+use crate::storage::{GameResult, Outcome};
 
 pub struct DailyPuzzle {
     pub date: NaiveDate,
@@ -78,9 +78,9 @@ pub fn from_launch(launch: &GameLaunch) -> Option<DailyPuzzle> {
     (daily.launch() == *launch).then_some(daily)
 }
 
-pub fn completed_days() -> HashSet<NaiveDate> {
-    storage::recent_results(usize::MAX)
-        .into_iter()
+pub fn completed_days(results: &[GameResult]) -> HashSet<NaiveDate> {
+    results
+        .iter()
         .filter(|result| result.outcome == Outcome::Won)
         .filter_map(|result| from_launch(result.launch.as_ref()?))
         .map(|puzzle| puzzle.date)

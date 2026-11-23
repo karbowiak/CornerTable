@@ -1,11 +1,11 @@
 mod guide;
-mod leaderboard;
 mod library;
+mod records;
 mod solitaire;
 
 pub use guide::GuideOverlay;
-pub use leaderboard::leaderboard;
 pub use library::{LibraryFilter, library, matching_games};
+pub use records::{RecordAction, Records, records};
 pub use solitaire::solitaire;
 
 use gpui::{AnyView, Context, Div, Role, div, prelude::*, px, rgb};
@@ -14,10 +14,10 @@ use crate::app::{Action, Desktop, Page};
 use crate::games::{GameEntry, GameLaunch};
 use crate::{daily, theme as t, widgets};
 
-pub fn daily_challenge(cx: &Context<Desktop>) -> Div {
+pub fn daily_challenge(app: &Desktop, cx: &Context<Desktop>) -> Div {
     let today = daily::today();
     let palette = t::colors(cx);
-    let completed = daily::completed_days();
+    let completed = daily::completed_days(app.records.history.as_deref().unwrap_or_default());
     let streak = daily::current_streak(today.date, &completed);
     let won_today = completed.contains(&today.date);
     div()
@@ -38,10 +38,14 @@ pub fn daily_challenge(cx: &Context<Desktop>) -> Div {
                         .items_center()
                         .gap_3()
                         .when(streak != 0, |details| {
+                            let label = format!("{streak}-day streak");
                             details.child(
                                 div()
+                                    .id("daily-streak")
+                                    .role(Role::Label)
+                                    .aria_label(label.clone())
                                     .text_color(rgb(palette.success))
-                                    .child(format!("{streak}-day streak")),
+                                    .child(label),
                             )
                         })
                         .child(
@@ -74,7 +78,14 @@ pub fn daily_challenge(cx: &Context<Desktop>) -> Div {
                 .gap_3()
                 .child(div().text_color(rgb(palette.muted)).child(today.objective))
                 .when(won_today, |status| {
-                    status.child(div().text_color(rgb(palette.success)).child("Completed"))
+                    status.child(
+                        div()
+                            .id("daily-completed")
+                            .role(Role::Label)
+                            .aria_label("Completed")
+                            .text_color(rgb(palette.success))
+                            .child("Completed"),
+                    )
                 }),
         )
         .child(

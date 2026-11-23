@@ -69,12 +69,7 @@ pub fn sidebar(app: &Desktop, narrow: bool, short: bool, cx: &Context<Desktop>) 
             "Daily Challenge",
             Page::DailyChallenge,
         ),
-        (
-            "nav-leaderboard",
-            "trophy",
-            "Leaderboard",
-            Page::Leaderboard,
-        ),
+        ("nav-records", "trophy", "Records", Page::Records),
     ];
     div()
         .w(px(if narrow { 174. } else { 220. }))
@@ -326,21 +321,6 @@ fn history_button(
                     desktop.dispatch(Action::History(direction), window, cx);
                 }))
         })
-}
-
-pub fn avatar(label: &str, background: u32, foreground: u32) -> Div {
-    div()
-        .size(px(36.))
-        .flex_shrink_0()
-        .rounded_full()
-        .bg(rgb(background))
-        .text_color(rgb(foreground))
-        .text_size(px(12.))
-        .font_weight(FontWeight::BOLD)
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(label.to_owned())
 }
 
 pub fn symbol(name: &str, color: u32, size: f32) -> impl IntoElement {
