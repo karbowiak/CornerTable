@@ -1,3 +1,4 @@
+mod art;
 mod table;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +17,8 @@ use crate::{
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme,
 };
-use table::{TableColors, TableGeometry, TilePosition, face_name};
+use art::face_name;
+use table::{TableColors, TableGeometry, TilePosition};
 
 const INSTRUCTION: &str = "Match two free tiles with the same face.";
 const NO_MATCHES: &str = "No free pairs remain. Undo a move or restart.";

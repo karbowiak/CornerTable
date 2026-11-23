@@ -1,12 +1,15 @@
 use std::time::Duration;
 
-use corner_table_mahjong::{Board, Face, Tile};
+use corner_table_mahjong::{Board, Tile};
 use gpui::{
-    Animation, AnimationExt as _, BoxShadow, Context, Div, FontWeight, MouseButton, ObjectFit,
-    Role, Stateful, Window, div, img, linear_color_stop, linear_gradient, prelude::*, px, rgb, svg,
+    Animation, AnimationExt as _, BoxShadow, Context, Div, MouseButton, ObjectFit, Role, Stateful,
+    Window, div, img, linear_color_stop, linear_gradient, prelude::*, px, rgb,
 };
 
-use super::GameView;
+use super::{
+    GameView,
+    art::{Finish, Stamp, glaze},
+};
 use crate::{games::board_space, theme};
 
 const TILE_RATIO: f32 = 1.14;
@@ -119,101 +122,6 @@ impl TableGeometry {
     }
 }
 
-struct Emblem {
-    label: String,
-    name: String,
-    art: &'static str,
-    ink: u32,
-}
-
-impl From<Face> for Emblem {
-    fn from(face: Face) -> Self {
-        let (label, name, art, ink) = match face {
-            Face::Dots(rank) => (rank.to_string(), format!("Dots {rank}"), "berry", 0x274f6d),
-            Face::Bamboo(rank) => (
-                rank.to_string(),
-                format!("Bamboo {rank}"),
-                "bamboo",
-                0x26573d,
-            ),
-            Face::Characters(rank) => (
-                rank.to_string(),
-                format!("Characters {rank}"),
-                "character",
-                0x883a30,
-            ),
-            Face::Wind(letter) => (
-                letter.to_string(),
-                match letter {
-                    'E' => "East Wind",
-                    'S' => "South Wind",
-                    'W' => "West Wind",
-                    _ => "North Wind",
-                }
-                .into(),
-                "wind",
-                0x315565,
-            ),
-            Face::Dragon(letter) => {
-                let (name, ink) = match letter {
-                    'R' => ("Red Dragon", 0x883a30),
-                    'G' => ("Green Dragon", 0x26573d),
-                    _ => ("White Dragon", 0x55465c),
-                };
-                (letter.to_string(), name.into(), "dragon", ink)
-            }
-            Face::Flower => ("F".into(), "Flower".into(), "flower", 0x903954),
-            Face::Season => ("S".into(), "Season".into(), "season", 0x734b26),
-        };
-        Self {
-            label,
-            name,
-            art,
-            ink,
-        }
-    }
-}
-
-pub(super) fn face_name(face: Face) -> String {
-    Emblem::from(face).name
-}
-
-#[derive(Clone, Copy)]
-struct Glaze {
-    face: [u32; 2],
-    rim: u32,
-    edge: u32,
-    bevel: u32,
-}
-
-const FREE: Glaze = Glaze {
-    face: [0xfffcf0, 0xf3e8cd],
-    rim: 0xb5a27b,
-    edge: 0x827357,
-    bevel: 0xfff9ea,
-};
-
-const BLOCKED: Glaze = Glaze {
-    face: [0xd9d3bc, 0xc4bea6],
-    rim: 0x989079,
-    edge: 0x807961,
-    bevel: 0xdcd5bb,
-};
-
-const SELECTED: Glaze = Glaze {
-    face: [0xffe7a8, 0xf1c97c],
-    rim: 0xba843c,
-    edge: 0x9a5a20,
-    bevel: 0xfff2cc,
-};
-
-const HINTED: Glaze = Glaze {
-    face: [0xe4f8d7, 0xaad9b0],
-    rim: 0x659b74,
-    edge: 0x245d45,
-    bevel: 0xe8ffc9,
-};
-
 fn gradient([top, bottom]: [u32; 2]) -> gpui::Background {
     linear_gradient(
         180.,
@@ -222,63 +130,39 @@ fn gradient([top, bottom]: [u32; 2]) -> gpui::Background {
     )
 }
 
-fn ceramic_tile(tile: &Tile, mark: &Emblem, geometry: TableGeometry, glaze: Glaze) -> Div {
+fn ceramic_tile(tile: &Tile, stamp: &Stamp, geometry: TableGeometry, finish: Finish) -> Div {
     let position = geometry.position(tile);
     let size = geometry.tile_size;
     let clearance = (size * 0.035).max(1.);
-    let thickness = (size * 0.075).max(2.);
+    let contact = BoxShadow::new(
+        px(-size * 0.014),
+        px(size * 0.023),
+        rgb(0x102019).opacity(0.53).into(),
+    )
+    .blur_radius(px(size * 0.038));
+    let mut shadows = vec![contact];
+    if tile.level > 0 {
+        // The stack steps up and right, so the lifted piece shades the part
+        // of its neighbor that remains visible to the left and below it.
+        shadows.push(
+            BoxShadow::new(
+                px(-size * 0.048),
+                px(size * 0.078),
+                rgb(0x202619).opacity(0.43).into(),
+            )
+            .blur_radius(px(size * 0.104)),
+        );
+    }
+
     div()
         .absolute()
         .left(px(position.x))
         .top(px(position.y))
         .w(px(size - clearance))
         .h(px(size * TILE_RATIO - clearance))
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(glaze.edge))
-        .bg(rgb(glaze.rim))
-        .when(tile.level > 0, |body| {
-            body.shadow(vec![
-                BoxShadow::new(
-                    px(-1.),
-                    px(thickness * 0.7),
-                    rgb(0x17150f).opacity(0.47).into(),
-                )
-                .blur_radius(px(thickness + 1.)),
-            ])
-        })
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .bottom(px(thickness))
-                .rounded_sm()
-                .border_1()
-                .border_color(rgb(glaze.bevel))
-                .bg(gradient(glaze.face))
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(mark.ink))
-                .child(
-                    div()
-                        .font_family(theme::DISPLAY)
-                        .font_weight(FontWeight::BOLD)
-                        .text_size(px(size * 0.39))
-                        .line_height(px(size * 0.43))
-                        .child(mark.label.clone()),
-                )
-                .child(
-                    svg()
-                        .path(format!("games/mahjong/{}.svg", mark.art))
-                        .w(px(size * 0.61))
-                        .h(px(size * 0.43))
-                        .text_color(rgb(mark.ink)),
-                ),
-        )
+        .rounded(px(size * 0.11))
+        .shadow(shadows)
+        .child(glaze(size, stamp, finish))
 }
 
 impl GameView {
@@ -293,36 +177,61 @@ impl GameView {
         let free = self.board.is_free(id);
         let selected = self.board.selected() == Some(id);
         let hinted = self.highlighted.is_some_and(|pair| pair.contains(&id));
-        let glaze = if selected {
-            SELECTED
+        let finish = if selected {
+            Finish::Selected
         } else if hinted {
-            HINTED
+            Finish::Hinted
         } else if free {
-            FREE
+            Finish::Free
         } else {
-            BLOCKED
+            Finish::Blocked
         };
-        let mark = Emblem::from(tile.face);
-        ceramic_tile(tile, &mark, geometry, glaze)
+        let stamp = Stamp::from(tile.face);
+        let size = geometry.tile_size;
+        ceramic_tile(tile, &stamp, geometry, finish)
             .id(("mahjong-tile", id))
             .block_mouse_except_scroll()
             .when(free, |tile| {
                 tile.role(Role::Button)
-                    .aria_label(mark.name)
+                    .aria_label(stamp.name)
                     .aria_selected(selected)
                     .when(hinted, |tile| tile.aria_description("Hinted pair"))
                     .cursor_pointer()
-                    .hover(|style| style.border_color(rgb(0x9b5d28)).bg(rgb(0xd6a66d)))
-                    .active(|style| style.border_color(rgb(0x643c20)))
+                    .group("mahjong-ceramic")
+                    .child(
+                        div()
+                            .id("mahjong-ceramic-rim")
+                            .absolute()
+                            .top(px(size * 0.018))
+                            .left(px(size * 0.068))
+                            .right(px(size * 0.023))
+                            .bottom(px(size * 0.131))
+                            .rounded(px(size * 0.084))
+                            .border_1()
+                            .border_color(rgb(0xfffdf1))
+                            .opacity(0.)
+                            .group_hover("mahjong-ceramic", |style| style.opacity(1.))
+                            .group_active("mahjong-ceramic", |style| {
+                                style.opacity(1.).border_color(rgb(0x705c39))
+                            }),
+                    )
             })
             .when(cursor == Some(id), |tile| {
                 tile.aria_active_descendant().child(
                     div()
                         .absolute()
                         .inset_0()
-                        .rounded_sm()
+                        .rounded(px(size * 0.11))
                         .border_2()
-                        .border_color(rgb(0x1b566b)),
+                        .border_color(rgb(0x224856))
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .rounded(px(size * 0.082))
+                                .border_1()
+                                .border_color(rgb(0xfff1ba)),
+                        ),
                 )
             })
             .on_click(cx.listener(move |view, _, window, cx| {
@@ -381,7 +290,7 @@ impl GameView {
                     .when_some(self.departure.as_ref(), |board, departure| {
                         board.children(departure.tiles.iter().enumerate().map(|(index, tile)| {
                             let top = geometry.position(tile).y;
-                            ceramic_tile(tile, &Emblem::from(tile.face), geometry, SELECTED)
+                            ceramic_tile(tile, &Stamp::from(tile.face), geometry, Finish::Matched)
                                 .with_animation(
                                     (
                                         "mahjong-match",
