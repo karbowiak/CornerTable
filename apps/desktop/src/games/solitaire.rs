@@ -1,11 +1,12 @@
 mod session;
+mod style;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use corner_table_solitaire::{Card, DealMode, Game, Move, Place, Suit, Variant};
 use gpui::{
     BoxShadow, Context, Div, EntityId, FontWeight, ObjectFit, Render, Role, SharedString, Stateful,
-    Window, div, img, prelude::*, px, rgb, rgba, svg,
+    Window, div, img, prelude::*, px, relative, rgb, rgba, svg,
 };
 
 use crate::{
@@ -14,16 +15,11 @@ use crate::{
     theme as t,
 };
 
-use self::session::{Deal, TableSession};
+use self::{
+    session::{Deal, TableSession},
+    style::{TablePalette, TableStyle},
+};
 
-const FELT: u32 = 0x153b30;
-const SLOT: u32 = 0x15392f;
-const SLOT_LINE: u32 = 0x5d8371;
-const FELT_LINE: u32 = 0xc7d7b33b;
-const LIGHT: u32 = 0xdae7d6;
-const FLAX: u32 = 0xf5dfaa;
-const STOCK_ART: &str = "games/solitaire/card-back.webp";
-const FELT_ART: &str = "games/solitaire/baize.webp";
 const CARD_RATIO: f32 = 1.4;
 const VERIFIED_DEAL_NOTE: &str =
     "A winning route was verified from the start. Moves can lead to dead ends.";
@@ -113,7 +109,8 @@ pub struct GameView {
 }
 
 impl GameView {
-    pub fn new(launch: &GameLaunch, _: &mut Context<Self>) -> Self {
+    pub fn new(launch: &GameLaunch, cx: &mut Context<Self>) -> Self {
+        TableStyle::init(cx);
         let variant = match &launch.entry {
             GameEntry::Mode(id) => Variant::from_id(id),
             GameEntry::Classic | GameEntry::Challenge(_) => Variant::Klondike,
@@ -282,6 +279,7 @@ impl GameView {
     ) -> Stateful<Div> {
         let owner = cx.entity_id();
         let view = cx.weak_entity();
+        let palette = TableStyle::active(cx).palette();
         let game = &self.deal.game;
         let selected = self.deal.selected == Some(place);
         let clickable = !game.won()
@@ -296,7 +294,7 @@ impl GameView {
             };
         let drag = self.drag_source(place, face, size, owner);
         let draggable = drag.is_some();
-        card_surface(face, size, selected)
+        card_surface(face, size, selected, palette)
             .id(SharedString::from(format!("solitaire-{place:?}")))
             .block_mouse_except_scroll()
             .when(clickable, |element| {
@@ -307,9 +305,12 @@ impl GameView {
                     .when(
                         !matches!(face, CardFace::Back) || place == Place::Stock,
                         |element| {
-                            element
-                                .tab_index(0)
-                                .focus(|style| style.border_color(rgb(FLAX)))
+                            element.tab_index(0).focus_visible(|style| {
+                                style.border_color(rgb(0x272730)).shadow(vec![
+                                    BoxShadow::new(px(0.), px(0.), rgb(palette.accent).into())
+                                        .spread_radius(px(2.)),
+                                ])
+                            })
                         },
                     )
                     .cursor_pointer()
@@ -337,13 +338,15 @@ impl GameView {
                     if let Some(action) = view.drop_action(drag, place, owner)
                         && view.deal.game.clone().play(action)
                     {
-                        let highlight = style.border_color(rgb(0xffcf73)).shadow(vec![
+                        let highlight = style.border_color(rgb(palette.accent)).shadow(vec![
                             BoxShadow::new(px(0.), px(2.), rgba(0x020c08b8).into())
                                 .blur_radius(px(7.))
                                 .spread_radius(px(2.)),
                         ]);
                         return if matches!(face, CardFace::Empty(_)) {
-                            highlight.bg(rgb(0x44745a)).text_color(rgb(0xfff4d7))
+                            highlight
+                                .bg(rgb(palette.drop_slot))
+                                .text_color(rgb(t::SURFACE))
                         } else {
                             highlight
                         };
@@ -376,6 +379,7 @@ impl GameView {
         labeled(
             format!("Stock  {}", game.stock.len()),
             self.card(Place::Stock, face, size, cx),
+            cx,
         )
     }
 
@@ -388,9 +392,10 @@ impl GameView {
             .map_or(CardFace::Empty(Slot::Plain), CardFace::Up);
         let top = self.card(Place::Waste, face, size, cx);
         if game.mode() != DealMode::KlondikeDrawThree {
-            return labeled("Waste", top);
+            return labeled("Waste", top, cx);
         }
 
+        let palette = TableStyle::active(cx).palette();
         let step = size.width * 0.46;
         let waste = &game.waste[game.waste.len().saturating_sub(3)..];
         let past_cards = waste.len().saturating_sub(1);
@@ -406,7 +411,7 @@ impl GameView {
                         div()
                             .absolute()
                             .left(px(index as f32 * step))
-                            .child(card_surface(CardFace::Up(card), size, false))
+                            .child(card_surface(CardFace::Up(card), size, false, palette))
                     }),
             )
             .child(
@@ -415,7 +420,7 @@ impl GameView {
                     .left(px(past_cards as f32 * step))
                     .child(top),
             );
-        labeled("Waste", fan)
+        labeled("Waste", fan, cx)
     }
 
     fn foundations(&self, size: CardSize, cx: &Context<Self>) -> Div {
@@ -431,6 +436,7 @@ impl GameView {
                         .map_or(CardFace::Empty(Slot::Foundation(kind)), CardFace::Up);
                     self.card(Place::Foundation(index), face, size, cx)
                 })),
+            cx,
         )
     }
 
@@ -452,6 +458,7 @@ impl GameView {
                         )
                     }),
             ),
+            cx,
         )
     }
 
@@ -638,7 +645,7 @@ impl GameView {
     }
 
     fn new_deal_button(id: &'static str, on_table: bool, cx: &Context<Self>) -> Stateful<Div> {
-        let focus_color = if on_table { FLAX } else { t::colors(cx).ink };
+        let focus_color = if on_table { t::INK } else { t::colors(cx).ink };
         div()
             .id(id)
             .role(Role::Button)
@@ -692,6 +699,7 @@ impl GameView {
 
     fn finish(&self, cx: &Context<Self>) -> Div {
         let moves = self.deal.game.moves;
+        let palette = TableStyle::active(cx).palette();
         div()
             .flex_1()
             .w_full()
@@ -707,12 +715,12 @@ impl GameView {
                 svg()
                     .path("icons/solitaire.svg")
                     .size(px(30.))
-                    .text_color(rgb(FLAX)),
+                    .text_color(rgb(palette.accent)),
             )
             .child(t::display_type("Table cleared", 31.).text_color(rgb(0xfff3d9)))
             .child(
                 div()
-                    .text_color(rgb(LIGHT))
+                    .text_color(rgb(palette.text))
                     .child(format!("Won in {moves} moves")),
             )
             .child(
@@ -758,6 +766,8 @@ impl GameView {
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let game = &self.deal.game;
+        let style = TableStyle::active(cx);
+        let palette = style.palette();
         let table = TableSize::new(game, window, self.show_title);
         let won = game.won();
         let stalled = game.layout_stalled();
@@ -815,15 +825,15 @@ impl Render for GameView {
                     .overflow_hidden()
                     .rounded_xl()
                     .border_1()
-                    .border_color(rgb(0x0d2d24))
-                    .bg(rgb(FELT))
+                    .border_color(rgb(palette.frame))
+                    .bg(rgb(palette.surface))
                     .child(
-                        img(FELT_ART)
+                        palette
+                            .surface_image()
                             .absolute()
                             .inset_0()
                             .size_full()
-                            .rounded_xl()
-                            .object_fit(ObjectFit::Fill),
+                            .rounded_xl(),
                     )
                     .child(
                         div()
@@ -831,7 +841,7 @@ impl Render for GameView {
                             .inset(px(5.))
                             .rounded_lg()
                             .border_1()
-                            .border_color(rgba(FELT_LINE)),
+                            .border_color(rgba(palette.rule)),
                     )
                     .child(
                         div()
@@ -845,21 +855,21 @@ impl Render for GameView {
                             .pt(px(14.))
                             .pb(px(11.))
                             .text_color(rgb(t::SURFACE))
-                            .child(score_strip(game, self.deal.best_moves()))
+                            .child(score_strip(game, self.deal.best_moves(), style))
                             .child(field)
                             .when(!won, |table| {
                                 table.child(
                                     div()
                                         .border_t_1()
-                                        .border_color(rgba(FELT_LINE))
+                                        .border_color(rgba(palette.rule))
                                         .pt_2()
                                         .text_size(px(13.))
                                         .line_height(px(19.))
                                         .text_color(rgb(
                                             if stalled || !self.deal.status.is_empty() {
-                                                FLAX
+                                                palette.accent
                                             } else {
-                                                LIGHT
+                                                palette.text
                                             },
                                         ))
                                         .child(self.note(stalled))
@@ -871,7 +881,7 @@ impl Render for GameView {
                                                         .id("solitaire-verified-deal-note")
                                                         .role(Role::Label)
                                                         .aria_label(VERIFIED_DEAL_NOTE)
-                                                        .text_color(rgb(LIGHT))
+                                                        .text_color(rgb(palette.text))
                                                         .child(VERIFIED_DEAL_NOTE),
                                                 )
                                             },
@@ -883,8 +893,8 @@ impl Render for GameView {
     }
 }
 
-fn score_strip(game: &Game, best_moves: Option<usize>) -> Div {
-    const METER_WIDTH: f32 = 75.;
+fn score_strip(game: &Game, best_moves: Option<usize>, style: TableStyle) -> Div {
+    let palette = style.palette();
     let (label, completed, total) = match game.variant {
         Variant::Klondike | Variant::FreeCell => ("Foundations", game.foundation_count(), 52),
         Variant::Spider => ("Runs cleared", game.runs, 8),
@@ -900,36 +910,44 @@ fn score_strip(game: &Game, best_moves: Option<usize>) -> Div {
         .justify_between()
         .items_center()
         .gap_2()
-        .pb_3()
+        .pb(px(7.))
         .border_b_1()
-        .border_color(rgba(FELT_LINE))
+        .border_color(rgba(palette.rule))
         .text_size(px(13.))
         .line_height(px(21.))
         .child(
             div()
                 .flex()
+                .min_w_0()
                 .items_center()
                 .gap_2()
-                .child(div().text_color(rgb(LIGHT)).child(label))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(rgb(palette.text))
+                        .child(label),
+                )
                 .child(
                     div()
                         .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(FLAX))
+                        .flex_shrink_0()
+                        .text_color(rgb(palette.accent))
                         .child(format!("{completed} / {total}")),
                 )
                 .child(
                     div()
                         .ml_1()
-                        .w(px(METER_WIDTH))
+                        .w(px(75.))
+                        .min_w_0()
                         .h(px(4.))
                         .rounded_full()
                         .overflow_hidden()
-                        .bg(rgb(0x426052))
+                        .bg(rgb(palette.meter))
                         .child(
                             div()
                                 .h_full()
-                                .w(px(METER_WIDTH * completed as f32 / total as f32))
-                                .bg(rgb(0xd9ba75)),
+                                .w(relative(completed as f32 / total as f32))
+                                .bg(rgb(palette.meter_fill)),
                         ),
                 ),
         )
@@ -937,6 +955,7 @@ fn score_strip(game: &Game, best_moves: Option<usize>) -> Div {
             div()
                 .flex()
                 .items_center()
+                .flex_shrink_0()
                 .gap_2()
                 .when_some(best_moves, |strip, best| {
                     let label = format!("Best {best} moves");
@@ -946,21 +965,22 @@ fn score_strip(game: &Game, best_moves: Option<usize>) -> Div {
                             .role(Role::Label)
                             .aria_label(label.clone())
                             .mr_2()
-                            .text_color(rgb(LIGHT))
+                            .text_color(rgb(palette.text))
                             .child(label),
                     )
                 })
-                .child(div().text_color(rgb(LIGHT)).child("Moves"))
+                .child(div().text_color(rgb(palette.text)).child("Moves"))
                 .child(
                     div()
                         .px_2()
                         .min_w(px(26.))
                         .rounded_md()
-                        .bg(rgb(0x305747))
+                        .bg(rgb(palette.counter))
                         .text_center()
                         .font_weight(FontWeight::BOLD)
                         .child(game.moves.to_string()),
-                ),
+                )
+                .child(div().ml_2().child(style::picker(style))),
         )
 }
 
@@ -989,8 +1009,9 @@ struct CardDrag {
 }
 
 impl Render for CardDrag {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let step = self.size.face_step;
+        let palette = TableStyle::active(cx).palette();
         div().pl(px(3.)).pt(px(4.)).child(
             div()
                 .relative()
@@ -1004,8 +1025,8 @@ impl Render for CardDrag {
                         .top(px(index as f32 * step))
                         .left_0()
                         .child(
-                            card_surface(CardFace::Up(card), self.size, false)
-                                .border_color(rgb(0xe4c27c))
+                            card_surface(CardFace::Up(card), self.size, false, palette)
+                                .border_color(rgb(palette.accent))
                                 .shadow(vec![
                                     BoxShadow::new(px(1.), px(5.), rgba(0x070d09a8).into())
                                         .blur_radius(px(14.)),
@@ -1016,7 +1037,7 @@ impl Render for CardDrag {
     }
 }
 
-fn card_surface(face: CardFace, size: CardSize, selected: bool) -> Div {
+fn card_surface(face: CardFace, size: CardSize, selected: bool, palette: &TablePalette) -> Div {
     let width = size.width;
     let card = div()
         .relative()
@@ -1033,34 +1054,33 @@ fn card_surface(face: CardFace, size: CardSize, selected: bool) -> Div {
 
     match face {
         CardFace::Empty(mark) => card
-            .bg(rgb(SLOT))
-            .border_color(rgb(SLOT_LINE))
-            .text_color(rgb(0xaac2aa))
+            .bg(rgb(palette.slot))
+            .border_color(rgb(palette.slot_border))
+            .text_color(rgb(palette.slot_mark))
             .flex()
             .items_center()
             .justify_center()
             .child(match mark {
-                Slot::Plain => div().w(px(width * 0.16)).h(px(1.)).bg(rgb(SLOT_LINE)),
+                Slot::Plain => div()
+                    .w(px(width * 0.16))
+                    .h(px(1.))
+                    .bg(rgb(palette.slot_border)),
                 Slot::Recycle => card_symbol("↺", width * 0.36),
                 Slot::Foundation(suit) => card_symbol(suit_mark(suit), width * 0.32),
             }),
         CardFace::Back => {
             let radius = px((width * 0.053).clamp(2., 7.));
+            let back = &palette.back;
             floating(card)
-                .bg(rgb(0xe7d4ac))
-                .border_color(rgb(0xccb38a))
+                .bg(rgb(back.paper))
+                .border_color(rgb(back.edge))
                 .child(
                     div()
                         .absolute()
                         .inset(px((width * 0.025).clamp(1., 3.)))
                         .rounded(radius)
-                        .bg(rgb(0x214b52))
-                        .child(
-                            img(STOCK_ART)
-                                .size_full()
-                                .rounded(radius)
-                                .object_fit(ObjectFit::Fill),
-                        ),
+                        .bg(rgb(back.field))
+                        .child(back.image().size_full().rounded(radius)),
                 )
         }
         CardFace::Up(value) | CardFace::Covered(value) => {
@@ -1287,12 +1307,16 @@ fn mode_label(mode: DealMode) -> &'static str {
     }
 }
 
-fn labeled(label: impl Into<SharedString>, content: impl IntoElement) -> Div {
+fn labeled(
+    label: impl Into<SharedString>,
+    content: impl IntoElement,
+    cx: &Context<GameView>,
+) -> Div {
     div().flex().flex_col().gap(px(5.)).child(content).child(
         div()
             .text_size(px(12.))
             .line_height(px(16.))
-            .text_color(rgb(LIGHT))
+            .text_color(rgb(TableStyle::active(cx).palette().text))
             .child(label.into()),
     )
 }
