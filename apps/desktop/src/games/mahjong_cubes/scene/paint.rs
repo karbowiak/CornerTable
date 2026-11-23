@@ -26,12 +26,13 @@ impl Scene {
         self.paint_shadows(window);
 
         if let Some(pair) = states.fading {
-            let progress = pair.at.elapsed().as_secs_f32() / 0.24;
+            let progress = pair.at.elapsed().as_secs_f32() / 0.21;
             if progress < 1. {
+                let lift = 1. - (1. - progress).powi(3);
                 let mut outlines = PathBuilder::stroke(px(1.6));
                 for id in pair.ids {
-                    let center = self.original[id] + Vec3::Z * (0.51 + progress * 0.22);
-                    let radius = (CUBE_HALF.x - 0.03) * (1. - progress * 0.16);
+                    let center = self.original[id] + Vec3::Z * (0.51 + lift * 0.22);
+                    let radius = (CUBE_HALF.x - 0.03) * (1. - lift * 0.12);
                     let ring = octagon(radius, radius, 0.11)
                         .map(|offset| self.camera.project(center + offset));
                     add_polygon(&mut outlines, &ring);
@@ -39,7 +40,7 @@ impl Scene {
                 paint(
                     window,
                     outlines,
-                    rgb(0xffdb99).opacity(0.9 * (1. - progress)),
+                    rgb(0xffdb99).opacity(0.9 * (1. - progress.powi(2))),
                 );
                 window.request_animation_frame();
             }

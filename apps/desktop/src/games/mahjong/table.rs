@@ -10,7 +10,7 @@ use super::{
     GameView,
     art::{Finish, Stamp, glaze},
 };
-use crate::{games::board_space, theme};
+use crate::{games::board_space, motion, storage::Outcome, theme};
 
 const TILE_RATIO: f32 = 1.14;
 const LAYER_OFFSET: f32 = 0.089;
@@ -73,15 +73,21 @@ pub(super) struct TableGeometry {
 }
 
 impl TableGeometry {
-    pub(super) fn for_window(board: &Board, daily: bool, window: &Window) -> Self {
-        // Reserve the shell title, toolbar and feedback, plus the classic
-        // layout picker. The complete footprint stays fixed during the deal.
+    pub(super) fn for_window(
+        board: &Board,
+        daily: bool,
+        outcome: Option<Outcome>,
+        window: &Window,
+    ) -> Self {
         let chrome = if daily { 148. } else { 196. };
-        Self::fit(
-            board,
-            board_space(window),
-            f32::from(window.viewport_size().height) - chrome,
-        )
+        let height = f32::from(window.viewport_size().height) - chrome;
+        // Make room for recovery while keeping the remaining tiles visible.
+        let height = match outcome {
+            Some(Outcome::Won) => (height - 96.).min(248.),
+            Some(Outcome::Lost) => height - 96.,
+            _ => height,
+        };
+        Self::fit(board, board_space(window), height)
     }
 
     fn fit(board: &Board, available_width: f32, available_height: f32) -> Self {
@@ -251,6 +257,7 @@ impl GameView {
         let cursor = (self.focus.is_focused(window) && window.last_input_was_keyboard())
             .then(|| self.focused_tile())
             .flatten();
+        let departing = self.departure.as_ref().filter(|_| motion::enabled(cx));
         let felt = div()
             .relative()
             .flex()
@@ -287,60 +294,26 @@ impl GameView {
                             self.interactive_tile(id, tile, geometry, cursor, cx)
                         }),
                     )
-                    .when_some(self.departure.as_ref(), |board, departure| {
+                    .when_some(departing, |board, departure| {
                         board.children(departure.tiles.iter().enumerate().map(|(index, tile)| {
                             let top = geometry.position(tile).y;
+                            let rise = (size * 0.16).clamp(4., 8.);
                             ceramic_tile(tile, &Stamp::from(tile.face), geometry, Finish::Matched)
                                 .with_animation(
                                     (
                                         "mahjong-match",
                                         departure.sequence.wrapping_mul(2).wrapping_add(index),
                                     ),
-                                    Animation::new(Duration::from_millis(230)),
+                                    Animation::new(Duration::from_millis(210)),
                                     move |tile, progress| {
                                         let lift = 1. - (1. - progress).powi(3);
-                                        tile.top(px(top - 8. * lift))
-                                            .opacity((1. - progress).powi(2))
+                                        tile.top(px(top - rise * lift))
+                                            .opacity(1. - progress.powi(2))
                                     },
                                 )
                         }))
                     }),
-            )
-            .when(self.board.remaining() == 0, |felt| {
-                felt.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .id("mahjong-cleared")
-                                .role(Role::Status)
-                                .aria_label(self.cleared_title())
-                                .px_6()
-                                .py_3()
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(rgb(0x9f9871))
-                                .bg(rgb(0x15392d))
-                                .text_color(rgb(0xfff2d2))
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .gap_1()
-                                .child(theme::display_type(self.cleared_title(), 24.))
-                                .when(self.clean_clear && self.board.used_assistance(), |result| {
-                                    let detail =
-                                        "Clean Clear requires a deal without Hint or Undo.";
-                                    result
-                                        .aria_description(detail)
-                                        .child(div().text_size(px(13.)).child(detail))
-                                }),
-                        ),
-                )
-            });
+            );
 
         div()
             .id("mahjong-table")
@@ -418,7 +391,7 @@ mod tests {
         let footprint = visual.debug_bounds("mahjong-footprint").unwrap();
         let (top, overlap, exposed) = window
             .update(cx, |view, window, _| {
-                let geometry = TableGeometry::for_window(&view.board, false, window);
+                let geometry = TableGeometry::for_window(&view.board, false, None, window);
                 let id_at = |x, y, level| {
                     view.board
                         .tiles()

@@ -16,9 +16,10 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{GameEntry, GameLaunch};
+use super::{GameEntry, GameLaunch, round_result};
 use crate::{
     audio::{self, Effect},
+    motion,
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme,
 };
@@ -280,12 +281,12 @@ impl GameView {
                         ResultMetric::Pairs(self.board.moves().len() as u64),
                     );
                 }
-                self.fading = Some(FadingPair {
+                self.fading = motion::enabled(cx).then(|| FadingPair {
                     ids,
                     at: Instant::now(),
                 });
                 (
-                    None,
+                    Some("Pair matched."),
                     if won {
                         Effect::Complete
                     } else {
@@ -421,7 +422,7 @@ impl GameView {
         INSTRUCTION.to_owned()
     }
 
-    fn layouts(&self, narrow: bool, cx: &Context<Self>) -> Div {
+    fn layouts(&self, narrow: bool, in_play: bool, cx: &Context<Self>) -> Div {
         let strip = div()
             .flex()
             .flex_wrap()
@@ -433,7 +434,7 @@ impl GameView {
                     layout.name(),
                     true,
                     Some(self.table == Table::Layout(layout)),
-                    move |view, _| view.switch_table(Table::Layout(layout)),
+                    move |view, _, _| view.switch_table(Table::Layout(layout)),
                     cx,
                 )
                 .when(narrow, |button| button.px_2())
@@ -444,7 +445,7 @@ impl GameView {
                     "Daily",
                     true,
                     Some(matches!(self.table, Table::Daily(_))),
-                    |view, _| view.switch_table(daily()),
+                    |view, _, _| view.switch_table(daily()),
                     cx,
                 )
                 .when(narrow, |button| button.px_2()),
@@ -456,14 +457,14 @@ impl GameView {
             .justify_between()
             .gap_2()
             .child(strip)
-            .when(matches!(self.table, Table::Layout(_)), |row| {
+            .when(in_play && matches!(self.table, Table::Layout(_)), |row| {
                 row.child(
                     button(
                         "cubes-new-deal",
                         "New deal",
                         true,
                         None,
-                        |view, _| view.redeal(),
+                        |view, _, _| view.redeal(),
                         cx,
                     )
                     .when(narrow, |button| button.px_2()),
@@ -471,10 +472,9 @@ impl GameView {
             })
     }
 
-    fn progress(&self, compact: bool, cx: &Context<Self>) -> Div {
+    fn progress(&self, compact: bool, ready: usize, cx: &Context<Self>) -> Div {
         let total = self.board.total_pairs();
         let matched = self.board.moves().len();
-        let ready = self.board.available_pairs().len();
         let palette = theme::colors(cx);
         let title = match self.table {
             Table::Daily(_) => Some(format!("{} · Daily stack", self.board.shape().name())),
@@ -482,16 +482,11 @@ impl GameView {
             Table::Layout(_) => None,
         };
         let mut ready_label = match ready {
-            0 if matched == total => "All pairs matched".to_owned(),
             1 => "1 match ready".to_owned(),
             _ => format!("{ready} matches ready"),
         };
         if matches!(self.table, Table::Daily(_)) && self.cleared {
-            ready_label = if matched == total {
-                "Daily cleared".to_owned()
-            } else {
-                format!("{ready_label} · Daily cleared")
-            };
+            ready_label.push_str(" · Daily cleared");
         }
         let ready = if title.is_some() {
             div()
@@ -584,7 +579,7 @@ impl GameView {
                         selected: view.board.selected(),
                         hinted: view.hinted,
                         keyed: view.keyed.filter(|_| view.board_focus.is_focused(window)),
-                        fading: view.fading,
+                        fading: view.fading.filter(|_| motion::enabled(cx)),
                         pressed: view.press.filter(|press| !press.moved).and_then(|press| press.cube),
                     };
                     let press = view.press;
@@ -688,20 +683,51 @@ impl GameView {
                     });
                 },
             ).size_full())
-            .when(cleared, |board| {
-                board.child(
-                    div().absolute().inset_0().flex().items_center().justify_center().child(
-                        div().px_6().py_4().bg(rgb(0x15352b)).text_color(rgb(0xffe7b9))
-                            .border_1().border_color(rgb(0x9a7c50)).rounded_md()
-                            .child(theme::display_type("Stack cleared", 29.)),
-                    ),
+    }
+
+    fn camera_tools(&self, narrow: bool, cx: &Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(if narrow { 5. } else { 8. }))
+            .child(
+                button(
+                    "cubes-turn-left",
+                    "Turn left",
+                    true,
+                    None,
+                    |view, _, _| view.turn(-90.),
+                    cx,
                 )
-            })
+                .when(narrow, |button| button.px_2()),
+            )
+            .child(
+                button(
+                    "cubes-reset-view",
+                    "Reset view",
+                    self.orientation != Orbit::default(),
+                    None,
+                    |view, _, _| view.reset_camera(),
+                    cx,
+                )
+                .when(narrow, |button| button.px_2()),
+            )
+            .child(
+                button(
+                    "cubes-turn-right",
+                    "Turn right",
+                    true,
+                    None,
+                    |view, _, _| view.turn(90.),
+                    cx,
+                )
+                .when(narrow, |button| button.px_2()),
+            )
     }
 
     fn tools(&self, narrow: bool, cx: &Context<Self>) -> Div {
-        let cleared = self.board.remaining() == 0;
-        let started = !self.board.moves().is_empty() || self.board.selected().is_some();
+        let can_undo = !self.board.moves().is_empty();
         div()
             .flex()
             .flex_wrap()
@@ -709,45 +735,7 @@ impl GameView {
             .justify_between()
             .gap_2()
             .px_1()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(if narrow { 5. } else { 8. }))
-                    .child(
-                        button(
-                            "cubes-turn-left",
-                            "Turn left",
-                            !cleared,
-                            None,
-                            |view, _| view.turn(-90.),
-                            cx,
-                        )
-                        .when(narrow, |button| button.px_2()),
-                    )
-                    .child(
-                        button(
-                            "cubes-reset-view",
-                            "Reset view",
-                            self.orientation != Orbit::default(),
-                            None,
-                            |view, _| view.reset_camera(),
-                            cx,
-                        )
-                        .when(narrow, |button| button.px_2()),
-                    )
-                    .child(
-                        button(
-                            "cubes-turn-right",
-                            "Turn right",
-                            !cleared,
-                            None,
-                            |view, _| view.turn(90.),
-                            cx,
-                        )
-                        .when(narrow, |button| button.px_2()),
-                    ),
-            )
+            .child(self.camera_tools(narrow, cx))
             .child(
                 div()
                     .flex()
@@ -756,28 +744,110 @@ impl GameView {
                     .child(button(
                         "cubes-hint",
                         "Hint",
-                        !cleared,
+                        true,
                         None,
-                        |view, cx| view.hint(false, cx),
+                        |view, _, cx| view.hint(false, cx),
                         cx,
                     ))
                     .child(button(
                         "cubes-undo",
                         "Undo",
-                        !self.board.moves().is_empty(),
+                        can_undo,
                         None,
-                        |view, cx| view.undo(cx),
+                        |view, _, cx| view.undo(cx),
                         cx,
                     ))
                     .child(button(
                         "cubes-replay",
-                        if cleared { "Replay" } else { "Restart" },
-                        started,
+                        "Restart",
+                        can_undo || self.board.selected().is_some(),
                         None,
-                        |view, _| view.restart(),
+                        |view, _, _| view.restart(),
                         cx,
                     )),
             )
+    }
+
+    fn round_outcome(&self, ready: usize) -> Option<Outcome> {
+        if self.board.remaining() == 0 {
+            Some(Outcome::Won)
+        } else if ready == 0 {
+            Some(Outcome::Lost)
+        } else {
+            None
+        }
+    }
+
+    fn result(&self, outcome: Outcome, cx: &Context<Self>) -> gpui::AnyElement {
+        let matched = self.board.moves().len();
+        let can_undo = matched > 0;
+        let layout = self.board.shape().name();
+        let (title, detail) = if outcome == Outcome::Won {
+            let title = match self.table {
+                Table::Layout(_) => "Stack cleared",
+                Table::Daily(_) => "Daily stack cleared",
+                Table::Challenge(_) => "Challenge cleared",
+            };
+            (title, format!("Matched all {matched} pairs in {layout}."))
+        } else {
+            let total = self.board.total_pairs();
+            let recovery = if can_undo {
+                "Undo to try a different pair order."
+            } else {
+                "Replay the deal to try a different pair order."
+            };
+            (
+                "No free pairs",
+                format!("{matched} of {total} pairs matched in {layout}. {recovery}"),
+            )
+        };
+        let undo = || {
+            result_button(
+                "cubes-result-undo",
+                "Undo",
+                outcome == Outcome::Lost,
+                Self::undo,
+                cx,
+            )
+            .aria_keyshortcuts("U")
+        };
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .when(outcome == Outcome::Lost && can_undo, |row| {
+                row.child(undo())
+            })
+            .child(result_button(
+                "cubes-result-replay",
+                "Replay",
+                outcome == Outcome::Won,
+                |view, _| view.restart(),
+                cx,
+            ))
+            .when(matches!(self.table, Table::Layout(_)), |row| {
+                row.child(result_button(
+                    "cubes-result-new",
+                    "New deal",
+                    false,
+                    |view, _| view.redeal(),
+                    cx,
+                ))
+            })
+            .when(outcome == Outcome::Won && can_undo, |row| row.child(undo()))
+            .when(
+                outcome == Outcome::Won && self.orientation != Orbit::default(),
+                |row| {
+                    row.child(result_button(
+                        "cubes-reset-view",
+                        "Reset view",
+                        false,
+                        |view, _| view.reset_camera(),
+                        cx,
+                    ))
+                },
+            );
+        round_result(cx, "cubes-result", outcome, title, detail, actions)
     }
 }
 
@@ -785,6 +855,10 @@ impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = theme::colors(cx);
         let narrow = window.viewport_size().width < px(850.);
+        // Pairs can be free under the rules even when the camera hides one of them.
+        let ready = self.board.available_pairs().len();
+        let outcome = self.round_outcome(ready);
+        let in_play = outcome.is_none();
         let controls_height = match (narrow, self.table) {
             (true, Table::Challenge(_)) => 218.,
             (true, Table::Daily(_)) => 264.,
@@ -792,21 +866,20 @@ impl Render for GameView {
             (false, Table::Challenge(_)) => 240.,
             _ => 286.,
         };
-        let height = (window.viewport_size().height - px(controls_height)).max(px(248.));
-        let keyboard = self.board_focus.is_focused(window) && window.last_input_was_keyboard();
-        let cleared = self.board.remaining() == 0;
-        let status = match (cleared, self.table) {
-            (true, Table::Challenge(_)) => "Replay this challenge.".to_owned(),
-            (true, _) => "Replay this deal or choose another stack.".to_owned(),
-            _ => self.selection_status(keyboard),
+        let height = window.viewport_size().height - px(controls_height);
+        let height = match outcome {
+            Some(Outcome::Won) => (height - px(55.)).clamp(px(168.), px(290.)),
+            Some(Outcome::Lost) => (height - px(96.)).max(px(168.)),
+            _ => height.max(px(248.)),
         };
+        let keyboard = self.board_focus.is_focused(window) && window.last_input_was_keyboard();
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap_3()
             .when(!matches!(self.table, Table::Challenge(_)), |view| {
-                view.child(self.layouts(narrow, cx))
+                view.child(self.layouts(narrow, in_play, cx))
             })
             .child(
                 theme::panel(cx)
@@ -816,36 +889,71 @@ impl Render for GameView {
                     .flex_col()
                     .gap_3()
                     .when(narrow, |panel| panel.p_2().gap_2())
-                    .child(self.progress(narrow, cx))
+                    .when(in_play, |panel| panel.child(self.progress(narrow, ready, cx)))
                     .child(self.playfield(height, cx))
-                    .child(self.tools(narrow, cx))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .justify_between()
-                            .gap_x_3()
-                            .px_1()
-                            .line_height(px(18.))
-                            .text_size(px(12.))
-                            .text_color(rgb(palette.muted))
-                            .child(
-                                div()
-                                    .id("cubes-status")
-                                    .role(Role::Status)
-                                    .aria_label(status.clone())
-                                    .child(status),
-                            )
-                            .when(!cleared, |row| {
-                                row.child(div().child(if keyboard {
+                    .when(in_play, |panel| {
+                        let status = self.selection_status(keyboard);
+                        panel.child(self.tools(narrow, cx)).child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .justify_between()
+                                .gap_x_3()
+                                .px_1()
+                                .line_height(px(18.))
+                                .text_size(px(12.))
+                                .text_color(rgb(palette.muted))
+                                .child(
+                                    div()
+                                        .id("cubes-status")
+                                        .role(Role::Status)
+                                        .aria_label(status.clone())
+                                        .child(status),
+                                )
+                                .child(div().child(if keyboard {
                                     "Arrows browse · Enter selects · Q / E turn · Shift ↑ / ↓ tilts · R resets"
                                 } else {
                                     "Drag to turn and tilt"
-                                }))
-                            }),
-                    ),
+                                })),
+                        )
+                    }),
             )
+            .when_some(outcome, |root, outcome| {
+                root.child(
+                    div().w_full().flex().justify_center().child(self.result(outcome, cx)),
+                )
+            })
+            .when(outcome == Some(Outcome::Lost), |root| {
+                root.child(div().flex().justify_center().child(self.camera_tools(narrow, cx)))
+            })
     }
+}
+
+fn result_button(
+    id: &'static str,
+    label: &'static str,
+    primary: bool,
+    action: impl Fn(&mut GameView, &Context<GameView>) + 'static,
+    cx: &Context<GameView>,
+) -> Stateful<Div> {
+    button(
+        id,
+        label,
+        true,
+        None,
+        move |view, window, cx| {
+            action(view, cx);
+            view.board_focus.focus(window, cx);
+        },
+        cx,
+    )
+    .when(primary, |button| {
+        let palette = theme::colors(cx);
+        button
+            .border_color(rgb(palette.gold_text))
+            .font_weight(FontWeight::BOLD)
+            .focus_visible(|style| style.bg(rgb(palette.hover)).border_color(rgb(palette.ink)))
+    })
 }
 
 fn button(
@@ -853,7 +961,7 @@ fn button(
     label: &'static str,
     enabled: bool,
     active: Option<bool>,
-    action: impl Fn(&mut GameView, &Context<GameView>) + 'static,
+    action: impl Fn(&mut GameView, &mut Window, &mut Context<GameView>) + 'static,
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
     let colors = theme::colors(cx);
@@ -900,8 +1008,8 @@ fn button(
                 .hover(|style| style.bg(rgb(if filled { 0xf6d99d } else { colors.hover })))
                 .active(|style| style.bg(rgb(if filled { 0xe3ba71 } else { colors.paper })))
                 .focus_visible(|style| style.border_color(rgb(colors.gold_text)))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    action(view, cx);
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    action(view, window, cx);
                     cx.notify();
                 }))
         })
@@ -1053,6 +1161,81 @@ mod tests {
         assert!(restored.moves().is_empty());
         assert!(!cleared);
         assert_eq!(orientation, Orbit::default());
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    fn daily_clear_can_be_undone_and_replayed_from_the_keyboard(cx: &mut gpui::TestAppContext) {
+        use gpui::{KeyUpEvent, Keystroke, VisualTestContext, size};
+
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let launch = GameLaunch {
+            game: corner_table_api::GameId("cubes-daily-result-test".into()),
+            entry: GameEntry::Classic,
+        };
+        let table = daily();
+        let (mut board, seed, attempt, _, _) = load_round(table, None);
+        while board.remaining() > 2 {
+            assert!(board.remove_pair(board.hint().unwrap()));
+        }
+        let total = board.total_pairs();
+        let window = cx.open_window(size(px(760.), px(540.)), |window, cx| {
+            let mut view = GameView::new(&launch, cx);
+            view.table = table;
+            view.seed = seed;
+            view.attempt = attempt;
+            view.board = board;
+            view.cleared = false;
+            view.orientation = Orbit::new(97., 72.);
+            view.board_focus.focus(window, cx);
+            view
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("cubes-hint").is_some());
+        visual.simulate_keystrokes("h enter h enter");
+        let orbit = window
+            .read_with(cx, |view, _| {
+                assert_eq!(view.board.remaining(), 0);
+                assert_eq!(view.board.moves().len(), total);
+                assert!(view.cleared);
+                assert!(view.fading.is_none());
+                view.orientation
+            })
+            .unwrap();
+        assert!(visual.debug_bounds("cubes-hint").is_none());
+        assert!(visual.debug_bounds("cubes-result-undo").is_some());
+        assert!(visual.debug_bounds("cubes-result-new").is_none());
+
+        visual.simulate_keystrokes("u");
+        window
+            .read_with(cx, |view, _| {
+                assert_eq!(view.board.remaining(), 2);
+                assert!(view.attempt == attempt);
+                assert!(view.cleared);
+            })
+            .unwrap();
+        assert!(visual.debug_bounds("cubes-result-replay").is_none());
+        visual.simulate_keystrokes("h enter h enter");
+        window
+            .update(cx, |_, window, cx| window.focus_next(cx))
+            .unwrap();
+        visual.simulate_keystrokes("enter");
+        visual.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse("enter").unwrap(),
+        });
+        window
+            .update(cx, |view, window, _| {
+                assert!(view.board_focus.is_focused(window));
+                assert_eq!(view.board.remaining(), total * 2);
+                assert_eq!(view.table.fixed_seed(), Some(seed));
+                assert_eq!(view.seed, seed);
+                assert_eq!(view.orientation, orbit);
+                assert!(view.attempt != attempt);
+                assert!(view.cleared);
+            })
+            .unwrap();
+        assert!(visual.debug_bounds("cubes-hint").is_some());
     }
 
     #[cfg(debug_assertions)]

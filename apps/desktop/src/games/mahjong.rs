@@ -1,5 +1,7 @@
 mod art;
 mod table;
+#[cfg(all(test, debug_assertions))]
+mod tests;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,9 +13,10 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{GameEntry, GameLaunch, themed_control};
+use super::{GameEntry, GameLaunch, round_result, themed_control};
 use crate::{
     audio::{self, Effect},
+    motion,
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme,
 };
@@ -21,7 +24,6 @@ use art::face_name;
 use table::{TableColors, TableGeometry, TilePosition};
 
 const INSTRUCTION: &str = "Match two free tiles with the same face.";
-const NO_MATCHES: &str = "No free pairs remain. Undo a move or restart.";
 
 #[derive(Deserialize, Serialize)]
 struct SavedRound {
@@ -57,7 +59,7 @@ pub struct GameView {
     sequence: usize,
     status: String,
     focus: FocusHandle,
-    focus_on_open: bool,
+    focus_board: bool,
     cursor: Option<usize>,
 }
 
@@ -82,7 +84,7 @@ impl GameView {
             sequence: 0,
             status: INSTRUCTION.into(),
             focus: cx.focus_handle().tab_stop(true),
-            focus_on_open: true,
+            focus_board: true,
             cursor: None,
         };
         let restored = view
@@ -116,7 +118,7 @@ impl GameView {
         self.seed = saved.seed;
         self.attempt = saved.attempt;
         self.clean_clear = saved.clean_clear;
-        self.status = self.idle_status("Deal resumed.").into();
+        self.status = "Deal resumed.".into();
         true
     }
 
@@ -135,21 +137,13 @@ impl GameView {
         self.is_daily
     }
 
-    fn cleared_title(&self) -> &'static str {
-        if self.clean_clear && !self.board.used_assistance() {
-            "Clean Clear complete!"
-        } else {
-            "Board cleared!"
-        }
-    }
-
-    fn idle_status(&self, otherwise: &'static str) -> &'static str {
+    fn round_outcome(&self) -> Option<Outcome> {
         if self.board.remaining() == 0 {
-            self.cleared_title()
+            Some(Outcome::Won)
         } else if self.board.hint().is_none() {
-            NO_MATCHES
+            Some(Outcome::Lost)
         } else {
-            otherwise
+            None
         }
     }
 
@@ -168,13 +162,13 @@ impl GameView {
                     Some(TileState::SidesBlocked) => "Free this tile's left or right edge first.",
                     _ => return,
                 };
-                (self.idle_status(reason).into(), Some(Effect::InvalidMove))
+                (reason.into(), Some(Effect::InvalidMove))
             }
             MoveResult::Selected => (
                 format!("{face} selected. Choose its match."),
                 Some(Effect::CeramicTap),
             ),
-            MoveResult::Deselected => (self.idle_status(INSTRUCTION).into(), None),
+            MoveResult::Deselected => (INSTRUCTION.into(), None),
             MoveResult::DifferentFace => (
                 format!("Faces differ. {face} is selected."),
                 Some(Effect::InvalidMove),
@@ -187,7 +181,7 @@ impl GameView {
                     .last()
                     .expect("just matched a pair");
                 self.sequence = self.sequence.wrapping_add(1);
-                self.departure = Some(Departure {
+                self.departure = motion::enabled(cx).then(|| Departure {
                     tiles: pair.map(|id| *self.board.tile(id).expect("matched tile exists")),
                     sequence: self.sequence,
                 });
@@ -209,7 +203,7 @@ impl GameView {
                     Effect::CeramicPair
                 };
                 self.save();
-                (self.idle_status("Pair matched.").into(), Some(effect))
+                ("Pair matched.".into(), Some(effect))
             }
         };
         self.status = status;
@@ -254,8 +248,6 @@ impl GameView {
             if !had_assistance {
                 self.save();
             }
-        } else {
-            self.status = self.idle_status(INSTRUCTION).into();
         }
     }
 
@@ -271,15 +263,14 @@ impl GameView {
 
     fn toggle_clean_clear(&mut self) {
         self.clean_clear = !self.clean_clear;
-        self.status = self
-            .idle_status(if !self.clean_clear {
-                INSTRUCTION
-            } else if self.board.used_assistance() {
-                "Restart to begin a clean run."
-            } else {
-                "Clear the board without Hint or Undo."
-            })
-            .into();
+        self.status = if !self.clean_clear {
+            INSTRUCTION
+        } else if self.board.used_assistance() {
+            "Restart to begin a clean run."
+        } else {
+            "Clear the board without Hint or Undo."
+        }
+        .into();
         self.save();
     }
 
@@ -331,7 +322,7 @@ impl GameView {
         if key == "escape" {
             self.board.clear_selection();
             self.highlighted = None;
-            self.status = self.idle_status(INSTRUCTION).into();
+            self.status = INSTRUCTION.into();
         } else {
             let direction = match key {
                 "left" => Some((-1., 0.)),
@@ -484,6 +475,74 @@ impl GameView {
             )
     }
 
+    fn result(&self, outcome: Outcome, cx: &Context<Self>) -> gpui::AnyElement {
+        let matched = self.board.matched_pairs().len();
+        let can_undo = self.board.can_undo();
+        let (title, detail) = if outcome == Outcome::Won {
+            let title = if self.daily() {
+                "Daily board cleared"
+            } else if self.clean_clear && !self.board.used_assistance() {
+                "Clean Clear complete"
+            } else {
+                "Board cleared"
+            };
+            let detail = match (self.board.used_assistance(), self.clean_clear) {
+                (false, _) => format!("Matched all {matched} pairs without hints or undo."),
+                (true, true) => format!(
+                    "Matched all {matched} pairs. Clean Clear requires a deal without hints or undo."
+                ),
+                (true, false) => format!("Matched all {matched} pairs."),
+            };
+            (title, detail)
+        } else {
+            let total = self.board.layout().tile_count() / 2;
+            let recovery = match (can_undo, self.clean_clear && !self.board.used_assistance()) {
+                (true, true) => "Undo to try a different pair order, or replay for a clean run.",
+                (true, false) => "Undo to try a different pair order.",
+                (false, _) => "Replay the deal to try a different pair order.",
+            };
+            (
+                "No free pairs",
+                format!("{matched} of {total} pairs matched. {recovery}"),
+            )
+        };
+        let undo = || {
+            result_control(
+                "mahjong-result-undo",
+                "Undo",
+                outcome == Outcome::Lost,
+                Self::undo,
+                cx,
+            )
+            .aria_keyshortcuts("U")
+        };
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .when(outcome == Outcome::Lost && can_undo, |row| {
+                row.child(undo())
+            })
+            .child(result_control(
+                "mahjong-result-replay",
+                "Replay",
+                outcome == Outcome::Won,
+                |view, _| view.restart(),
+                cx,
+            ))
+            .when(!self.daily(), |row| {
+                row.child(result_control(
+                    "mahjong-result-new",
+                    "New deal",
+                    false,
+                    |view, _| view.new_deal(view.board.layout()),
+                    cx,
+                ))
+            })
+            .when(outcome == Outcome::Won && can_undo, |row| row.child(undo()));
+        round_result(cx, "mahjong-result", outcome, title, detail, actions)
+    }
+
     fn feedback(&self, cx: &Context<Self>) -> Div {
         let palette = theme::colors(cx);
         let assistance = if self.board.used_assistance() {
@@ -542,6 +601,9 @@ fn control(
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
     themed_control(cx, id, label, enabled)
+        .when(cfg!(all(test, debug_assertions)), |button| {
+            button.debug_selector(|| id.into())
+        })
         .min_h(px(33.))
         .px(px(10.))
         .whitespace_nowrap()
@@ -551,6 +613,32 @@ fn control(
                 cx.notify();
             }))
         })
+}
+
+fn result_control(
+    id: &'static str,
+    label: &'static str,
+    primary: bool,
+    action: impl Fn(&mut GameView, &mut Context<GameView>) + 'static,
+    cx: &Context<GameView>,
+) -> Stateful<Div> {
+    control(
+        id,
+        label,
+        true,
+        move |view, cx| {
+            action(view, cx);
+            view.focus_board = true;
+        },
+        cx,
+    )
+    .when(primary, |button| {
+        let palette = theme::colors(cx);
+        button
+            .border_color(rgb(palette.gold_text))
+            .font_weight(FontWeight::BOLD)
+            .focus_visible(|style| style.bg(rgb(palette.hover)).border_color(rgb(palette.ink)))
+    })
 }
 
 fn toggle(
@@ -576,12 +664,13 @@ fn toggle(
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.focus_on_open {
-            self.focus_on_open = false;
+        if self.focus_board {
+            self.focus_board = false;
             self.focus.focus(window, cx);
         }
         let palette = theme::colors(cx);
-        let geometry = TableGeometry::for_window(&self.board, self.daily(), window);
+        let outcome = self.round_outcome();
+        let geometry = TableGeometry::for_window(&self.board, self.daily(), outcome, window);
         div()
             .id("mahjong-game")
             .on_key_down(cx.listener(Self::key_down))
@@ -591,11 +680,18 @@ impl Render for GameView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(self.toolbar(cx))
+            .when(outcome.is_none(), |root| root.child(self.toolbar(cx)))
             .child(self.table(geometry, TableColors::from(palette), window, cx))
-            .when(self.board.remaining() > 0, |root| {
-                root.child(self.feedback(cx))
+            .when_some(outcome, |root, outcome| {
+                root.child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .child(self.result(outcome, cx)),
+                )
             })
+            .when(outcome.is_none(), |root| root.child(self.feedback(cx)))
             .when(!self.daily(), |root| root.child(self.layout_picker(cx)))
     }
 }
