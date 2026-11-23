@@ -3,6 +3,7 @@ mod assets;
 pub mod audio;
 mod daily;
 mod games;
+mod library_search;
 mod pages;
 mod storage;
 mod theme;
@@ -57,8 +58,11 @@ fn install_shortcuts(cx: &mut App) {
         KeyBinding::new("ctrl-f", app::FindGame, None),
         KeyBinding::new("ctrl-q", app::Quit, None),
     ]);
+    // Search needs Option+Arrow for word movement while its field has focus.
+    library_search::install_shortcuts(cx);
     cx.set_menus([
         Menu::new("Corner Table").items([MenuItem::action("Quit Corner Table", app::Quit)]),
+        library_search::edit_menu(),
         Menu::new("Navigate").items([
             MenuItem::action("Back", app::NavigateBack),
             MenuItem::action("Forward", app::NavigateForward),

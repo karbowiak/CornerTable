@@ -2,11 +2,12 @@ use std::collections::HashMap;
 
 use corner_table_api::{FixtureApi, GameId, Period};
 use gpui::{
-    AnyView, Context, FocusHandle, MouseButton, NavigationDirection, Pixels, Point, ScrollHandle,
-    Window, div, point, prelude::*, px, rgb,
+    AnyView, Context, Entity, FocusHandle, MouseButton, NavigationDirection, Pixels, Point,
+    ScrollHandle, Window, div, point, prelude::*, px, rgb,
 };
 
 use crate::games::{GameEntry, GameLaunch};
+use crate::library_search::{QueryChanged, SearchInput};
 use crate::{audio, pages, storage, theme, widgets};
 
 gpui::actions!(
@@ -39,7 +40,6 @@ pub enum Action {
     ToggleGamePicker,
     SelectGame(GameId),
     SelectPeriod(Period),
-    ClearSearch,
     ToggleFavorite(GameId),
     ShowFavorites(bool),
     SetAppearance(theme::Appearance),
@@ -59,9 +59,7 @@ pub struct Desktop {
     pub board_game: GameId,
     pub board_period: Period,
     pub game_picker_open: bool,
-    pub search: String,
-    pub search_focus: FocusHandle,
-    pub search_select_all: bool,
+    pub search: Entity<SearchInput>,
     pub recent: Option<GameLaunch>,
     pub favorites: Vec<GameId>,
     pub favorites_only: bool,
@@ -93,15 +91,17 @@ impl Desktop {
             theme::apply(desktop.appearance, window, cx);
         })
         .detach();
+        let focus = cx.focus_handle();
+        let search = cx.new(|cx| SearchInput::new(focus.clone(), window, cx));
+        cx.subscribe(&search, |_, _, _: &QueryChanged, cx| cx.notify())
+            .detach();
         Self {
             api,
             page: Page::Library,
             board_game,
             board_period: Period::Today,
             game_picker_open: false,
-            search: String::new(),
-            search_focus: cx.focus_handle().tab_stop(true),
-            search_select_all: false,
+            search,
             recent,
             favorites,
             favorites_only: false,
@@ -112,7 +112,7 @@ impl Desktop {
             back: Vec::new(),
             forward: Vec::new(),
             games: HashMap::new(),
-            focus: cx.focus_handle(),
+            focus,
         }
     }
 
@@ -132,10 +132,6 @@ impl Desktop {
                 self.game_picker_open = false;
             }
             Action::SelectPeriod(period) => self.board_period = period,
-            Action::ClearSearch => {
-                self.search.clear();
-                self.search_select_all = false;
-            }
             Action::ToggleFavorite(game) => {
                 if let Some(index) = self.favorites.iter().position(|id| id == &game) {
                     self.favorites.remove(index);
@@ -226,7 +222,6 @@ impl Desktop {
             self.recent = Some(launch.clone());
         }
         self.game_picker_open = false;
-        self.search_select_all = false;
         self.scroll.set_offset(visit.scroll);
     }
 }
@@ -279,9 +274,13 @@ impl Render for Desktop {
             .on_action(cx.listener(|desktop, _: &FindGame, window, cx| {
                 desktop.dispatch(Action::Navigate(Page::Library), window, cx);
                 desktop.favorites_only = false;
-                desktop.search_select_all = true;
+                desktop.scroll.set_offset(point(px(0.), px(0.)));
                 cx.on_next_frame(window, |desktop, window, cx| {
-                    desktop.search_focus.focus(window, cx);
+                    if desktop.page == Page::Library {
+                        desktop
+                            .search
+                            .update(cx, |search, cx| search.find(window, cx));
+                    }
                 });
             }))
             .capture_any_mouse_down(cx.listener(

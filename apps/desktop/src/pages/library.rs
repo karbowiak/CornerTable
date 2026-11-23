@@ -1,4 +1,4 @@
-use gpui::{Context, Div, FontWeight, KeyDownEvent, MouseButton, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, div, prelude::*, px, rgb};
 
 use crate::app::{Action, Desktop, Page};
 use crate::{daily, theme as t, widgets};
@@ -6,7 +6,7 @@ use crate::{daily, theme as t, widgets};
 pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
     let daily = daily::today();
     let palette = t::colors(cx);
-    let query = app.search.trim().to_lowercase();
+    let query = app.search.read(cx).query().trim().to_lowercase();
     let games = app
         .api
         .library
@@ -48,13 +48,16 @@ pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap_3()
+                .gap_x_3()
+                .gap_y_2()
                 .flex_wrap()
-                .child(t::display_type("Game Library", 36.))
+                .child(t::display_type(
+                    "Game Library",
+                    if narrow { 32. } else { 36. },
+                ))
                 .child(
                     div()
                         .flex()
-                        .flex_wrap()
                         .items_center()
                         .gap_2()
                         .child(
@@ -77,7 +80,11 @@ pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                             )
                             .aria_toggled(app.favorites_only.into()),
                         )
-                        .child(search_field(app, narrow, cx)),
+                        .child(
+                            div()
+                                .w(px(if narrow { 214. } else { 300. }))
+                                .child(app.search.clone()),
+                        ),
                 ),
         )
         .when(!app.favorites_only && query.is_empty(), |library| {
@@ -94,123 +101,4 @@ pub fn library(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
             ))
         })
         .child(catalog)
-}
-
-fn search_field(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
-    let palette = t::colors(cx);
-    let value = if app.search.is_empty() {
-        "Search games"
-    } else {
-        &app.search
-    };
-    t::panel(cx)
-        .w(px(if narrow { 214. } else { 300. }))
-        .h(px(44.))
-        .rounded_md()
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_3()
-        .child(widgets::symbol("search", palette.muted, 17.))
-        .child(
-            div()
-                .id("game-search")
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .items_center()
-                .cursor_text()
-                .tab_index(0)
-                .track_focus(&app.search_focus)
-                .focus_visible(|style| style.text_color(rgb(palette.ink)))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|app, _, window, cx| {
-                        app.search_focus.focus(window, cx);
-                        app.search_select_all = false;
-                        cx.notify();
-                    }),
-                )
-                .on_key_down(cx.listener(edit_search))
-                .child(
-                    div()
-                        .truncate()
-                        .bg(rgb(if app.search_select_all {
-                            palette.hover
-                        } else {
-                            palette.surface
-                        }))
-                        .text_color(rgb(if app.search.is_empty() {
-                            palette.muted
-                        } else {
-                            palette.ink
-                        }))
-                        .child(value.to_owned()),
-                ),
-        )
-        .when(!app.search.is_empty(), |field| {
-            field.child(
-                widgets::clickable("clear-search", Action::ClearSearch, cx)
-                    .size(px(28.))
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .font_weight(FontWeight::BOLD)
-                    .hover(|style| style.bg(rgb(palette.hover)))
-                    .focus(|style| style.bg(rgb(palette.hover)))
-                    .child("×"),
-            )
-        })
-}
-
-fn edit_search(
-    app: &mut Desktop,
-    event: &KeyDownEvent,
-    window: &mut Window,
-    cx: &mut Context<Desktop>,
-) {
-    let key = &event.keystroke;
-    let shortcut = key.modifiers.control || key.modifiers.platform;
-    match key.key.as_str() {
-        "escape" => {
-            app.search.clear();
-            app.search_select_all = false;
-            app.focus.focus(window, cx);
-        }
-        "backspace" | "delete" => {
-            if app.search_select_all {
-                app.search.clear();
-            } else {
-                app.search.pop();
-            }
-            app.search_select_all = false;
-        }
-        "a" if shortcut => app.search_select_all = true,
-        "v" if shortcut => {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                push_search(app, &text);
-            }
-        }
-        _ if !shortcut => {
-            let Some(text) = key.key_char.as_deref() else {
-                return;
-            };
-            push_search(app, text);
-        }
-        _ => return,
-    }
-    cx.stop_propagation();
-    cx.notify();
-}
-
-fn push_search(app: &mut Desktop, text: &str) {
-    if app.search_select_all {
-        app.search.clear();
-    }
-    app.search_select_all = false;
-    let remaining = 80usize.saturating_sub(app.search.chars().count());
-    app.search
-        .extend(text.chars().filter(|ch| !ch.is_control()).take(remaining));
 }

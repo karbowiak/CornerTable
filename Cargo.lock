@@ -1177,6 +1177,7 @@ dependencies = [
 name = "corner-table"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
  "anyhow",
  "chrono",
  "corner-table-api",
@@ -1203,6 +1204,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-segmentation",
 ]
 
 [[package]]
