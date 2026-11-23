@@ -337,7 +337,7 @@ impl Guide {
                     ),
                     (
                         "Complete the picture",
-                        "Place every piece to finish. Use Photo for a reference. In Assemble, Ghost shows the image beneath the pieces, Hint marks a fitting spot, and Undo removes the last placement. Restart starts the puzzle again.",
+                        "In Assemble, drag pieces out of the corner pile and leave them anywhere on the worktable. Pieces snap into their matching spots. Grid toggles the guides, and Ghost shows a dim reference. Hint marks a fitting spot, and Undo removes the last snapped piece.",
                     ),
                     (
                         "Use your own picture",

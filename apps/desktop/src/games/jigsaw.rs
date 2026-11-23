@@ -21,7 +21,7 @@ use crate::theme as t;
 
 use super::{GameLaunch, board_space, round_result, themed_control};
 use artwork::PieceArt;
-use assemble::TrayLayout;
+use assemble::{TableLayout, TrayLayout};
 use gallery::Gallery;
 use progress::SavedGallery;
 
@@ -203,6 +203,12 @@ struct Tray {
     cursor: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+struct LoosePiece {
+    piece: usize,
+    position: [f32; 2],
+}
+
 struct Round {
     assembly: Assembly,
     swap: Puzzle,
@@ -211,6 +217,7 @@ struct Round {
     assembly_attempt: AttemptId,
     swap_attempt: AttemptId,
     assembly_moves: u64,
+    loose: Vec<LoosePiece>,
     tray: Tray,
 }
 
@@ -224,6 +231,7 @@ impl Round {
             assembly_attempt: AttemptId::default(),
             swap_attempt: AttemptId::default(),
             assembly_moves: 0,
+            loose: Vec::new(),
             tray: Tray::default(),
         }
     }
@@ -245,6 +253,7 @@ pub struct GameView {
     seed: u64,
     mode: Mode,
     reference: Reference,
+    show_grid: bool,
     confirm_restart: bool,
     settling_piece: Option<usize>,
     board_focus: FocusHandle,
@@ -271,7 +280,8 @@ impl GameView {
             artwork: HashMap::new(),
             seed,
             mode: Mode::Assemble,
-            reference: Reference::Photo,
+            reference: Reference::Ghost,
+            show_grid: true,
             confirm_restart: false,
             settling_piece: None,
             board_focus: cx.focus_handle(),
@@ -361,6 +371,7 @@ impl GameView {
                 round.assembly_deal = seed;
                 round.assembly_attempt = AttemptId::default();
                 round.assembly_moves = 0;
+                round.loose.clear();
                 round.tray = Tray::default();
             }
             Mode::Swap => {
@@ -480,6 +491,20 @@ impl GameView {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .when(self.mode == Mode::Assemble && !self.is_complete(), |row| {
+                        row.child(
+                            segments(cx).child(
+                                segment("jigsaw-grid", "Grid", self.show_grid, cx)
+                                    .debug_selector(|| "jigsaw-grid".into())
+                                    .aria_label("Assembly grid")
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.show_grid = !view.show_grid;
+                                        view.save();
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                    })
                     .when(self.confirm_restart, |row| {
                         row.child(small_text("Restart this puzzle?", cx)).child(
                             action_button("jigsaw-cancel-restart", "Cancel", true, cx).on_click(
@@ -512,7 +537,10 @@ impl GameView {
                                 })
                                 .on_click(cx.listener(|view, _, _, cx| {
                                     let progressed = match view.mode {
-                                        Mode::Assemble => view.placed_count() != 0,
+                                        Mode::Assemble => {
+                                            view.placed_count() != 0
+                                                || !view.round().loose.is_empty()
+                                        }
                                         Mode::Swap => view.round().swap.moves() != 0,
                                     };
                                     if progressed && !view.is_complete() && !view.confirm_restart {
@@ -667,7 +695,12 @@ impl GameView {
                     .justify_between()
                     .gap_x_2()
                     .gap_y_1()
-                    .child(t::display_type("Reference", 17.))
+                    .child(
+                        t::display_type("Reference", 17.)
+                            .when(self.mode == Mode::Assemble, |label| {
+                                label.text_color(rgb(t::PAPER))
+                            }),
+                    )
                     .child(
                         segments(cx).children(
                             [
@@ -742,7 +775,7 @@ impl GameView {
                 "Use the arrow keys to move, Enter to place, or Esc to cancel."
             }
             Mode::Assemble if round.tray.selected.is_some() => "Choose a spot on the board.",
-            Mode::Assemble => "Drag a piece onto the board, or select it and choose a spot.",
+            Mode::Assemble => "Move pieces around the table. They snap into place when they fit.",
         };
         div()
             .id("jigsaw-board-status")
@@ -882,6 +915,28 @@ impl Render for GameView {
         }
 
         let available = board_space(window);
+        let height = crate::app::content_height(window);
+        let table = TableLayout::new(available, height, self.painting().aspect);
+        let panel = t::panel(cx)
+            .w_full()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(self.gallery_panel(available, cx))
+            .child(div().h(px(1.)).bg(rgb(t::colors(cx).border)))
+            .child(self.toolbar(table.tray, cx));
+        if self.mode == Mode::Assemble && !complete {
+            let art = match self.artwork.get(&self.key) {
+                Some(Artwork::Ready(pieces)) => Some(pieces.as_slice()),
+                _ => None,
+            };
+            return panel
+                .child(self.assembly_table(table, art, window, cx))
+                .child(self.progress(cx))
+                .child(self.board_footer(window, cx));
+        }
+
         let wide = available >= 710.;
         let side_by_side = wide || (complete && available >= 600.);
         // Match the shared stage rail.
@@ -891,7 +946,6 @@ impl Render for GameView {
             176.
         };
         let workspace_side_width = if complete { RESULT_WIDTH } else { side_width };
-        let height = crate::app::content_height(window);
         let max_image_height = (height - 360.).clamp(240., 760.);
         let max_board_width = if side_by_side {
             available - workspace_side_width - WORKSPACE_GAP
@@ -902,27 +956,17 @@ impl Render for GameView {
             .min(max_image_height * self.painting().aspect);
         let board_height = board_width / self.painting().aspect;
         let frame_width = board_width + 2. * (FRAME_PADDING + 1.);
-        let tray_width = if wide {
-            side_width
-        } else {
-            available - side_width - WORKSPACE_GAP
-        };
-        let tray_layout = TrayLayout::new(tray_width, wide, height);
-        let art = match self.artwork.get(&self.key) {
-            Some(Artwork::Ready(pieces)) => Some(pieces.as_slice()),
-            _ => None,
-        };
         let board = match self.mode {
-            Mode::Assemble => {
-                self.assembly_board((board_width, board_height), art, tray_layout, window, cx)
-            }
+            Mode::Assemble => framed_board(
+                div().w(px(board_width)).h(px(board_height)).child(
+                    self.painting()
+                        .source
+                        .image()
+                        .size_full()
+                        .object_fit(ObjectFit::Fill),
+                ),
+            ),
             Mode::Swap => self.swap_board(board_width, cx),
-        };
-        let tray = match (self.mode, complete, art) {
-            (Mode::Assemble, false, Some(art)) => {
-                Some(self.piece_tray(tray_layout, (board_width, board_height), art, cx))
-            }
-            _ => None,
         };
         let reference = (!complete).then(|| self.reference_panel(side_width, height, cx));
         let side = if side_by_side {
@@ -933,51 +977,40 @@ impl Render for GameView {
                 .flex_col()
                 .gap_4()
                 .children(reference)
-                .children(tray)
                 .when(complete, |side| side.child(self.completion(cx)))
         } else {
             div()
                 .flex()
                 .items_start()
                 .gap(px(WORKSPACE_GAP))
-                .children(tray)
                 .children(reference)
         };
 
-        t::panel(cx)
-            .w_full()
-            .p_4()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(self.gallery_panel(available, cx))
-            .child(div().h(px(1.)).bg(rgb(t::colors(cx).border)))
-            .child(self.toolbar(tray_layout, cx))
-            .child(
-                div()
-                    .flex()
-                    .when(!side_by_side, |layout| layout.flex_col())
-                    .items_start()
-                    .gap(px(WORKSPACE_GAP))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_none()
-                            .w(px(frame_width))
-                            .gap_2()
-                            .when(complete && !side_by_side, |column| {
-                                column.child(self.completion(cx))
-                            })
-                            .child(board)
-                            .when(!complete, |column| {
-                                column
-                                    .child(self.progress(cx))
-                                    .child(self.board_footer(window, cx))
-                            }),
-                    )
-                    .when(side_by_side || !complete, |layout| layout.child(side)),
-            )
+        panel.child(
+            div()
+                .flex()
+                .when(!side_by_side, |layout| layout.flex_col())
+                .items_start()
+                .gap(px(WORKSPACE_GAP))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .w(px(frame_width))
+                        .gap_2()
+                        .when(complete && !side_by_side, |column| {
+                            column.child(self.completion(cx))
+                        })
+                        .child(board)
+                        .when(!complete, |column| {
+                            column
+                                .child(self.progress(cx))
+                                .child(self.board_footer(window, cx))
+                        }),
+                )
+                .when(side_by_side || !complete, |layout| layout.child(side)),
+        )
     }
 }
 

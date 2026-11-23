@@ -1,7 +1,7 @@
 use corner_table_api::GameId;
 use gpui::{
-    AppContext, ClipboardItem, ExternalPaths, FileDropEvent, Modifiers, PlatformInput,
-    TestAppContext, VisualTestContext, size,
+    AppContext, ClipboardItem, ExternalPaths, FileDropEvent, Modifiers, MouseButton, Pixels,
+    PlatformInput, Point, TestAppContext, VisualTestContext, point, size,
 };
 
 use super::*;
@@ -208,4 +208,95 @@ fn accepts_dropped_photos_and_copied_paths_without_the_picker(cx: &mut TestAppCo
         })
         .unwrap();
     assert_eq!(photos::stored(&photos).unwrap().len(), 2);
+}
+
+#[gpui::test]
+fn assembly_worktable_keeps_loose_pieces_and_only_snaps_matching_cells(cx: &mut TestAppContext) {
+    let launch = GameLaunch {
+        game: GameId("jigsaw-worktable-test".into()),
+        entry: GameEntry::Classic,
+    };
+    let window = cx.open_window(size(px(1040.), px(740.)), |window, cx| {
+        t::apply(t::Appearance::Dark, window, cx);
+        cx.set_reduce_motion(true);
+        let mut view = GameView::new(&launch, cx);
+        let art = artwork::cut_painting(&view.painting().source, view.key.size).unwrap();
+        view.artwork.insert(view.key, Artwork::Ready(art));
+        view
+    });
+    cx.run_until_parked();
+    let mut ui = VisualTestContext::from_window(window.into(), cx);
+    let (piece, (columns, rows)) = window
+        .read_with(&ui, |view, _| {
+            (
+                view.round().assembly.tray(TrayFilter::All).next().unwrap(),
+                view.key.size.dimensions(),
+            )
+        })
+        .unwrap();
+    click(&mut ui, "jigsaw-grid");
+    window
+        .read_with(&ui, |view, _| assert!(!view.show_grid))
+        .unwrap();
+    let drag = |ui: &mut VisualTestContext, from: Point<Pixels>, to: Point<Pixels>| {
+        let modifiers = Modifiers::default();
+        ui.simulate_mouse_move(from, None, modifiers);
+        ui.simulate_mouse_down(from, MouseButton::Left, modifiers);
+        ui.simulate_mouse_move(
+            from + point(px(9.), px(2.)),
+            Some(MouseButton::Left),
+            modifiers,
+        );
+        ui.simulate_mouse_move(to, Some(MouseButton::Left), modifiers);
+        ui.simulate_mouse_up(to, MouseButton::Left, modifiers);
+        ui.run_until_parked();
+    };
+    let center = |ui: &mut VisualTestContext, index: usize| {
+        let board = ui.debug_bounds("jigsaw-assembly-board").unwrap();
+        board.origin
+            + point(
+                board.size.width * ((index % columns) as f32 + 0.5) / columns as f32,
+                board.size.height * ((index / columns) as f32 + 0.5) / rows as f32,
+            )
+    };
+    let pile: &'static str = Box::leak(format!("jigsaw-tray-piece-{piece}").into_boxed_str());
+    let loose: &'static str = Box::leak(format!("jigsaw-loose-piece-{piece}").into_boxed_str());
+    let start = ui.debug_bounds(pile).unwrap().center();
+    let wrong = center(&mut ui, (piece + 1) % (columns * rows));
+    drag(&mut ui, start, wrong);
+    let first = window
+        .read_with(&ui, |view, _| {
+            assert_eq!(view.placed_count(), 0);
+            assert_eq!(view.round().loose.len(), 1);
+            view.round().loose[0]
+        })
+        .unwrap();
+    assert!(ui.debug_bounds(pile).is_none());
+    let start = ui.debug_bounds(loose).unwrap().center();
+    let wrong = center(&mut ui, (piece + 2) % (columns * rows));
+    drag(&mut ui, start, wrong);
+    let moved = window
+        .read_with(&ui, |view, _| {
+            assert_eq!(view.placed_count(), 0);
+            assert_ne!(view.round().loose[0].position, first.position);
+            view.round().loose[0]
+        })
+        .unwrap();
+    let start = ui.debug_bounds(loose).unwrap().center();
+    let correct = center(&mut ui, piece);
+    drag(&mut ui, start, correct);
+    window
+        .read_with(&ui, |view, _| {
+            assert_eq!(view.round().assembly.placements(), &[piece])
+        })
+        .unwrap();
+    assert!(ui.debug_bounds(loose).is_none());
+    click(&mut ui, "jigsaw-undo");
+    assert!(ui.debug_bounds(loose).is_some());
+    window
+        .read_with(&ui, |view, _| {
+            assert_eq!(view.placed_count(), 0);
+            assert_eq!(view.round().loose, [moved]);
+        })
+        .unwrap();
 }

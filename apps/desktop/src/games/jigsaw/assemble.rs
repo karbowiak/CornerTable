@@ -1,10 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{cell::Cell, rc::Rc, sync::Arc, time::Duration};
 
 use corner_table_jigsaw::{OutlinePoint, Placement, TrayFilter};
 use gpui::{
-    Animation, AnimationExt, Bounds, Context, Div, Img, KeyDownEvent, ObjectFit, PathBuilder,
-    Pixels, Rgba, Role, Stateful, Window, canvas, div, ease_out_quint, img, point, prelude::*, px,
-    rgb, rgba,
+    Animation, AnimationExt, App, Bounds, Context, Div, Entity, Img, KeyDownEvent, MouseButton,
+    ObjectFit, PathBuilder, Pixels, Point, Rgba, Role, Stateful, Window, canvas, div,
+    ease_out_quint, img, point, prelude::*, px, relative, rgb, rgba,
 };
 
 use crate::{
@@ -14,13 +14,52 @@ use crate::{
 
 use super::artwork::PieceArt;
 use super::{
-    Artwork, GameView, Mode, PuzzleKey, Reference, action_button, framed_board, segment, segments,
-    small_text,
+    Artwork, FRAME_PADDING, GameView, LoosePiece, Mode, PuzzleKey, Reference, Round, action_button,
+    framed_board, segment, segments, small_text,
 };
 
 const BOARD: u32 = 0x2e251c;
 const CELL_GAP: f32 = 5.;
 const TRAY_PADDING: f32 = 6.;
+const SURFACE_GAP: f32 = 14.;
+
+#[derive(Clone, Copy)]
+pub(super) struct TableLayout {
+    pub(super) tray: TrayLayout,
+    picture: (f32, f32),
+    height: f32,
+    wide: bool,
+}
+
+impl TableLayout {
+    pub(super) fn new(width: f32, height: f32, aspect: f32) -> Self {
+        let width = width - 2. * (FRAME_PADDING + 1.);
+        let wide = width >= 530.;
+        let minimum_tray_width = if wide {
+            (width * 0.31).clamp(246., 300.)
+        } else {
+            width.min(310.)
+        };
+        let picture_width = if wide {
+            width - minimum_tray_width - SURFACE_GAP
+        } else {
+            width
+        };
+        let max_picture_height = (height - 225.).clamp(225., 760.);
+        let picture_width = picture_width.min(max_picture_height * aspect);
+        let tray_width = if wide {
+            (width - picture_width - SURFACE_GAP).min(310.)
+        } else {
+            minimum_tray_width
+        };
+        Self {
+            tray: TrayLayout::new(tray_width, wide, height),
+            picture: (picture_width, picture_width / aspect),
+            height,
+            wide,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct TrayLayout {
@@ -31,12 +70,12 @@ pub(super) struct TrayLayout {
 }
 
 impl TrayLayout {
-    pub(super) fn new(width: f32, wide: bool, viewport_height: f32) -> Self {
-        let columns = if width >= 250. { 4 } else { 3 };
+    fn new(width: f32, wide: bool, viewport_height: f32) -> Self {
+        let columns = if width >= 240. { 4 } else { 3 };
         let inner_width = width - 2. * TRAY_PADDING - 2.;
         let slot = (inner_width - (columns - 1) as f32 * CELL_GAP) / columns as f32;
         let rows = match (wide, viewport_height) {
-            (true, height) if height >= 780. => 3,
+            (true, height) if height >= 680. => 3,
             (false, height) if height < 660. => 1,
             _ => 2,
         };
@@ -67,36 +106,69 @@ struct DraggedPiece {
     piece: usize,
     image: Arc<gpui::RenderImage>,
     size: (f32, f32),
-    center: (f32, f32),
-    slot: f32,
+    center: Point<Pixels>,
+    anchor: Rc<Cell<Point<Pixels>>>,
 }
 
 struct DragPreview {
     image: Arc<gpui::RenderImage>,
     size: (f32, f32),
     offset: (Pixels, Pixels),
-    slot: f32,
 }
 
 impl gpui::Render for DragPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().relative().size(px(self.slot)).child(
-            img(self.image.clone())
-                .absolute()
-                .left(self.offset.0)
-                .top(self.offset.1)
-                .w(px(self.size.0))
-                .h(px(self.size.1))
-                .object_fit(ObjectFit::Fill)
-                .opacity(0.94),
-        )
+        div()
+            .relative()
+            .w(px(self.size.0))
+            .h(px(self.size.1))
+            .child(
+                img(self.image.clone())
+                    .absolute()
+                    .left(self.offset.0)
+                    .top(self.offset.1)
+                    .w(px(self.size.0))
+                    .h(px(self.size.1))
+                    .object_fit(ObjectFit::Fill)
+                    .opacity(0.94),
+            )
+    }
+}
+
+impl DraggedPiece {
+    fn preview(
+        &self,
+        pointer: Point<Pixels>,
+        anchor: Point<Pixels>,
+        cx: &mut App,
+    ) -> Entity<DragPreview> {
+        self.anchor.set(anchor);
+        cx.new(|_| DragPreview {
+            image: self.image.clone(),
+            size: self.size,
+            offset: (pointer.x - anchor.x, pointer.y - anchor.y),
+        })
+    }
+}
+
+impl Round {
+    fn pile(&self, filter: TrayFilter) -> impl Iterator<Item = usize> + '_ {
+        self.assembly
+            .tray(filter)
+            .filter(|piece| !self.loose.iter().any(|loose| loose.piece == *piece))
+    }
+
+    fn loose_on_table(&self) -> impl Iterator<Item = &LoosePiece> {
+        self.loose
+            .iter()
+            .filter(|loose| !self.assembly.is_placed(loose.piece))
     }
 }
 
 impl GameView {
     fn tray_page(&self, capacity: usize) -> TrayPage {
         let round = self.round();
-        let mut pieces: Vec<_> = round.assembly.tray(round.tray.filter).collect();
+        let mut pieces: Vec<_> = round.pile(round.tray.filter).collect();
         let total = pieces.len();
         let pages = total.div_ceil(capacity);
         let index = round.tray.page.min(pages.saturating_sub(1));
@@ -116,16 +188,17 @@ impl GameView {
         let Some(piece) = round.assembly.undo() else {
             return;
         };
-        let tray = &mut round.tray;
-        if !round.assembly.tray(tray.filter).any(|item| item == piece) {
-            tray.filter = TrayFilter::All;
+        let page = round.pile(round.tray.filter).position(|item| item == piece);
+        if let Some(index) = page {
+            round.tray.page = index / capacity;
+        } else {
+            let index = round.pile(TrayFilter::All).position(|item| item == piece);
+            if let Some(index) = index {
+                round.tray.filter = TrayFilter::All;
+                round.tray.page = index / capacity;
+            }
         }
-        tray.page = round
-            .assembly
-            .tray(tray.filter)
-            .position(|item| item == piece)
-            .expect("undone piece returned to tray")
-            / capacity;
+        let tray = &mut round.tray;
         tray.selected = Some(piece);
         tray.cursor = piece;
         tray.hint = None;
@@ -248,71 +321,182 @@ impl GameView {
     }
 
     fn focus_tray(&self, capacity: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(&next) = self.tray_page(capacity).pieces.first() {
+        if let Some(next) = self
+            .tray_page(capacity)
+            .pieces
+            .first()
+            .copied()
+            .or_else(|| {
+                self.round()
+                    .loose_on_table()
+                    .next()
+                    .map(|loose| loose.piece)
+            })
+        {
             self.piece_focus[next].focus(window, cx);
         } else {
             self.all_pieces_focus.focus(window, cx);
         }
     }
 
-    pub(super) fn assembly_board(
+    pub(super) fn assembly_table(
         &self,
-        dimensions: (f32, f32),
+        layout: TableLayout,
         art: Option<&[PieceArt]>,
-        tray_layout: TrayLayout,
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
+        let surface = Rc::new(Cell::new(Bounds::default()));
+        let measure_surface = surface.clone();
+        let picture = Rc::new(Cell::new(Bounds::default()));
+        let measure_picture = picture.clone();
+        let pile = self.reference_panel(layout.tray.width, layout.height, cx);
+        let round = self.round();
+
+        framed_board(
+            div().w_full().child(
+                div()
+                    .id("jigsaw-worktable")
+                    .debug_selector(|| "jigsaw-worktable".into())
+                    .relative()
+                    .w_full()
+                    .flex()
+                    .gap(px(SURFACE_GAP))
+                    .items_start()
+                    .when(!layout.wide, |table| table.flex_col())
+                    .bg(rgb(BOARD))
+                    .on_drop(cx.listener(move |view, drag: &DraggedPiece, window, cx| {
+                        view.drop_piece(drag, surface.get(), picture.get(), window, cx);
+                    }))
+                    .child(
+                        canvas(
+                            move |bounds, _, _| measure_surface.set(bounds),
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .inset_0()
+                        .size_full(),
+                    )
+                    .child(self.assembly_board(layout, art, measure_picture, window, cx))
+                    .child(
+                        div()
+                            .w(px(layout.tray.width))
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .py_2()
+                            .when(!layout.wide, |corner| corner.ml_auto())
+                            .child(pile)
+                            .children(art.map(|pieces| {
+                                self.piece_tray(layout.tray, layout.picture, pieces, cx)
+                            })),
+                    )
+                    .children(art.into_iter().flat_map(|pieces| {
+                        round.loose_on_table().map(move |loose| {
+                            self.loose_piece(loose, &pieces[loose.piece], layout.picture, cx)
+                        })
+                    })),
+            ),
+        )
+    }
+
+    fn drop_piece(
+        &mut self,
+        drag: &DraggedPiece,
+        surface: Bounds<Pixels>,
+        picture: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != Mode::Assemble
+            || self.key != drag.key
+            || self.round().assembly_deal != drag.deal
+            || self.round().assembly.is_placed(drag.piece)
+        {
+            return;
+        }
+        let top_left = window.mouse_position() - drag.anchor.get();
+        let center = top_left + drag.center;
+        let (columns, rows) = self.key.size.dimensions();
+        if picture.contains(&center) {
+            let offset = center - picture.origin;
+            let column = (offset.x / picture.size.width * columns as f32) as usize;
+            let row = (offset.y / picture.size.height * rows as f32) as usize;
+            if column < columns && row < rows && row * columns + column == drag.piece {
+                self.try_place(drag.piece, drag.piece, window, cx);
+                cx.notify();
+                return;
+            }
+        }
+
+        let offset = top_left - surface.origin;
+        let position = [
+            (f32::from(offset.x) / (f32::from(surface.size.width) - drag.size.0).max(1.))
+                .clamp(0., 1.),
+            (f32::from(offset.y) / (f32::from(surface.size.height) - drag.size.1).max(1.))
+                .clamp(0., 1.),
+        ];
+        let round = self.round_mut();
+        round.loose.retain(|piece| piece.piece != drag.piece);
+        round.loose.push(LoosePiece {
+            piece: drag.piece,
+            position,
+        });
+        round.tray.selected = None;
+        round.tray.missed = None;
+        round.tray.hint = None;
+        self.save();
+        audio::play(cx, Effect::Move);
+        cx.notify();
+    }
+
+    fn assembly_board(
+        &self,
+        layout: TableLayout,
+        art: Option<&[PieceArt]>,
+        picture_bounds: Rc<Cell<Bounds<Pixels>>>,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
+        let dimensions = layout.picture;
         let (width, height) = dimensions;
         let round = self.round();
-        let board = div().relative().w(px(width)).h(px(height)).bg(rgb(BOARD));
-
-        if round.assembly.is_complete() {
-            return framed_board(
-                board.child(
-                    self.painting()
-                        .source
-                        .image()
-                        .size_full()
-                        .object_fit(ObjectFit::Fill),
-                ),
-            );
-        }
+        let board = div().relative().w(px(width)).h(px(height)).flex_none();
 
         let Some(art) = art else {
             let failed = matches!(self.artwork.get(&self.key), Some(Artwork::Failed));
-            return framed_board(
-                board
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_2()
-                    .text_color(rgb(t::PAPER))
-                    .child(if failed {
-                        "Couldn’t prepare the pieces."
-                    } else {
-                        "Preparing the pieces…"
-                    })
-                    .when(failed, |board| {
-                        board.child(
-                            action_button("jigsaw-retry", "Try again", true, cx).on_click(
-                                cx.listener(|view, _, _, cx| {
-                                    view.prepare_artwork(cx);
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                    }),
-            );
+            return board
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .text_color(rgb(t::PAPER))
+                .child(if failed {
+                    "Couldn’t prepare the pieces."
+                } else {
+                    "Preparing the pieces…"
+                })
+                .when(failed, |board| {
+                    board.child(
+                        action_button("jigsaw-retry", "Try again", true, cx).on_click(cx.listener(
+                            |view, _, _, cx| {
+                                view.prepare_artwork(cx);
+                                cx.notify();
+                            },
+                        )),
+                    )
+                });
         };
 
         let (columns, rows) = self.key.size.dimensions();
         let (cell_width, cell_height) = (width / columns as f32, height / rows as f32);
         let selected = round.tray.selected.is_some();
-        let capacity = tray_layout.capacity();
+        let capacity = layout.tray.capacity();
         let has_cursor = selected && self.board_focus.is_focused(window);
         let settling = self.settling_piece.filter(|_| motion::enabled(cx));
+        let show_grid = self.show_grid;
         let outlines: Vec<_> = art
             .iter()
             .enumerate()
@@ -324,6 +508,8 @@ impl GameView {
                     Outline::Hint
                 } else if has_cursor && piece == round.tray.cursor {
                     Outline::Focus
+                } else if !show_grid {
+                    Outline::Hidden
                 } else if placed {
                     Outline::Placed
                 } else {
@@ -333,9 +519,10 @@ impl GameView {
             })
             .collect();
 
-        framed_board(board.child(
+        board.child(
             div()
                 .id("jigsaw-assembly-board")
+                .debug_selector(|| "jigsaw-assembly-board".into())
                 .role(Role::Group)
                 .aria_label("Assembly board")
                 .aria_description("With a piece selected, use the arrow keys to move, Enter to try the spot, or Escape to return it to the tray.")
@@ -346,7 +533,7 @@ impl GameView {
                 .on_key_down(cx.listener(move |view, event, window, cx| {
                     view.board_key(event, window, cx, capacity);
                 }))
-                .when(self.reference() == Reference::Ghost, |board| {
+                .when(self.reference() != Reference::Off, |board| {
                     board.child(
                         self.painting().source.image()
                             .absolute()
@@ -378,7 +565,7 @@ impl GameView {
                     )
                 }))
                 .child(canvas(
-                    |_, _, _| (),
+                    move |bounds, _, _| picture_bounds.set(bounds),
                     move |bounds, _, window, _| paint_outlines(bounds, (cell_width, cell_height), &outlines, window),
                 ).absolute().inset_0().size_full())
                 .children((0..self.key.size.piece_count()).map(|target| {
@@ -403,18 +590,8 @@ impl GameView {
                                     }
                                 }))
                         })
-                        .drag_over::<DraggedPiece>(|style, _, _, _| style.bg(rgba(0xfffcf524)))
-                        .on_drop(cx.listener(move |view, drag: &DraggedPiece, window, cx| {
-                            if view.mode == Mode::Assemble
-                                && view.key == drag.key
-                                && view.round().assembly_deal == drag.deal
-                            {
-                                view.try_place(drag.piece, target, window, cx);
-                                cx.notify();
-                            }
-                        }))
                 })),
-        ))
+        )
     }
 
     pub(super) fn piece_tray(
@@ -426,9 +603,12 @@ impl GameView {
     ) -> Div {
         let round = self.round();
         let page = self.tray_page(layout.capacity());
-        let first_piece = page.pieces.first().copied();
+        let first_piece = page
+            .pieces
+            .first()
+            .copied()
+            .or_else(|| round.loose_on_table().next().map(|loose| loose.piece));
         let remaining = self.key.size.piece_count() - round.assembly.placed_count();
-        let palette = t::colors(cx);
         div()
             .w(px(layout.width))
             .flex_none()
@@ -440,8 +620,8 @@ impl GameView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(t::display_type("Piece tray", 17.))
-                    .child(small_text(format!("{remaining} left"), cx)),
+                    .child(t::display_type("Loose pieces", 17.).text_color(rgb(t::PAPER)))
+                    .child(small_text(format!("{remaining} left"), cx).text_color(rgb(t::PAPER))),
             )
             .child(
                 div()
@@ -477,7 +657,7 @@ impl GameView {
                     )
                     .child(
                         action_button("jigsaw-hint", "Hint", first_piece.is_some(), cx)
-                            .aria_label("Show where a tray piece fits")
+                            .aria_label("Show where a loose piece fits")
                             .when_some(first_piece, |button, fallback| {
                                 button.on_click(cx.listener(
                                     move |view, event: &gpui::ClickEvent, window, cx| {
@@ -495,20 +675,17 @@ impl GameView {
                 div()
                     .p(px(TRAY_PADDING))
                     .rounded_md()
-                    .border_1()
-                    .border_color(rgb(palette.border))
-                    .bg(rgb(palette.paper))
                     .when(page.pieces.is_empty(), |tray| {
                         let message = match round.tray.filter {
-                            TrayFilter::Edges => "All edge pieces are placed.",
-                            TrayFilter::Interior => "All interior pieces are placed.",
-                            TrayFilter::All => "All pieces are placed.",
+                            TrayFilter::Edges => "No edge pieces in the pile.",
+                            TrayFilter::Interior => "No interior pieces in the pile.",
+                            TrayFilter::All => "The pile is empty.",
                         };
                         tray.min_h(px(layout.slot))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(small_text(message, cx))
+                            .child(small_text(message, cx).text_color(rgb(t::PAPER)))
                     })
                     .when(!page.pieces.is_empty(), |tray| {
                         tray.flex().flex_col().gap(px(CELL_GAP)).children(
@@ -554,15 +731,18 @@ impl GameView {
                                     }))
                                 }),
                         )
-                        .child(small_text(
-                            format!(
-                                "{}–{} of {}",
-                                page.first + 1,
-                                page.first + page.pieces.len(),
-                                page.total
-                            ),
-                            cx,
-                        ))
+                        .child(
+                            small_text(
+                                format!(
+                                    "{}–{} of {}",
+                                    page.first + 1,
+                                    page.first + page.pieces.len(),
+                                    page.total
+                                ),
+                                cx,
+                            )
+                            .text_color(rgb(t::PAPER)),
+                        )
                         .child(
                             action_button("jigsaw-tray-next", "Next", next, cx)
                                 .min_h(px(30.))
@@ -595,76 +775,126 @@ impl GameView {
         board: (f32, f32),
         cx: &Context<Self>,
     ) -> Stateful<Div> {
-        let round = self.round();
-        let selected = round.tray.selected == Some(piece);
-        let palette = t::colors(cx);
-        let description = if round.assembly.is_edge(piece) {
-            "Edge piece"
-        } else {
-            "Interior piece"
-        };
         let inner = slot - 9.;
         let (width, height) = (inner.min(inner * art.aspect), inner.min(inner / art.aspect));
-        let (columns, rows) = self.key.size.dimensions();
-        let center_x = (piece % columns) as f32 + 0.5;
-        let center_y = (piece / columns) as f32 + 0.5;
-        div()
-            .id(("jigsaw-tray-piece", piece))
-            .role(Role::Button)
-            .aria_label(format!("{description} {}", ordinal + 1))
-            .aria_selected(selected)
-            .track_focus(&self.piece_focus[piece])
-            .tab_index(0)
+        let (stagger_x, stagger_y) = [(0., 2.), (3., 0.), (0., -3.), (-2., -1.)][piece % 4];
+        self.piece_control("jigsaw-tray-piece", piece, ordinal, cx)
             .size(px(slot))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(if selected {
-                palette.gold_text
-            } else {
-                palette.border
-            }))
-            .bg(rgb(if selected {
-                t::GOLD_HOVER
-            } else {
-                palette.surface
-            }))
-            .cursor_pointer()
-            .when(!selected, |tile| {
-                tile.hover(move |style| style.bg(rgb(palette.hover)))
-            })
-            .focus_visible(move |style| style.border_color(rgb(palette.ink)).bg(rgb(palette.hover)))
             .child(
                 img(art.image.clone())
+                    .relative()
+                    .left(px(stagger_x))
+                    .top(px(stagger_y))
                     .w(px(width))
                     .h(px(height))
                     .object_fit(ObjectFit::Fill),
             )
             .on_drag(
-                DraggedPiece {
-                    key: self.key,
-                    deal: round.assembly_deal,
-                    piece,
-                    image: art.image.clone(),
-                    size: (art.width * board.0, art.height * board.1),
-                    center: (
-                        (center_x / columns as f32 - art.left) * board.0,
-                        (center_y / rows as f32 - art.top) * board.1,
-                    ),
-                    slot,
-                },
-                |drag, offset, _, cx| {
-                    cx.new(|_| DragPreview {
-                        image: drag.image.clone(),
-                        size: drag.size,
-                        offset: (offset.x - px(drag.center.0), offset.y - px(drag.center.1)),
-                        slot: drag.slot,
-                    })
-                },
+                self.dragged_piece(piece, art, board),
+                |drag, offset, _, cx| drag.preview(offset, drag.center, cx),
             )
+    }
+
+    fn loose_piece(
+        &self,
+        loose: &LoosePiece,
+        art: &PieceArt,
+        board: (f32, f32),
+        cx: &Context<Self>,
+    ) -> Div {
+        let (width, height) = (art.width * board.0, art.height * board.1);
+        let drag = self.dragged_piece(loose.piece, art, board);
+        let anchor = drag.anchor.clone();
+        let hitbox = Rc::new(Cell::new(Bounds::default()));
+        let measure = hitbox.clone();
+        div()
+            .absolute()
+            .inset_0()
+            .right(px(width))
+            .bottom(px(height))
+            .child(
+                self.piece_control("jigsaw-loose-piece", loose.piece, loose.piece, cx)
+                    .absolute()
+                    .left(relative(loose.position[0]))
+                    .top(relative(loose.position[1]))
+                    .w(px(width))
+                    .h(px(height))
+                    .child(
+                        canvas(move |bounds, _, _| measure.set(bounds), |_, (), _, _| {})
+                            .absolute()
+                            .inset_0(),
+                    )
+                    .child(
+                        img(art.image.clone())
+                            .size_full()
+                            .object_fit(ObjectFit::Fill),
+                    )
+                    .on_mouse_down(MouseButton::Left, move |event, _, _| {
+                        anchor.set(event.position - hitbox.get().origin);
+                    })
+                    .on_drag(drag, |drag, offset, _, cx| {
+                        drag.preview(offset, drag.anchor.get(), cx)
+                    }),
+            )
+    }
+
+    fn dragged_piece(&self, piece: usize, art: &PieceArt, board: (f32, f32)) -> DraggedPiece {
+        let (columns, rows) = self.key.size.dimensions();
+        let center_x = (piece % columns) as f32 + 0.5;
+        let center_y = (piece / columns) as f32 + 0.5;
+        let center = point(
+            px((center_x / columns as f32 - art.left) * board.0),
+            px((center_y / rows as f32 - art.top) * board.1),
+        );
+        DraggedPiece {
+            key: self.key,
+            deal: self.round().assembly_deal,
+            piece,
+            image: art.image.clone(),
+            size: (art.width * board.0, art.height * board.1),
+            center,
+            anchor: Rc::new(Cell::new(center)),
+        }
+    }
+
+    fn piece_control(
+        &self,
+        id: &'static str,
+        piece: usize,
+        ordinal: usize,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let round = self.round();
+        let selected = round.tray.selected == Some(piece);
+        let description = if round.assembly.is_edge(piece) {
+            "Edge piece"
+        } else {
+            "Interior piece"
+        };
+        div()
+            .id((id, piece))
+            .debug_selector(move || format!("{id}-{piece}"))
+            .role(Role::Button)
+            .aria_label(format!("{description} {}", ordinal + 1))
+            .aria_selected(selected)
+            .track_focus(&self.piece_focus[piece])
+            .tab_index(0)
+            .rounded_sm()
+            .border_1()
+            .border_color(if selected {
+                rgb(t::GOLD)
+            } else {
+                rgba(0x00000000)
+            })
+            .cursor_grab()
+            .when(!selected, |tile| {
+                tile.hover(|style| style.bg(rgba(0xfff7df18)))
+            })
+            .focus_visible(|style| style.border_color(rgb(t::PAPER)).bg(rgba(0xfff7df18)))
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                     view.select_piece(piece);
@@ -689,6 +919,7 @@ fn placed_image(art: &PieceArt, (width, height): (f32, f32)) -> Img {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Outline {
+    Hidden,
     Empty,
     Placed,
     Focus,

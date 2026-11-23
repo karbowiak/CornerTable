@@ -1,15 +1,21 @@
 use corner_table_jigsaw::{Assembly, Placement, Puzzle, Size};
 use serde::{Deserialize, Serialize};
 
-use super::{AttemptId, GALLERY, GameView, Mode, PuzzleKey, Reference, Round, Tray};
+use super::{AttemptId, GALLERY, GameView, LoosePiece, Mode, PuzzleKey, Reference, Round, Tray};
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct SavedGallery {
     active: SavedKey,
     mode: Mode,
     reference: Reference,
+    #[serde(default = "grid_enabled")]
+    show_grid: bool,
     seed: u64,
     rounds: Vec<SavedRound>,
+}
+
+fn grid_enabled() -> bool {
+    true
 }
 
 #[derive(Deserialize, Serialize)]
@@ -54,6 +60,8 @@ struct SavedAssembly {
     attempt: AttemptId,
     #[serde(default)]
     moves: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    loose: Vec<LoosePiece>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -75,6 +83,7 @@ impl SavedRound {
                 hints_used: round.tray.hints_used,
                 attempt: round.assembly_attempt,
                 moves: round.assembly_moves,
+                loose: round.loose.clone(),
             },
             swap: SavedSwap {
                 seed: round.swap_deal,
@@ -118,6 +127,21 @@ impl SavedRound {
                 AttemptId::default(),
             ),
         };
+        let mut seen = vec![false; key.size.piece_count()];
+        let loose = self
+            .assembly
+            .loose
+            .into_iter()
+            .filter(|piece| {
+                valid
+                    && piece.piece < seen.len()
+                    && piece
+                        .position
+                        .iter()
+                        .all(|value| (0.0..=1.0).contains(value))
+                    && !std::mem::replace(&mut seen[piece.piece], true)
+            })
+            .collect();
         let round = Round {
             assembly,
             swap,
@@ -126,6 +150,7 @@ impl SavedRound {
             assembly_attempt,
             swap_attempt,
             assembly_moves,
+            loose,
             tray: Tray {
                 hints_used,
                 ..Tray::default()
@@ -142,6 +167,7 @@ impl GameView {
         }
         self.mode = saved.mode;
         self.reference = saved.reference;
+        self.show_grid = saved.show_grid;
         self.seed = saved.seed;
         self.rounds = saved
             .rounds
@@ -159,6 +185,7 @@ impl GameView {
             active: SavedKey::new(self.key, &self.gallery),
             mode: self.mode,
             reference: self.reference,
+            show_grid: self.show_grid,
             seed: self.seed,
             rounds,
         });
@@ -182,6 +209,16 @@ mod tests {
         let mut round = Round::new(key.size, 32);
         round.assembly.place(18, 18);
         round.assembly.place(3, 3);
+        round.loose = vec![
+            LoosePiece {
+                piece: 3,
+                position: [0.45, 0.7],
+            },
+            LoosePiece {
+                piece: 8,
+                position: [0.9, 0.2],
+            },
+        ];
         round.assembly_moves = 4;
         round.tray.hints_used = 1;
         round.swap_deal = 99;
@@ -198,6 +235,7 @@ mod tests {
         assert_eq!(loaded.tray.hints_used, 1);
         assert_eq!(loaded.assembly_deal, round.assembly_deal);
         assert_eq!(loaded.assembly_moves, 4);
+        assert_eq!(loaded.loose, round.loose);
         assert!(loaded.assembly_attempt == round.assembly_attempt);
         assert!(loaded.swap_attempt == round.swap_attempt);
         assert!(loaded.assembly_attempt != loaded.swap_attempt);
@@ -236,6 +274,7 @@ mod tests {
         assert!(loaded_key == key);
         assert_eq!(loaded.assembly.placements(), &[5]);
         assert_eq!(loaded.assembly_moves, 1);
+        assert!(loaded.loose.is_empty());
         assert!(loaded.assembly_attempt != loaded.swap_attempt);
     }
 
