@@ -15,8 +15,25 @@ pub enum RecordAction {
     OpenPicker,
     FilterGame(Option<GameId>),
     FilterPeriod(Period),
-    ShowBests(bool),
+    ShowView(RecordView),
     ShowMore,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RecordView {
+    Recent,
+    Bests,
+    FirstWins,
+}
+
+impl RecordView {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Recent => "Recent results",
+            Self::Bests => "Personal bests",
+            Self::FirstWins => "First wins",
+        }
+    }
 }
 
 pub struct Records {
@@ -24,7 +41,7 @@ pub struct Records {
     game: Option<GameId>,
     period: Period,
     picker_open: bool,
-    bests: bool,
+    view: RecordView,
     visible: usize,
 }
 
@@ -35,7 +52,7 @@ impl Default for Records {
             game: None,
             period: Period::AllTime,
             picker_open: false,
-            bests: false,
+            view: RecordView::Recent,
             visible: PAGE_SIZE,
         }
     }
@@ -61,7 +78,7 @@ impl Records {
                 self.close_picker();
             }
             RecordAction::FilterPeriod(period) => self.period = period,
-            RecordAction::ShowBests(bests) => self.bests = bests,
+            RecordAction::ShowView(view) => self.view = view,
         }
         self.visible = PAGE_SIZE;
     }
@@ -71,29 +88,25 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
     let palette = t::colors(cx);
     let state = &app.records;
     let today = Local::now().date_naive();
-    let rounds: Vec<_> = state
-        .history
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .filter(|result| {
-            state.game.as_ref().is_none_or(|game| &result.game == game)
-                && in_period(result, state.period, today)
-        })
-        .collect();
-    let count = rounds.len();
-    let total = |outcome| {
-        rounds
+    let history = state.history.as_deref().unwrap_or_default();
+    let rounds: Vec<_> = if state.view == RecordView::FirstWins {
+        first_wins(history, state.game.as_ref(), state.period, today)
+    } else {
+        history
             .iter()
-            .filter(|result| result.outcome == outcome)
-            .count()
+            .filter(|result| {
+                state.game.as_ref().is_none_or(|game| &result.game == game)
+                    && in_period(result, state.period, today)
+            })
+            .collect()
     };
-    let (wins, losses, draws) = (
-        total(Outcome::Won),
-        total(Outcome::Lost),
-        total(Outcome::Draw),
-    );
-    let listed = if state.bests {
+    let count = rounds.len();
+    let summary = if state.view == RecordView::FirstWins {
+        format!("{count} first {}", if count == 1 { "win" } else { "wins" })
+    } else {
+        round_summary(&rounds)
+    };
+    let listed = if state.view == RecordView::Bests {
         personal_bests(rounds)
     } else {
         rounds
@@ -116,19 +129,6 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         .aria_label("Records"),
                 )
                 .when(count > 0, |line| {
-                    let mut summary = format!(
-                        "{count} {} · {wins} {}",
-                        if count == 1 { "round" } else { "rounds" },
-                        if wins == 1 { "win" } else { "wins" },
-                    );
-                    if losses > 0 {
-                        let label = if losses == 1 { "loss" } else { "losses" };
-                        summary.push_str(&format!(" · {losses} {label}"));
-                    }
-                    if draws > 0 {
-                        let label = if draws == 1 { "draw" } else { "draws" };
-                        summary.push_str(&format!(" · {draws} {label}"));
-                    }
                     line.child(
                         div()
                             .id("records-count")
@@ -141,35 +141,47 @@ pub fn records(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 }),
         )
         .child(filters(app, narrow, cx))
-        .child(div().flex().gap_2().children([false, true].map(|bests| {
-            let (id, title) = if bests {
-                ("records-bests", "Personal bests")
-            } else {
-                ("records-recent", "Recent results")
-            };
-            widgets::button(
-                id,
-                title,
-                Action::Record(RecordAction::ShowBests(bests)),
-                state.bests == bests,
-                cx,
+        .child(
+            div().flex().flex_wrap().gap_2().children(
+                [
+                    ("records-recent", RecordView::Recent),
+                    ("records-bests", RecordView::Bests),
+                    ("records-first-wins", RecordView::FirstWins),
+                ]
+                .map(|(id, view)| {
+                    let selected = state.view == view;
+                    widgets::button(
+                        id,
+                        view.title(),
+                        Action::Record(RecordAction::ShowView(view)),
+                        selected,
+                        cx,
+                    )
+                    .debug_selector(move || id.to_owned())
+                    .min_h(px(34.))
+                    .aria_toggled(selected.into())
+                }),
+            ),
+        )
+        .when(state.view == RecordView::FirstWins, |page| {
+            page.child(
+                div()
+                    .text_size(px(13.))
+                    .text_color(rgb(palette.muted))
+                    .child("The earliest win recorded on this device for each game."),
             )
-            .min_h(px(34.))
-            .aria_toggled((state.bests == bests).into())
-        })))
+        })
         .child(
             t::panel(cx)
                 .id("records-list")
                 .overflow_hidden()
                 .role(Role::List)
-                .aria_label(if state.bests {
-                    "Personal bests"
-                } else {
-                    "Recent results"
-                })
+                .aria_label(state.view.title())
                 .when(listed.is_empty(), |panel| {
                     let text = if state.history.is_none() {
                         "Loading records…"
+                    } else if state.view == RecordView::FirstWins {
+                        "No first wins for this selection."
                     } else if state.history.as_ref().is_some_and(Vec::is_empty) {
                         "Finish a round to start your records."
                     } else if count > 0 {
@@ -234,6 +246,54 @@ fn in_period(result: &GameResult, period: Period, today: NaiveDate) -> bool {
     DateTime::from_timestamp_millis(result.completed_at_ms)
         .map(|date| date.with_timezone(&Local).date_naive())
         .is_some_and(|date| (start..=today).contains(&date))
+}
+
+fn round_summary(rounds: &[&GameResult]) -> String {
+    let count = rounds.len();
+    let total = |outcome| {
+        rounds
+            .iter()
+            .filter(|result| result.outcome == outcome)
+            .count()
+    };
+    let wins = total(Outcome::Won);
+    let mut summary = format!(
+        "{count} {} · {wins} {}",
+        if count == 1 { "round" } else { "rounds" },
+        if wins == 1 { "win" } else { "wins" },
+    );
+    for (outcome, singular, plural) in [
+        (Outcome::Lost, "loss", "losses"),
+        (Outcome::Draw, "draw", "draws"),
+    ] {
+        let total = total(outcome);
+        if total > 0 {
+            let label = if total == 1 { singular } else { plural };
+            summary.push_str(&format!(" · {total} {label}"));
+        }
+    }
+    summary
+}
+
+fn first_wins<'a>(
+    history: &'a [GameResult],
+    game: Option<&GameId>,
+    period: Period,
+    today: NaiveDate,
+) -> Vec<&'a GameResult> {
+    // Storage returns newest first, breaking timestamp ties by attempt ID.
+    // Select each game's oldest win before applying the date filter.
+    let mut seen = std::collections::HashSet::new();
+    let mut wins: Vec<_> = history
+        .iter()
+        .rev()
+        .filter(|result| result.outcome == Outcome::Won)
+        .filter(|result| game.is_none_or(|id| id == &result.game))
+        .filter(|result| seen.insert(&result.game))
+        .filter(|result| in_period(result, period, today))
+        .collect();
+    wins.reverse();
+    wins
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -502,6 +562,89 @@ fn format_score(score: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_wins_use_lifetime_history_before_filters_and_across_modes() {
+        use chrono::TimeZone as _;
+
+        let today = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap();
+        let record = |game: &str, mode: &str, outcome, day: u32| GameResult {
+            game: GameId(game.into()),
+            launch: None,
+            mode: mode.into(),
+            outcome,
+            metric: ResultMetric::Points(10),
+            completed_at_ms: Local
+                .with_ymd_and_hms(2026, 11, day, 12, 0, 0)
+                .single()
+                .unwrap()
+                .timestamp_millis(),
+        };
+        let history = [
+            record("solitaire", "Spider", Outcome::Won, 23),
+            record("chess", "Computer", Outcome::Won, 23),
+            record("chess", "Hot-seat", Outcome::Finished, 22),
+            record("solitaire", "Klondike", Outcome::Won, 20),
+            record("chess", "Computer", Outcome::Draw, 19),
+            record("mahjong", "Turtle", Outcome::Lost, 18),
+            record("gem-cascade", "Classic", Outcome::Finished, 17),
+        ];
+
+        let all = first_wins(&history, None, Period::AllTime, today);
+        assert_eq!(all.len(), 2);
+        assert!(std::ptr::eq(all[0], &history[1]));
+        assert!(std::ptr::eq(all[1], &history[3]));
+        for period in [Period::Today, Period::ThisWeek] {
+            let filtered = first_wins(&history, None, period, today);
+            assert_eq!(filtered.len(), 1);
+            assert!(std::ptr::eq(filtered[0], &history[1]));
+            assert!(first_wins(&history, Some(&history[0].game), period, today).is_empty());
+        }
+        let solitaire = first_wins(&history, Some(&history[0].game), Period::AllTime, today);
+        assert_eq!(solitaire.len(), 1);
+        assert!(std::ptr::eq(solitaire[0], &history[3]));
+    }
+
+    #[gpui::test]
+    fn first_wins_button_preserves_selected_filters(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, size};
+
+        let game = GameId("solitaire".into());
+        let window = cx.open_window(size(px(760.), px(540.)), |window, cx| {
+            let mut desktop = Desktop::new(
+                corner_table_api::FixtureApi::load().unwrap(),
+                t::Appearance::Light,
+                window,
+                cx,
+            );
+            desktop.page = Page::Records;
+            desktop
+                .records
+                .apply(RecordAction::FilterGame(Some(game.clone())));
+            desktop
+                .records
+                .apply(RecordAction::FilterPeriod(Period::ThisWeek));
+            desktop
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        for (button, expected) in [
+            ("records-first-wins", RecordView::FirstWins),
+            ("records-bests", RecordView::Bests),
+            ("records-recent", RecordView::Recent),
+        ] {
+            let center = visual.debug_bounds(button).unwrap().center();
+            visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::none());
+            visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::none());
+            window
+                .read_with(cx, |desktop, _| {
+                    assert!(desktop.records.view == expected);
+                    assert_eq!(desktop.records.game.as_ref(), Some(&game));
+                    assert_eq!(desktop.records.period, Period::ThisWeek);
+                })
+                .unwrap();
+        }
+    }
 
     #[test]
     fn bests_rank_only_completions_and_keep_metrics_and_modes_separate() {
