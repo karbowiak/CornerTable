@@ -6,6 +6,8 @@ pub enum Suit {
     Diamonds,
     Leaves,
     Blossoms,
+    Waves,
+    Suns,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,34 +39,162 @@ pub enum MoveResult {
 }
 
 pub struct Board {
+    layout: Layout,
     cubes: Vec<Cube>,
     removed: Vec<bool>,
     selected: Option<usize>,
+    moves: Vec<[usize; 2]>,
 }
 
-// Each row specifies y, the starting x, and an even number of cubes.
-const TERRACE: [&[(u8, u8, u8)]; 3] = [
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    Courtyard,
+    Terrace,
+    Ridge,
+    Lantern,
+    Gatehouse,
+}
+
+impl Layout {
+    pub const ALL: [Self; 5] = [
+        Self::Courtyard,
+        Self::Terrace,
+        Self::Ridge,
+        Self::Lantern,
+        Self::Gatehouse,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Courtyard => "courtyard",
+            Self::Terrace => "terrace",
+            Self::Ridge => "ridge",
+            Self::Lantern => "lantern",
+            Self::Gatehouse => "gatehouse",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Courtyard => "Courtyard",
+            Self::Terrace => "Terrace",
+            Self::Ridge => "Ridge",
+            Self::Lantern => "Lantern",
+            Self::Gatehouse => "Gatehouse",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|layout| layout.id() == id)
+    }
+
+    fn layers(self) -> &'static [&'static [Row]] {
+        match self {
+            Self::Courtyard => COURTYARD,
+            Self::Terrace => TERRACE,
+            Self::Ridge => RIDGE,
+            Self::Lantern => LANTERN,
+            Self::Gatehouse => GATEHOUSE,
+        }
+    }
+}
+
+// Each run specifies y, the starting x, and an even number of cubes.
+type Row = (u8, u8, u8);
+
+const COURTYARD: &[&[Row]] = &[
+    &[
+        (0, 0, 6),
+        (1, 0, 2),
+        (1, 4, 2),
+        (2, 0, 2),
+        (2, 4, 2),
+        (3, 0, 2),
+        (3, 4, 2),
+        (4, 0, 6),
+    ],
+    &[(0, 1, 4), (4, 1, 4)],
+];
+const TERRACE: &[&[Row]] = &[
     &[(0, 1, 4), (1, 0, 6), (2, 0, 6), (3, 0, 6), (4, 1, 4)],
     &[(1, 1, 4), (2, 1, 4), (3, 1, 4)],
     &[(2, 2, 2)],
 ];
-const RIDGE: [&[(u8, u8, u8)]; 3] = [
+const RIDGE: &[&[Row]] = &[
     &[(0, 1, 4), (1, 0, 6), (2, 0, 6), (3, 1, 4), (4, 1, 4)],
     &[(0, 1, 4), (1, 1, 4), (2, 1, 4), (4, 2, 2)],
     &[(1, 2, 2)],
+];
+const LANTERN: &[&[Row]] = &[
+    &[
+        (0, 2, 4),
+        (1, 1, 6),
+        (2, 0, 8),
+        (3, 0, 8),
+        (4, 1, 6),
+        (5, 2, 4),
+    ],
+    &[(1, 3, 2), (2, 2, 4), (3, 2, 4)],
+    &[(2, 3, 2)],
+];
+const GATEHOUSE: &[&[Row]] = &[
+    &[
+        (0, 0, 2),
+        (0, 6, 2),
+        (1, 0, 8),
+        (2, 1, 6),
+        (3, 1, 6),
+        (4, 0, 8),
+        (5, 0, 2),
+        (5, 6, 2),
+    ],
+    &[
+        (0, 0, 2),
+        (0, 6, 2),
+        (1, 0, 2),
+        (1, 6, 2),
+        (2, 1, 2),
+        (2, 5, 2),
+    ],
+    &[(0, 0, 2), (0, 6, 2), (1, 0, 2), (1, 6, 2)],
+    &[(0, 0, 2), (0, 6, 2)],
 ];
 
 impl Board {
     pub fn new(seed: u64) -> Self {
         let mut random = Random(seed);
-        let layers = [TERRACE, RIDGE][random.index(2)];
+        let layout = [Layout::Terrace, Layout::Ridge][random.index(2)];
+        // Seed-only callers retain the original challenge deal.
+        Self::deal(
+            layout,
+            random,
+            &[Suit::Dots, Suit::Diamonds, Suit::Leaves, Suit::Blossoms],
+        )
+    }
+
+    pub fn with_layout(layout: Layout, seed: u64) -> Self {
+        Self::deal(
+            layout,
+            Random(seed),
+            &[
+                Suit::Dots,
+                Suit::Diamonds,
+                Suit::Leaves,
+                Suit::Blossoms,
+                Suit::Waves,
+                Suit::Suns,
+            ],
+        )
+    }
+
+    fn deal(layout: Layout, mut random: Random, suits: &[Suit]) -> Self {
         let mut cubes = Vec::new();
         let mut rows = Vec::new();
         let blank = Face {
             suit: Suit::Dots,
             rank: 1,
         };
-        for (level, layer) in layers.into_iter().enumerate() {
+        for (level, &layer) in layout.layers().iter().enumerate() {
             for &(y, start_x, width) in layer {
                 let start = cubes.len();
                 for x in start_x..start_x + width {
@@ -81,9 +211,11 @@ impl Board {
             }
         }
         let mut board = Self {
+            layout,
             removed: vec![false; cubes.len()],
             cubes,
             selected: None,
+            moves: Vec::new(),
         };
 
         let mut pairs = Vec::with_capacity(board.cubes.len() / 2);
@@ -106,7 +238,8 @@ impl Board {
             }
         }
         if pairs.len() != board.cubes.len() / 2 {
-            // With all higher layers removed, both ends of each row are free.
+            // Once higher layers are gone, both ends of each run have an
+            // open side. Removing them in pairs certifies every deal.
             pairs = rows
                 .into_iter()
                 .rev()
@@ -115,9 +248,9 @@ impl Board {
                 })
                 .collect();
         }
-        let mut faces: Vec<_> = [Suit::Dots, Suit::Diamonds, Suit::Leaves, Suit::Blossoms]
-            .into_iter()
-            .flat_map(|suit| (1..=5).map(move |rank| Face { suit, rank }))
+        let mut faces: Vec<_> = suits
+            .iter()
+            .flat_map(|&suit| (1..=5).map(move |rank| Face { suit, rank }))
             .collect();
         // Each marking belongs to one pair. Taking a legal match early leaves
         // the other pairs intact and can only expose more cubes.
@@ -128,6 +261,18 @@ impl Board {
         }
         board.restart();
         board
+    }
+
+    pub fn shape(&self) -> Layout {
+        self.layout
+    }
+
+    pub fn total_pairs(&self) -> usize {
+        self.cubes.len() / 2
+    }
+
+    pub fn moves(&self) -> &[[usize; 2]] {
+        &self.moves
     }
 
     pub fn layout(&self) -> impl Iterator<Item = Position> + '_ {
@@ -185,21 +330,30 @@ impl Board {
     }
 
     pub fn hint(&self) -> Option<[usize; 2]> {
-        let free: Vec<_> = self.free_ids().collect();
+        let pairs = self.available_pairs();
         if let Some(selected) = self.selected
-            && let Some(&partner) = free.iter().find(|&&id| self.matches(selected, id))
+            && let Some(&pair) = pairs.iter().find(|pair| pair.contains(&selected))
         {
-            return Some([selected, partner]);
+            return Some(if pair[0] == selected {
+                pair
+            } else {
+                [pair[1], pair[0]]
+            });
         }
-        for (index, &first) in free.iter().enumerate() {
-            if let Some(&second) = free[index + 1..]
-                .iter()
-                .find(|&&id| self.matches(first, id))
-            {
-                return Some([first, second]);
-            }
-        }
-        None
+        pairs.first().copied()
+    }
+
+    pub fn available_pairs(&self) -> Vec<[usize; 2]> {
+        let free: Vec<_> = self.free_ids().collect();
+        free.iter()
+            .enumerate()
+            .filter_map(|(index, &first)| {
+                free[index + 1..]
+                    .iter()
+                    .find(|&&id| self.matches(first, id))
+                    .map(|&second| [first, second])
+            })
+            .collect()
     }
 
     fn matches(&self, first: usize, second: usize) -> bool {
@@ -216,9 +370,7 @@ impl Board {
                 MoveResult::Deselected
             }
             Some(previous) if self.matches(previous, id) => {
-                self.removed[previous] = true;
-                self.removed[id] = true;
-                self.selected = None;
+                self.record_match([previous, id]);
                 MoveResult::Matched
             }
             Some(_) => MoveResult::DifferentFace,
@@ -226,9 +378,42 @@ impl Board {
         }
     }
 
+    /// Replays one recorded move after validating both cubes against the current board.
+    pub fn remove_pair(&mut self, [first, second]: [usize; 2]) -> bool {
+        if !self.is_free(first) || !self.is_free(second) || !self.matches(first, second) {
+            return false;
+        }
+        self.record_match([first, second]);
+        true
+    }
+
+    fn record_match(&mut self, pair: [usize; 2]) {
+        for id in pair {
+            self.removed[id] = true;
+        }
+        self.selected = None;
+        self.moves.push(pair);
+    }
+
+    pub fn deselect(&mut self) {
+        self.selected = None;
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(pair) = self.moves.pop() else {
+            return false;
+        };
+        for id in pair {
+            self.removed[id] = false;
+        }
+        self.deselect();
+        true
+    }
+
     pub fn restart(&mut self) {
         self.removed.fill(false);
-        self.selected = None;
+        self.deselect();
+        self.moves.clear();
     }
 }
 
@@ -246,6 +431,8 @@ impl Random {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -310,5 +497,68 @@ mod tests {
         board.removed[neighbor] = true;
         assert_eq!(board.select(target), MoveResult::Selected);
         assert_eq!(board.select(target), MoveResult::Deselected);
+    }
+
+    #[test]
+    fn layouts_have_distinct_supported_stacks_and_even_removal_runs() {
+        let mut seen = BTreeSet::new();
+        for (layout, total) in Layout::ALL.into_iter().zip([32, 40, 40, 48, 60]) {
+            let mut cells = BTreeSet::new();
+            for (level, layer) in layout.layers().iter().enumerate() {
+                for &(y, start_x, width) in *layer {
+                    assert_eq!(width % 2, 0);
+                    for x in start_x..start_x + width {
+                        assert!(level == 0 || cells.contains(&(x, y, level - 1)));
+                        assert!(cells.insert((x, y, level)), "duplicated cell");
+                    }
+                }
+            }
+            assert_eq!(cells.len(), total);
+            assert!(seen.insert(cells), "repeated stack shape");
+            assert_eq!(Layout::from_id(layout.id()), Some(layout));
+        }
+    }
+
+    #[test]
+    fn all_layouts_clear_in_arbitrary_legal_match_order() {
+        for layout in Layout::ALL {
+            for seed in 0..32 {
+                let mut board = Board::with_layout(layout, seed);
+                let fresh = Board::with_layout(layout, seed);
+                assert!(board.cubes().eq(fresh.cubes()));
+
+                let mut random = Random(seed);
+                while board.remaining() > 0 {
+                    let pairs = board.available_pairs();
+                    assert!(!pairs.is_empty(), "{layout:?} seed {seed} got stuck");
+                    let pair = pairs[random.index(pairs.len())];
+                    assert!(board.remove_pair(pair));
+                }
+                assert_eq!(board.moves().len(), board.total_pairs());
+            }
+        }
+    }
+
+    #[test]
+    fn replay_and_undo_validate_moves_and_restore_selection_safely() {
+        let mut board = Board::with_layout(Layout::Gatehouse, 47);
+        let mut replay = Board::with_layout(Layout::Gatehouse, 47);
+        let [first, second] = board.hint().unwrap();
+        assert_eq!(board.select(first), MoveResult::Selected);
+        assert!(!board.remove_pair([first, usize::MAX]));
+        assert!(!board.remove_pair([first, first]));
+        assert_eq!(board.selected(), Some(first));
+        assert_eq!(board.select(second), MoveResult::Matched);
+        assert_eq!(board.moves(), &[[first, second]]);
+        assert!(replay.remove_pair([first, second]));
+        assert!(board.cubes().eq(replay.cubes()));
+        assert!(!replay.remove_pair([first, second]));
+
+        assert!(board.undo());
+        assert_eq!(board.selected(), None);
+        assert_eq!(board.remaining(), board.total_pairs() * 2);
+        assert!(board.moves().is_empty());
+        assert!(!board.undo());
+        assert!(board.remove_pair([first, second]));
     }
 }
