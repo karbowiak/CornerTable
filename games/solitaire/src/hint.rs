@@ -511,8 +511,8 @@ mod tests {
         );
 
         let mut game = empty_board(DealMode::SpiderOneSuit);
-        for column in 0..9 {
-            game.tableau[column] = vec![face_up(card(Suit::Spades, 13))];
+        for column in game.tableau.iter_mut().take(9) {
+            *column = vec![face_up(card(Suit::Spades, 13))];
         }
         game.tableau[0].push(face_up(card(Suit::Spades, 2)));
         game.stock = vec![card(Suit::Spades, 6); 10];

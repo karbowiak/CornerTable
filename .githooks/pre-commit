@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+git diff --cached --check
+if git diff --cached --quiet -- '*.rs' 'Cargo.toml' '**/Cargo.toml' \
+    'Cargo.lock' '**/Cargo.lock' 'rust-toolchain.toml' '.cargo/'; then
+    exit 0
+fi
+
+snapshot=$(mktemp -d)
+trap 'rm -rf -- "$snapshot"' EXIT
+root=$(git rev-parse --show-toplevel)
+export CARGO_TARGET_DIR="$root/target/git-hooks"
+git checkout-index --all --prefix="$snapshot/"
+cd "$snapshot"
+bash scripts/check.sh style </dev/null

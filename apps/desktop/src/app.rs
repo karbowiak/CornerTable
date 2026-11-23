@@ -508,11 +508,56 @@ impl Render for Desktop {
 #[cfg(test)]
 mod tests {
     use gpui::{
-        KeyUpEvent, Keystroke, Modifiers, MouseDownEvent, PlatformInput, TestAppContext,
-        VisualTestContext, size,
+        AssetSource, KeyUpEvent, Keystroke, Modifiers, MouseDownEvent, PlatformInput,
+        TestAppContext, VisualTestContext, size,
     };
 
     use super::*;
+
+    #[gpui::test]
+    fn the_catalog_resolves_every_game_and_cover(cx: &mut TestAppContext) {
+        let window = cx.open_window(size(px(900.), px(540.)), |window, cx| {
+            Desktop::new(
+                FixtureApi::load().unwrap(),
+                theme::Appearance::Light,
+                window,
+                cx,
+            )
+        });
+        window
+            .update(cx, |desktop, _, cx| {
+                for game in &desktop.api.library.games {
+                    let launch = GameLaunch {
+                        game: game.id.clone(),
+                        entry: GameEntry::Classic,
+                    };
+                    assert!(
+                        crate::games::open(&launch, cx).is_some(),
+                        "{} has no view",
+                        game.id.0
+                    );
+                    assert!(
+                        crate::assets::Assets
+                            .load(&format!("art/{}.jpg", game.id.0))
+                            .unwrap()
+                            .is_some(),
+                        "{} has no cover",
+                        game.id.0
+                    );
+                }
+                for mode in &desktop.api.library.solitaire_modes {
+                    assert!(
+                        crate::assets::Assets
+                            .load(&format!("art/{}.jpg", mode.id))
+                            .unwrap()
+                            .is_some(),
+                        "{} has no cover",
+                        mode.id
+                    );
+                }
+            })
+            .unwrap();
+    }
 
     #[test]
     fn shell_widths_account_for_sidebar_gutters_and_page_cap() {

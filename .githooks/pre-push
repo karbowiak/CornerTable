@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+export CARGO_TARGET_DIR="$root/target/git-hooks"
+checked=' '
+snapshot=$(mktemp -d)
+trap 'rm -rf -- "$snapshot"' EXIT
+
+while read -r local_ref local_oid _remote_ref _remote_oid; do
+    [[ "$local_oid" =~ ^0+$ ]] && continue
+    commit=$(git rev-parse --verify "$local_oid^{commit}" 2>/dev/null) || continue
+    [[ "$checked" == *" $commit "* ]] && continue
+    checked+="$commit "
+    tree="$snapshot/$commit"
+    mkdir -p "$tree"
+    # Cargo uses source mtimes to invalidate cached workspace artifacts.
+    git archive "$commit" | tar -xm -C "$tree"
+    if [[ -f "$tree/Cargo.toml" ]]; then
+        echo "Checking $local_ref at ${commit:0:12}"
+        checks="$tree/scripts/check.sh"
+        [[ -f "$checks" ]] || checks="$root/scripts/check.sh"
+        (cd "$tree" && bash "$checks" </dev/null)
+    fi
+done

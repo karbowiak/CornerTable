@@ -6,8 +6,6 @@ mod suggestion;
 #[cfg(all(test, debug_assertions))]
 mod tests;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use corner_table_solitaire::{Card, DealMode, Game, Move, Place, Suit, Variant};
 use gpui::{
     BoxShadow, ClipboardItem, Context, Div, EntityId, FocusHandle, FontWeight, KeyDownEvent,
@@ -17,7 +15,7 @@ use gpui::{
 
 use crate::{
     audio::{self, Effect},
-    games::{GameEntry, GameLaunch},
+    games::{GameEntry, GameLaunch, fresh_seed},
     storage::Outcome,
     theme as t,
 };
@@ -1786,13 +1784,6 @@ fn labeled(
             .text_color(rgb(TableStyle::active(cx).palette().text))
             .child(label.into()),
     )
-}
-
-fn fresh_seed() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
 }
 
 fn rank(value: u8) -> &'static str {

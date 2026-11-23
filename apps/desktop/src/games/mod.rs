@@ -61,11 +61,16 @@ impl GameLaunch {
             GameEntry::Challenge(id) => id.bytes().fold(0_u64, |seed, byte| {
                 seed.wrapping_mul(31).wrapping_add(u64::from(byte))
             }),
-            _ => SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos() as u64),
+            _ => fresh_seed(),
         }
     }
+}
+
+fn fresh_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }
 
 pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {

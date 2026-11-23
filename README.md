@@ -1,103 +1,46 @@
 # Corner Table
 
-Corner Table is a native Rust and GPUI collection of twenty-one tabletop, puzzle, and arcade game families. Play offline, find a game or variant with search, star favorites, or pick Surprise me. Open a daily challenge from the calendar and track your streak, recent rounds, and personal bests. The app embeds its fonts, original artwork, and puzzle data.
+An offline desktop collection of 21 classic card, board, and puzzle games, with original artwork and native keyboard and mouse controls. Play a quick round, pick a game with **Surprise me**, or work through the daily calendar. Your games, favorites, and records carry over between sessions.
 
-[Game directory](games/README.md)
+![Corner Table’s illustrated game library](docs/screenshots/library.jpg)
 
-## Export progress
+[Browse all games](games/README.md) · [Download Corner Table](https://github.com/karbowiak/games/releases/latest) · [Share feedback](https://github.com/karbowiak/games/issues/new)
 
-Choose **File → Export Progress…** (or **Ctrl+Shift+E** on Linux) and select a file outside the active profile. Corner Table reports the destination and the number of saved sessions and results after the export finishes.
+## Play
 
-The JSON file identifies its format as `corner-table-progress`, version `1`. The `preferences` object contains appearance, sound, reduced motion, window size, favorites, and the last played game. Unset preferences are `null`. The `sessions` and `results` arrays hold the saved records with their original keys and format versions. The export reads each saved record from disk. Jigsaw photos stay in the local gallery.
+| Platform | Release archive | Open |
+| --- | --- | --- |
+| Windows x64 | `corner-table-windows-x86_64.zip` | Extract and run `corner-table.exe`. |
+| Linux x86-64 | `corner-table-linux-x86_64.tar.gz` | Extract and run `./corner-table` from the extracted folder. Requires a Wayland or X11 desktop and a Vulkan driver. |
+| macOS Apple silicon | `corner-table-macos-arm64.zip` | Extract and open `Corner Table.app`. The preview build has an ad hoc signature. |
 
-## Run on Linux
+Use **How to Play** or press **F1** for rules and controls. The sidebar follows your system appearance by default, and **View → Always Reduce Motion** reduces gameplay effects. The macOS build offers a **Game sounds** toggle.
 
-Install stable Rust. On Debian or Ubuntu, install the build tools and desktop libraries.
+Share the starting layout in Solitaire, Mahjong, and Minesweeper with a deal or field code. **File → Export Progress…** saves your preferences, sessions, and results as JSON. Imported Jigsaw photos stay in the local gallery.
 
-```sh
-sudo apt install build-essential pkg-config libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libx11-xcb-dev libxcb1-dev libvulkan1
-cargo run --locked
-```
-
-GPUI uses your desktop's Wayland or X11 session and a Vulkan driver. Mesa users generally get the driver from `mesa-vulkan-drivers`. The bundled catalog and game rules run offline.
-
-## Run on macOS
-
-Install Rust and Apple's Command Line Tools (`xcode-select --install`). Run
-directly with `cargo run --locked`, or build and open the local macOS app from
-the repository root.
-
-```sh
-cargo xtask bundle
-open "target/Corner Table.app"
-```
-
-The bundle contains a release build for your Mac's architecture, with the
-artwork, fonts, and puzzle data embedded in the executable. You can also open it
-in Finder. The app version comes from Cargo and the minimum macOS version
-comes from the executable's deployment target. The command signs the bundle
-locally with an ad hoc signature. Add or replace `packaging/macos/icon.png` with
-a 1024×1024 PNG and rerun the command to update the app icon. The bundle uses
-the default macOS app icon when that file is absent.
-
-## Develop with hot reload
-
-Install [Dioxus CLI 0.7.10](https://github.com/DioxusLabs/dioxus/releases/tag/v0.7.10)
-and run `cargo xtask dev` from the repository root. Set `CORNER_TABLE_DX`
-to the absolute path of the executable if multiple tools supply `dx`.
-
-GPUI applies compatible Rust view edits in the running app, preserving the
-current game and its in-memory state. Changes to data layouts, startup code,
-dependencies, or bundled assets can require a full build. Press `r` in the
-interactive Dioxus terminal for a full rebuild, or restart the dev command.
-
-For structural changes or edits to assets, run `cargo xtask dev --restart`
-with Python 3 installed. This watcher rebuilds on source or asset changes and
-launches a fresh process after each successful build. Your current window
-stays open if a build fails. Press Ctrl+C in either watcher terminal to stop
-it and its game client.
-
-## Checks
-
-```sh
-cargo fmt --all -- --check
-cargo test --locked --workspace
-cargo clippy --locked --workspace --all-targets -- -D warnings
-```
-
-## Workspace layout
-
-| Path | Owns |
+| Spider Solitaire | Mahjong Cubes |
 | --- | --- |
-| `apps/desktop/src/pages/` | The library, Solitaire collection, Daily Challenge calendar, guides, and Records |
-| `apps/desktop/src/games/` | Game launch context and per-game GPUI views |
-| `apps/desktop/src/theme.rs` and `widgets.rs` | Shared typography, colors, and desktop controls |
-| `apps/desktop/assets/` | Original illustrations, audio cues, and bundled fonts |
-| `crates/api/` | JSON wire types and the fixture-backed API |
-| `games/` | Per-game rules, generators, and tests |
+| ![Spider Solitaire with illustrated cards and a green felt table](docs/screenshots/spider.jpg) | ![Mahjong Cubes with an angled view of the 3D board](docs/screenshots/mahjong-cubes.jpg) |
 
-## Bundled catalog
+## Build from source
 
-| Planned route | Bundled JSON |
-| --- | --- |
-| `GET /v1/library` | `crates/api/fixtures/v1/library.json` |
-| `GET /v1/home` | `crates/api/fixtures/v1/home.json` |
-| `GET /v1/leaderboards?game_id=mahjong&period=today` | The matching item in `crates/api/fixtures/v1/leaderboards.json` |
+The workspace uses Rust and GPUI. CI builds with Rust 1.100.0.
 
-Game IDs are stable slugs shared by the catalog, launch routes, and local records. Edits to fixtures take effect on rebuilding. The Daily Challenge rotation and calendar run offline. The Records page reads completed rounds on this device. The leaderboard fixtures remain available for future service development.
+- **macOS** requires Apple’s Command Line Tools. Use `cargo xtask bundle` to create `target/Corner Table.app`.
+- **Windows** requires the MSVC tools and Windows SDK. Release builds use `fxc.exe` from the SDK. Use `cargo build --locked --release -p corner-table` to create `target/release/corner-table.exe`.
+- **Linux** requires the compiler and desktop development libraries listed in [the CI setup script](scripts/ci-linux-deps.sh). Use `cargo build --locked --release -p corner-table` to create `target/release/corner-table`.
 
-A future HTTP client can deserialize the same structs from `corner-table-api`. Keep network requests asynchronous in the desktop and let the service calculate official scores. Keep the local fixture source for offline UI development.
+Run `cargo run --locked` to start the app during development. Use [Dioxus CLI 0.7.10](https://github.com/DioxusLabs/dioxus/releases/tag/v0.7.10) with `cargo xtask dev` for GPUI hot reload. Press `r` after changing data layouts, dependencies, or bundled assets. `cargo xtask dev --restart` uses Python 3 to rebuild and reopen the app after a successful build.
 
-## Build the games in worktrees
+## Contribute
 
-Pick a single game ID from [the game directory](games/README.md). Put the rules in `games/<game-id>/`, the GPUI board in `apps/desktop/src/games/<game-id>/`, and game-specific artwork in `apps/desktop/assets/games/<game-id>/`. Use underscores for Rust module names. Keep rule crates independent of GPUI and the API. This lets the same seeded rules run locally and later on the server for replay verification.
-
-When developing several games in parallel, give each worker its own game files. A separate worktree can isolate those changes while the main checkout drives the live preview.
+Install `rustfmt` and `clippy`, then enable the repository hooks in your checkout.
 
 ```sh
-git worktree add ../corner-table-mahjong -b game/mahjong main
+git config --local core.hooksPath .githooks
+bash scripts/check.sh
 ```
 
-The integration pass adds workspace members, desktop dependencies, dispatch entries, a guide, cover art, and a catalog entry. Update `Cargo.lock` when combining workspace changes.
+On Windows, run the shell commands in Git Bash. The commit hook checks formatting and Clippy against staged Rust changes. The push hook runs those checks plus workspace tests against the commits being sent. GitHub Actions runs the same checks and builds the release archives. A `v` tag matching the workspace version publishes the archives and `SHA256SUMS` to GitHub Releases.
 
-The bottom of the sidebar holds System, Light, and Dark appearance options and a Game sounds toggle. The sidebar Back and Forward controls also respond to mouse navigation buttons and keyboard shortcuts. Last Played, Favorites, appearance, sound preference, and game sessions are saved on this device. See [audio sources](apps/desktop/local-audio/README.md) for the licensed local sound mix. Use the GPUI test harness or set `CORNER_TABLE_DATA_DIR` for a separate profile in a normal development process.
+Game rules live in `games/`, GPUI views and assets in `apps/desktop/`, and the offline catalog in `crates/api/fixtures/`. Release archives include third-party notices. [Audio sources and attribution](apps/desktop/local-audio/README.md)

@@ -6,7 +6,7 @@ mod tests;
 
 use std::{
     sync::{Arc, LazyLock},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use corner_table_minesweeper::{Board, Clue, Difficulty, Hint, HintReason, Status, Tile};
@@ -19,7 +19,7 @@ use gpui::{
 use crate::{
     audio::{self, Effect},
     daily,
-    games::{GameEntry, GameLaunch, round_result, themed_control},
+    games::{GameEntry, GameLaunch, fresh_seed, round_result, themed_control},
     motion,
     storage::{Outcome, ResultMetric, Session},
     theme as t,
@@ -1294,10 +1294,4 @@ fn stable_seed(id: &str) -> u64 {
     id.bytes().fold(0xcbf29ce484222325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
     })
-}
-
-fn fresh_seed() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos() as u64)
 }
