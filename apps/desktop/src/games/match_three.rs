@@ -12,6 +12,7 @@ use gpui::{
 };
 
 use crate::{
+    audio::{self, Effect},
     storage::{Outcome, ResultMetric, Session},
     theme as t,
 };
@@ -206,7 +207,8 @@ impl GameView {
                     second.index().expect("field cell"),
                     &self.game,
                 );
-                let outcome = match self.game.status() {
+                let status = self.game.status();
+                let outcome = match status {
                     Status::Playing => None,
                     Status::Won => Some(Outcome::Won),
                     Status::Lost => Some(Outcome::Lost),
@@ -225,10 +227,19 @@ impl GameView {
                     chain: turn.cascades.len(),
                     reshuffled: turn.reshuffled,
                 };
+                audio::play(
+                    cx,
+                    if status == Status::Won {
+                        Effect::Complete
+                    } else {
+                        Effect::Clear
+                    },
+                );
                 Some(turn)
             }
             Err(SwapError::NoMatch) => {
                 self.feedback = Feedback::NoMatch;
+                audio::play(cx, Effect::InvalidMove);
                 None
             }
             Err(_) => return,

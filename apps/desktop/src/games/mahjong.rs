@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{GameEntry, GameLaunch, themed_control};
 use crate::{
+    audio::{self, Effect},
     storage::{AttemptId, Outcome, ResultMetric, Session},
     theme,
 };
@@ -37,6 +38,12 @@ struct SavedRound {
     clean_clear: bool,
 }
 
+#[derive(Deserialize, Serialize)]
+struct DailyAttempt {
+    #[serde(default)]
+    attempt: Option<AttemptId>,
+}
+
 struct Departure {
     tiles: [Tile; 2],
     sequence: usize,
@@ -44,7 +51,8 @@ struct Departure {
 
 pub struct GameView {
     board: Board,
-    session: Option<Session>,
+    session: Session,
+    is_daily: bool,
     seed: u64,
     attempt: AttemptId,
     clean_clear: bool,
@@ -60,22 +68,17 @@ pub struct GameView {
 
 impl GameView {
     pub fn new(launch: &GameLaunch, cx: &mut Context<Self>) -> Self {
-        let (seed, session) = match &launch.entry {
-            GameEntry::Challenge(id) => {
-                let seed = if id == "fixture-mahjong-001" {
-                    DAILY_SEED
-                } else {
-                    id.bytes().fold(DAILY_SEED, |seed, byte| {
-                        seed.wrapping_mul(1099511628211) ^ u64::from(byte)
-                    })
-                };
-                (seed, None)
-            }
-            _ => (new_seed(), Some(Session::new(launch))),
+        let seed = match &launch.entry {
+            GameEntry::Challenge(id) if id == "fixture-mahjong-001" => DAILY_SEED,
+            GameEntry::Challenge(id) => id.bytes().fold(DAILY_SEED, |seed, byte| {
+                seed.wrapping_mul(1099511628211) ^ u64::from(byte)
+            }),
+            _ => new_seed(),
         };
         let mut view = Self {
             board: Board::new(seed),
-            session,
+            session: Session::new(launch),
+            is_daily: matches!(launch.entry, GameEntry::Challenge(_)),
             seed,
             attempt: AttemptId::default(),
             clean_clear: false,
@@ -88,7 +91,17 @@ impl GameView {
             focus_on_open: true,
             cursor: None,
         };
-        if let Some(saved) = view.session.as_ref().and_then(Session::load::<SavedRound>) {
+        if view.daily() {
+            if let Some(attempt) = view
+                .session
+                .load::<DailyAttempt>()
+                .and_then(|saved| saved.attempt)
+            {
+                view.attempt = attempt;
+            } else {
+                view.save_daily_attempt();
+            }
+        } else if let Some(saved) = view.session.load::<SavedRound>() {
             view.resume(saved);
         }
         view
@@ -109,24 +122,32 @@ impl GameView {
     }
 
     fn save(&self) {
-        if let Some(session) = &self.session {
-            let (_, key, _) = LAYOUTS
-                .into_iter()
-                .find(|(layout, _, _)| *layout == self.board.layout())
-                .expect("every layout has a save key");
-            session.save(&SavedRound {
-                layout: key.into(),
-                seed: self.seed,
-                attempt: self.attempt,
-                matches: self.board.matched_pairs().to_vec(),
-                assisted: self.board.used_assistance(),
-                clean_clear: self.clean_clear,
-            });
+        if self.daily() {
+            return;
         }
+        let (_, key, _) = LAYOUTS
+            .into_iter()
+            .find(|(layout, _, _)| *layout == self.board.layout())
+            .expect("every layout has a save key");
+        self.session.save(&SavedRound {
+            layout: key.into(),
+            seed: self.seed,
+            attempt: self.attempt,
+            matches: self.board.matched_pairs().to_vec(),
+            assisted: self.board.used_assistance(),
+            clean_clear: self.clean_clear,
+        });
+    }
+
+    fn save_daily_attempt(&self) {
+        // Daily always opens on a fresh board. Keep its attempt ID until Restart.
+        self.session.save(&DailyAttempt {
+            attempt: Some(self.attempt),
+        });
     }
 
     fn daily(&self) -> bool {
-        self.session.is_none()
+        self.is_daily
     }
 
     fn cleared_title(&self) -> &'static str {
@@ -156,11 +177,17 @@ impl GameView {
                 self.highlighted = None;
             }
         }
-        self.status = match self.board.select(id) {
-            MoveResult::Blocked => "A free tile needs an open side and a clear top.".into(),
-            MoveResult::Selected => format!("{face} selected. Choose its match."),
-            MoveResult::Deselected => self.idle_status(INSTRUCTION).into(),
-            MoveResult::DifferentFace => format!("Faces differ. {face} is selected."),
+        let (status, effect) = match self.board.select(id) {
+            MoveResult::Blocked => (
+                "A free tile needs an open side and a clear top.".into(),
+                Some(Effect::InvalidMove),
+            ),
+            MoveResult::Selected => (format!("{face} selected. Choose its match."), None),
+            MoveResult::Deselected => (self.idle_status(INSTRUCTION).into(), None),
+            MoveResult::DifferentFace => (
+                format!("Faces differ. {face} is selected."),
+                Some(Effect::InvalidMove),
+            ),
             MoveResult::Matched => {
                 self.highlighted = None;
                 let pair = *self
@@ -174,24 +201,34 @@ impl GameView {
                     sequence: self.sequence,
                 });
                 self.cursor = self.nearest_tile(id, None);
-                if self.board.remaining() == 0
-                    && let Some(session) = &self.session
-                {
-                    let (_, _, layout) = LAYOUTS
-                        .into_iter()
-                        .find(|(layout, _, _)| *layout == self.board.layout())
-                        .expect("every layout has a title");
-                    session.record_result(
+                let effect = if self.board.remaining() == 0 {
+                    let mode = if self.daily() {
+                        "Daily"
+                    } else {
+                        let (_, _, layout) = LAYOUTS
+                            .into_iter()
+                            .find(|(layout, _, _)| *layout == self.board.layout())
+                            .expect("every layout has a title");
+                        layout
+                    };
+                    self.session.record_result(
                         self.attempt,
-                        layout,
+                        mode,
                         Outcome::Won,
                         ResultMetric::Pairs(self.board.matched_pairs().len() as u64),
                     );
-                }
+                    Effect::Complete
+                } else {
+                    Effect::Clear
+                };
                 self.save();
-                self.idle_status("Pair matched.").into()
+                (self.idle_status("Pair matched.").into(), Some(effect))
             }
         };
+        self.status = status;
+        if let Some(effect) = effect {
+            audio::play(cx, effect);
+        }
         cx.notify();
     }
 
@@ -207,7 +244,11 @@ impl GameView {
         self.board.restart();
         self.attempt = AttemptId::default();
         self.reset_feedback();
-        self.save();
+        if self.daily() {
+            self.save_daily_attempt();
+        } else {
+            self.save();
+        }
     }
 
     fn reset_feedback(&mut self) {
@@ -237,13 +278,14 @@ impl GameView {
         }
     }
 
-    fn undo(&mut self) {
+    fn undo(&mut self, cx: &mut Context<Self>) {
         if self.board.undo() {
             self.help_open = false;
             self.highlighted = None;
             self.departure = None;
             self.status = "Last pair restored.".into();
             self.save();
+            audio::play(cx, Effect::Move);
         }
     }
 
@@ -332,7 +374,7 @@ impl GameView {
                         }
                     }
                     "h" if !event.is_held && self.board.remaining() > 0 => self.hint(),
-                    "u" if !event.is_held => self.undo(),
+                    "u" if !event.is_held => self.undo(cx),
                     "f1" if !event.is_held => self.help_open = !self.help_open,
                     _ => return,
                 }
@@ -417,8 +459,14 @@ impl GameView {
                     .flex_wrap()
                     .gap_1()
                     .child(
-                        control("mahjong-hint", "Hint", remaining > 0, Self::hint, cx)
-                            .aria_keyshortcuts("H"),
+                        control(
+                            "mahjong-hint",
+                            "Hint",
+                            remaining > 0,
+                            |view, _| view.hint(),
+                            cx,
+                        )
+                        .aria_keyshortcuts("H"),
                     )
                     .child(
                         control(
@@ -434,7 +482,7 @@ impl GameView {
                         "mahjong-restart",
                         "Restart",
                         true,
-                        Self::restart,
+                        |view, _| view.restart(),
                         cx,
                     ))
                     .when(!self.daily(), |row| {
@@ -442,7 +490,7 @@ impl GameView {
                             "mahjong-new",
                             "New deal",
                             true,
-                            |view| view.new_deal(view.board.layout()),
+                            |view, _| view.new_deal(view.board.layout()),
                             cx,
                         ))
                     })
@@ -451,7 +499,7 @@ impl GameView {
                             "mahjong-help",
                             "Help",
                             true,
-                            |view| view.help_open = !view.help_open,
+                            |view, _| view.help_open = !view.help_open,
                             cx,
                         )
                         .when(self.help_open, |button| {
@@ -555,7 +603,7 @@ fn control(
     id: &'static str,
     label: &'static str,
     enabled: bool,
-    action: impl Fn(&mut GameView) + 'static,
+    action: impl Fn(&mut GameView, &mut Context<GameView>) + 'static,
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
     themed_control(cx, id, label, enabled)
@@ -564,7 +612,7 @@ fn control(
         .whitespace_nowrap()
         .when(enabled, |button| {
             button.on_click(cx.listener(move |view, _, _, cx| {
-                action(view);
+                action(view, cx);
                 cx.notify();
             }))
         })
@@ -578,7 +626,7 @@ fn toggle(
     cx: &Context<GameView>,
 ) -> Stateful<Div> {
     let palette = theme::colors(cx);
-    control(id, label, true, action, cx)
+    control(id, label, true, move |view, _| action(view), cx)
         .aria_toggled(if selected {
             Toggled::True
         } else {

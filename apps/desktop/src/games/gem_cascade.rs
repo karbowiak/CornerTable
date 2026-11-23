@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use crate::{
+    audio::{self, Effect},
     games::{GameEntry, GameLaunch},
     storage::{Outcome, ResultMetric, Session},
     theme::{self as t, Palette},
@@ -64,6 +65,12 @@ enum Action {
     Retry,
     NewDeal,
     Select(Mode),
+}
+
+enum MoveSource {
+    Input,
+    KeyRepeat,
+    Timer,
 }
 
 #[derive(Clone, Copy)]
@@ -177,7 +184,7 @@ impl GameView {
             self.reset_clock(window, cx);
             cx.notify();
         } else if self.mode == Mode::Timed && self.playable() {
-            self.play(Move::Fall, window, cx);
+            self.play(Move::Fall, MoveSource::Timer, window, cx);
         }
     }
 
@@ -221,7 +228,7 @@ impl GameView {
             return;
         }
         match action {
-            Action::Play(movement) => self.play(movement, window, cx),
+            Action::Play(movement) => self.play(movement, MoveSource::Input, window, cx),
             Action::Toggle if self.phase == Phase::Playing => self.pause(cx),
             Action::Toggle => {
                 self.phase = Phase::Playing;
@@ -254,22 +261,37 @@ impl GameView {
         }
     }
 
-    fn play(&mut self, movement: Move, window: &mut Window, cx: &mut Context<Self>) {
+    fn play(
+        &mut self,
+        movement: Move,
+        source: MoveSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let run = &mut self.runs[self.mode.index()];
         let landing = run.game.landing();
         let previous_best = run.best();
         let Some(result) = run.play(movement) else {
+            if matches!(source, MoveSource::Input) {
+                audio::play(cx, Effect::InvalidMove);
+            }
             return;
         };
-        match result {
-            Fall::Moved if movement == Move::Fall => {
-                if !cx.reduce_motion() {
-                    self.motion = Some(Motion::Falling(Instant::now()));
+        let effect = match result {
+            Fall::Moved => {
+                if movement == Move::Fall {
+                    if !cx.reduce_motion() {
+                        self.motion = Some(Motion::Falling(Instant::now()));
+                    }
+                    self.reset_clock(window, cx);
+                } else {
+                    self.motion = None;
                 }
-                self.reset_clock(window, cx);
+                // Holding a key can cross the well in a burst of small steps.
+                matches!(source, MoveSource::Input).then_some(Effect::Move)
             }
-            Fall::Moved => self.motion = None,
             Fall::Locked(result) => {
+                let cleared = !result.waves.is_empty();
                 if run.game.is_over() {
                     self.session.record_result(
                         run.record.attempt,
@@ -280,20 +302,28 @@ impl GameView {
                 }
                 if !cx.reduce_motion() {
                     let started = Instant::now();
-                    if result.waves.is_empty() {
-                        self.motion = landing.map(|cells| Motion::Impact(started, cells));
-                    } else {
+                    if cleared {
                         self.cascade = Some(Cascade {
                             started,
                             waves: result.waves,
                             previous_best,
                         });
                         self.motion = None;
+                    } else {
+                        self.motion = landing.map(|cells| Motion::Impact(started, cells));
                     }
                 }
                 self.save();
                 self.reset_clock(window, cx);
+                (!matches!(source, MoveSource::Timer)).then_some(if cleared {
+                    Effect::Clear
+                } else {
+                    Effect::Move
+                })
             }
+        };
+        if let Some(effect) = effect {
+            audio::play(cx, effect);
         }
         cx.notify();
     }
@@ -325,8 +355,12 @@ impl GameView {
             _ => return,
         };
         cx.stop_propagation();
-        if !event.is_held || matches!(action, Action::Play(Move::Left | Move::Right | Move::Fall)) {
+        if !event.is_held {
             self.perform(action, window, cx);
+        } else if let Action::Play(movement @ (Move::Left | Move::Right | Move::Fall)) = action
+            && self.enabled(action)
+        {
+            self.play(movement, MoveSource::KeyRepeat, window, cx);
         }
     }
 

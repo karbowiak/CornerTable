@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::{
+    audio::{self, Effect},
     games::{GameEntry, GameLaunch},
     theme as t,
 };
@@ -142,20 +143,33 @@ impl GameView {
         }
     }
 
-    fn apply(&mut self, action: Move) -> bool {
+    fn apply(&mut self, action: Move, cx: &mut Context<Self>) -> bool {
+        let runs = self.deal.game.runs;
         if !self.deal.apply(action) {
             return false;
         }
         self.revision += 1;
+        let game = &self.deal.game;
+        let effect = if game.won() {
+            Effect::Complete
+        } else if game.runs > runs
+            || (matches!(game.variant, Variant::Pyramid | Variant::TriPeaks)
+                && action != Move::Draw)
+        {
+            Effect::Clear
+        } else {
+            Effect::Move
+        };
+        audio::play(cx, effect);
         true
     }
 
-    fn play_at(&mut self, place: Place) {
+    fn play_at(&mut self, place: Place, cx: &mut Context<Self>) {
         if self.deal.game.won() {
             return;
         }
         if place == Place::Stock {
-            if !self.apply(Move::Draw) {
+            if !self.apply(Move::Draw, cx) {
                 self.deal.status = if self.deal.game.variant == Variant::Spider
                     && !self.deal.game.stock.is_empty()
                 {
@@ -163,16 +177,18 @@ impl GameView {
                 } else {
                     "The stock is empty."
                 };
+                audio::play(cx, Effect::InvalidMove);
             }
             return;
         }
         if self.deal.game.variant == Variant::TriPeaks {
-            if !self.apply(Move::Clear(place)) {
+            if !self.apply(Move::Clear(place), cx) {
                 self.deal.status = "Choose an uncovered card one rank above or below the waste.";
+                audio::play(cx, Effect::InvalidMove);
             }
             return;
         }
-        if self.deal.game.variant == Variant::Pyramid && self.apply(Move::Clear(place)) {
+        if self.deal.game.variant == Variant::Pyramid && self.apply(Move::Clear(place), cx) {
             return;
         }
         if let Some(selected) = self.deal.selected {
@@ -181,10 +197,13 @@ impl GameView {
                 self.deal.status = "";
                 return;
             }
-            if self.apply(Move::Transfer {
-                from: selected,
-                to: place,
-            }) {
+            if self.apply(
+                Move::Transfer {
+                    from: selected,
+                    to: place,
+                },
+                cx,
+            ) {
                 return;
             }
             self.deal.status = if self.deal.game.variant == Variant::Pyramid {
@@ -195,6 +214,7 @@ impl GameView {
             if self.deal.game.selectable(place) {
                 self.deal.selected = Some(place);
             }
+            audio::play(cx, Effect::InvalidMove);
             return;
         }
         if self.deal.game.selectable(place) {
@@ -300,7 +320,7 @@ impl GameView {
                         }
                     })
                     .on_click(cx.listener(move |view, _, _, cx| {
-                        view.play_at(place);
+                        view.play_at(place, cx);
                         cx.notify();
                     }))
             })
@@ -331,7 +351,7 @@ impl GameView {
             })
             .on_drop(cx.listener(move |view, drag: &CardDrag, _, cx| {
                 if let Some(action) = view.drop_action(drag, place, owner)
-                    && view.apply(action)
+                    && view.apply(action, cx)
                 {
                     cx.notify();
                 }
@@ -594,6 +614,7 @@ impl GameView {
                 .on_click(cx.listener(|view, _, _, cx| {
                     if view.deal.undo() {
                         view.revision += 1;
+                        audio::play(cx, Effect::Move);
                         cx.notify();
                     }
                 }))
