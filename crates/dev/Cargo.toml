@@ -1,0 +1,18 @@
+[package]
+name = "corner-table-dev"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+hot-reload = ["corner-table/hot-reload", "dep:env_logger"]
+
+[[bin]]
+name = "corner-table-dev"
+path = "src/main.rs"
+required-features = ["hot-reload"]
+
+[dependencies]
+anyhow = "1"
+corner-table = { path = "../../apps/desktop" }
+env_logger = { version = "0.11", optional = true }

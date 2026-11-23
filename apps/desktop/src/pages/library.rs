@@ -93,7 +93,7 @@ fn search_field(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|app, _, window, cx| {
-                        app.search_focus.focus(window);
+                        app.search_focus.focus(window, cx);
                         app.search_select_all = false;
                         cx.notify();
                     }),
@@ -143,7 +143,7 @@ fn edit_search(
         "escape" => {
             app.search.clear();
             app.search_select_all = false;
-            app.focus.focus(window);
+            app.focus.focus(window, cx);
         }
         "backspace" | "delete" => {
             if app.search_select_all {

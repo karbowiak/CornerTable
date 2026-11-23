@@ -3,6 +3,9 @@ name = "corner-table"
 version.workspace = true
 edition.workspace = true
 
+[features]
+hot-reload = ["gpui/hot-reload"]
+
 [dependencies]
 anyhow = "1"
 corner-table-api = { path = "../../crates/api" }
@@ -18,11 +21,13 @@ corner-table-minesweeper = { path = "../../games/minesweeper" }
 corner-table-solitaire = { path = "../../games/solitaire" }
 corner-table-sudoku = { path = "../../games/sudoku" }
 corner-table-word-games = { path = "../../games/word-games" }
+gpui = { package = "gpui-pre", version = "=0.3.12", default-features = false }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", default-features = false }
 include_dir = "0.7"
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-gpui = "=0.2.2"
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", default-features = false, features = ["wayland", "x11"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # macOS can compile the shaders on launch with just Command Line Tools installed.
-gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12", default-features = false, features = ["font-kit", "runtime_shaders"] }

@@ -149,7 +149,7 @@ impl GameView {
             })
             .on_click(cx.listener(move |view, _, window, cx| {
                 view.selected = index;
-                view.focus.focus(window);
+                view.focus.focus(window, cx);
                 cx.notify();
             }));
 
@@ -274,7 +274,7 @@ impl GameView {
                                 if view.difficulty != difficulty {
                                     view.reset(difficulty, false);
                                 }
-                                view.focus.focus(window);
+                                view.focus.focus(window, cx);
                                 cx.notify();
                             },
                         ))
@@ -292,7 +292,7 @@ impl GameView {
                         .text_size(px(21.))
                         .on_click(cx.listener(move |view, _, window, cx| {
                             view.input(digit);
-                            view.focus.focus(window);
+                            view.focus.focus(window, cx);
                             cx.notify();
                         }))
                 }))
@@ -306,7 +306,7 @@ impl GameView {
                             .flex_1()
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.note_mode = !view.note_mode;
-                                view.focus.focus(window);
+                                view.focus.focus(window, cx);
                                 cx.notify();
                             })),
                     )
@@ -315,7 +315,7 @@ impl GameView {
                             .flex_1()
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.input(0);
-                                view.focus.focus(window);
+                                view.focus.focus(window, cx);
                                 cx.notify();
                             })),
                     )
@@ -327,7 +327,7 @@ impl GameView {
                             })
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.game.undo();
-                                view.focus.focus(window);
+                                view.focus.focus(window, cx);
                                 cx.notify();
                             })),
                     ),
@@ -346,7 +346,7 @@ impl GameView {
                 .border_color(rgb(t::GOLD))
                 .on_click(cx.listener(|view, _, window, cx| {
                     view.reset(view.difficulty, !view.challenge);
-                    view.focus.focus(window);
+                    view.focus.focus(window, cx);
                     cx.notify();
                 })),
             )

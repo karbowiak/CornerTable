@@ -16,7 +16,23 @@ GPUI uses your desktop's Wayland or X11 session and a Vulkan driver. Mesa users 
 ## Run on macOS
 
 Install Rust and Apple's Command Line Tools, then run `cargo run --locked`.
-Run `python3 scripts/dev.py` to rebuild and restart the app as source and assets change. The current window stays open if a build fails. Press Ctrl+C in the watcher terminal to stop it and the game client.
+
+## Develop with hot reload
+
+Install [Dioxus CLI 0.7.10](https://github.com/DioxusLabs/dioxus/releases/tag/v0.7.10)
+and run `cargo xtask dev` from the repository root. Set `CORNER_TABLE_DX`
+to the absolute path of the executable if multiple tools supply `dx`.
+
+GPUI applies compatible Rust view edits in the running app, preserving the
+current game and its in-memory state. Changes to data layouts, startup code,
+dependencies, or bundled assets can require a full build. Press `r` in the
+interactive Dioxus terminal for a full rebuild, or restart the dev command.
+
+Run `python3 scripts/dev.py` for automatic rebuilds and fresh launches after
+source or asset edits. The current window stays open if a build fails. Press
+Ctrl+C in either watcher terminal to stop it and its game client.
+
+## Checks
 
 ```sh
 cargo fmt --all -- --check

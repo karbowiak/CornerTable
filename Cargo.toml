@@ -2,6 +2,7 @@
 members = [
     "apps/desktop",
     "crates/api",
+    "crates/dev",
     "games/block-puzzle",
     "games/bubble-shooter",
     "games/gem-cascade",
@@ -14,6 +15,7 @@ members = [
     "games/solitaire",
     "games/sudoku",
     "games/word-games",
+    "xtask",
 ]
 default-members = ["apps/desktop"]
 resolver = "3"

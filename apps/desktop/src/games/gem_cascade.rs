@@ -91,7 +91,7 @@ impl GameView {
             .track_focus(&self.focus)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|view, _, window, _| view.focus.focus(window)),
+                cx.listener(|view, _, window, cx| view.focus.focus(window, cx)),
             )
             .flex()
             .flex_col()
@@ -176,7 +176,7 @@ impl GameView {
             .focus(|style| style.border_color(rgb(t::MUTED)))
             .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
                 if matches!(event, ClickEvent::Mouse(_)) {
-                    view.focus.focus(window);
+                    view.focus.focus(window, cx);
                 }
                 view.perform(action, cx);
             }))
@@ -295,7 +295,7 @@ impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if std::mem::take(&mut self.focus_on_open) {
             let focus = self.focus.clone();
-            window.on_next_frame(move |window, _| focus.focus(window));
+            window.on_next_frame(move |window, cx| focus.focus(window, cx));
         }
         let viewport = window.viewport_size();
         let height = f32::from(viewport.height);

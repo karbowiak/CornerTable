@@ -238,7 +238,7 @@ impl GameView {
                                         .child((order + 1).to_string())
                                 }))
                                 .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
-                                    view.focus.focus(window);
+                                    view.focus.focus(window, cx);
                                     view.pick_letter(index);
                                     cx.notify();
                                 }))
@@ -252,7 +252,7 @@ impl GameView {
                 .flex()
                 .flex_col()
                 .gap_3()
-                .flex_grow()
+                .flex_grow(1.)
                 .child(t::display_type(title, 26.))
                 .child(div().text_color(rgb(t::MUTED)).child(instructions))
                 .child(div().text_color(rgb(t::MUTED)).child(
@@ -421,7 +421,7 @@ impl GameView {
                     }))
                     .hover(|style| style.bg(rgb(t::GOLD_HOVER)))
                     .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
-                        view.focus.focus(window);
+                        view.focus.focus(window, cx);
                         view.square = index;
                         cx.notify();
                     }))
@@ -432,7 +432,7 @@ impl GameView {
             .flex()
             .flex_col()
             .gap_3()
-            .flex_grow()
+            .flex_grow(1.)
             .child(t::display_type("Mini Crossword", 26.))
             .child(div().text_color(rgb(t::MUTED)).child("Select a clue or square, then type. Use the arrow keys to move and Space to change direction."))
             .child(div().flex().child(div().p_2().rounded_lg().bg(rgb(FOREST)).child(board)))
@@ -570,7 +570,7 @@ fn button(
         .focus(|style| style.border_color(rgb(FOREST)))
         .child(label.into())
         .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
-            view.focus.focus(window);
+            view.focus.focus(window, cx);
             action(view);
             cx.notify();
         }))
