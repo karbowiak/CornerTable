@@ -1,9 +1,9 @@
-use corner_table_bubble_shooter::{Angle, Round, SHOT_LIMIT, STAGE_COUNT, Shot, Status};
+use corner_table_bubble_shooter::{Angle, Round, SHOT_LIMIT, STAGE_COUNT, STAGES, Shot, Status};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     games::{GameEntry, GameLaunch},
-    storage::Session,
+    storage::{AttemptId, Outcome, ResultMetric, Session},
 };
 
 const SAVE_VERSION: u8 = 1;
@@ -32,6 +32,8 @@ pub(super) struct Record {
 
 #[derive(Default, Deserialize, Serialize)]
 struct Attempt {
+    #[serde(default)]
+    id: AttemptId,
     turns: Vec<Turn>,
     best: Option<Record>,
 }
@@ -168,7 +170,9 @@ impl Progress {
     }
 
     pub fn restart(&mut self) {
-        self.saved.attempt_mut().turns.clear();
+        let attempt = self.saved.attempt_mut();
+        attempt.id = AttemptId::default();
+        attempt.turns.clear();
         self.resume();
         self.save();
     }
@@ -184,9 +188,10 @@ impl Progress {
         let shot = self.round.fire_at(angle)?;
         let score = self.round.score();
         let stars = self.round.stars();
+        let status = self.round.status();
         let attempt = self.saved.attempt_mut();
         attempt.turns.push(Turn::Shoot(angle.ticks()));
-        if self.round.status() == Status::Won {
+        if status == Status::Won {
             let previous = attempt.best;
             self.new_best = previous.is_none_or(|best| score > best.score);
             attempt.best = Some(Record {
@@ -194,8 +199,26 @@ impl Progress {
                 stars: previous.map_or(stars, |best| best.stars.max(stars)),
             });
         }
+        let id = attempt.id;
         self.last_shot = Some(shot);
         self.save();
+        let outcome = match status {
+            Status::Playing => None,
+            Status::Won => Some(Outcome::Won),
+            Status::HitDangerLine | Status::OutOfShots => Some(Outcome::Lost),
+        };
+        if let Some(outcome) = outcome {
+            let mode = match self.mode() {
+                Mode::Stages => {
+                    let stage = self.stage();
+                    format!("Stage {} · {}", stage + 1, STAGES[stage].name)
+                }
+                Mode::Classic => "Classic".into(),
+                Mode::Challenge => "Challenge".into(),
+            };
+            self.session
+                .record_result(id, mode, outcome, ResultMetric::Points(score as u64));
+        }
         self.last_shot.as_ref()
     }
 
@@ -218,7 +241,9 @@ impl Progress {
             None => {
                 self.round = fresh();
                 self.last_shot = None;
-                self.saved.attempt_mut().turns.clear();
+                let attempt = self.saved.attempt_mut();
+                attempt.id = AttemptId::default();
+                attempt.turns.clear();
             }
         }
         self.new_best = false;

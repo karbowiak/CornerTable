@@ -17,7 +17,11 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 
 use super::{GameEntry, GameLaunch};
-use crate::{storage::Session, theme};
+use crate::{
+    audio::{self, Effect},
+    storage::{AttemptId, Outcome, ResultMetric, Session},
+    theme,
+};
 use scene::{FadingPair, Orientation, Scene, TileStates};
 
 const INSTRUCTION: &str = "Match identical cubes with a clear top and an open side.";
@@ -82,22 +86,24 @@ impl Default for Save {
 #[derive(Deserialize, Serialize)]
 struct RoundProgress {
     seed: u64,
+    #[serde(default)]
+    attempt: AttemptId,
     moves: Vec<[usize; 2]>,
     cleared: bool,
 }
 
-fn load_round(table: Table, saved: Option<&RoundProgress>) -> (Board, u64, bool) {
+fn load_round(table: Table, saved: Option<&RoundProgress>) -> (Board, u64, AttemptId, bool) {
     let fixed_seed = table.fixed_seed();
     if let Some(saved) = saved
         && fixed_seed.is_none_or(|seed| seed == saved.seed)
     {
         let mut board = table.deal(saved.seed);
         if saved.moves.iter().all(|&pair| board.remove_pair(pair)) {
-            return (board, saved.seed, saved.cleared);
+            return (board, saved.seed, saved.attempt, saved.cleared);
         }
     }
     let seed = fixed_seed.unwrap_or_else(fresh_seed);
-    (table.deal(seed), seed, false)
+    (table.deal(seed), seed, AttemptId::default(), false)
 }
 
 pub struct GameView {
@@ -105,6 +111,7 @@ pub struct GameView {
     saved: Save,
     table: Table,
     seed: u64,
+    attempt: AttemptId,
     board: Board,
     cleared: bool,
     orientation: Orientation,
@@ -133,12 +140,13 @@ impl GameView {
             _ if saved.active == "daily" => daily(),
             _ => Table::Layout(Layout::from_id(&saved.active).unwrap_or(Layout::Terrace)),
         };
-        let (board, seed, cleared) = load_round(table, saved.rounds.get(table.key()));
+        let (board, seed, attempt, cleared) = load_round(table, saved.rounds.get(table.key()));
         let mut view = Self {
             session,
             saved,
             table,
             seed,
+            attempt,
             board,
             cleared,
             orientation: Orientation::default(),
@@ -160,6 +168,7 @@ impl GameView {
             self.saved.active.clone(),
             RoundProgress {
                 seed: self.seed,
+                attempt: self.attempt,
                 moves: self.board.moves().to_vec(),
                 cleared: self.cleared,
             },
@@ -172,7 +181,7 @@ impl GameView {
             return;
         }
         self.table = table;
-        (self.board, self.seed, self.cleared) =
+        (self.board, self.seed, self.attempt, self.cleared) =
             load_round(table, self.saved.rounds.get(table.key()));
         self.reset_view();
         self.save();
@@ -180,6 +189,7 @@ impl GameView {
 
     fn redeal(&mut self) {
         self.seed = fresh_seed();
+        self.attempt = AttemptId::default();
         self.board = self.table.deal(self.seed);
         self.cleared = false;
         self.reset_view();
@@ -188,6 +198,7 @@ impl GameView {
 
     fn restart(&mut self) {
         self.board.restart();
+        self.attempt = AttemptId::default();
         self.reset_view();
         self.save();
     }
@@ -209,29 +220,55 @@ impl GameView {
         }
     }
 
-    fn choose(&mut self, id: usize) {
+    fn choose(&mut self, id: usize, cx: &Context<Self>) {
         let result = self.board.select(id);
         if result == MoveResult::Matched || self.hinted.is_some_and(|pair| !pair.contains(&id)) {
             self.clear_hint();
         }
-        self.feedback = match result {
-            MoveResult::Blocked => Some("That cube needs a clear top and an open side."),
-            MoveResult::Selected if self.hinted.is_some() => Some(HINT_CHOOSE),
-            MoveResult::Selected => Some("Choose a free cube with the same marks."),
-            MoveResult::Deselected => None,
-            MoveResult::DifferentFace => Some("Different marks. Your last cube is selected."),
+        let (feedback, effect) = match result {
+            MoveResult::Blocked => (
+                Some("That cube needs a clear top and an open side."),
+                Effect::InvalidMove,
+            ),
+            MoveResult::Selected if self.hinted.is_some() => (Some(HINT_CHOOSE), Effect::Move),
+            MoveResult::Selected => (
+                Some("Choose a free cube with the same marks."),
+                Effect::Move,
+            ),
+            MoveResult::Deselected => (None, Effect::Move),
+            MoveResult::DifferentFace => (
+                Some("Different marks. Your last cube is selected."),
+                Effect::InvalidMove,
+            ),
             MoveResult::Matched => {
                 let ids = *self.board.moves().last().expect("match just recorded");
+                let won = self.board.remaining() == 0;
+                self.cleared |= won;
+                self.keyed = None;
+                self.save();
+                if won {
+                    let layout = self.board.shape().name();
+                    let mode = match self.table {
+                        Table::Layout(_) => layout.to_owned(),
+                        Table::Daily(_) => format!("Daily · {layout}"),
+                        Table::Challenge(_) => format!("Challenge · {layout}"),
+                    };
+                    self.session.record_result(
+                        self.attempt,
+                        mode,
+                        Outcome::Won,
+                        ResultMetric::Pairs(self.board.moves().len() as u64),
+                    );
+                }
                 self.fading = Some(FadingPair {
                     ids,
                     at: Instant::now(),
                 });
-                self.cleared |= self.board.remaining() == 0;
-                self.keyed = None;
-                self.save();
-                None
+                (None, if won { Effect::Complete } else { Effect::Clear })
             }
         };
+        self.feedback = feedback;
+        audio::play(cx, effect);
     }
 
     fn hint(&mut self, keyboard: bool, cx: &Context<Self>) {
@@ -269,13 +306,14 @@ impl GameView {
         }));
     }
 
-    fn undo(&mut self) {
+    fn undo(&mut self, cx: &Context<Self>) {
         if self.board.undo() {
             self.clear_hint();
             self.fading = None;
             self.keyed = None;
             self.feedback = Some("Last pair returned.");
             self.save();
+            audio::play(cx, Effect::Move);
         }
     }
 
@@ -303,13 +341,13 @@ impl GameView {
             }
             "enter" | "space" if !event.is_held => {
                 if let Some(id) = self.keyed {
-                    self.choose(id);
+                    self.choose(id, cx);
                 }
             }
             "q" if !event.is_held => self.turn(1),
             "e" if !event.is_held => self.turn(-1),
             "h" if !event.is_held => self.hint(true, cx),
-            "u" if !event.is_held => self.undo(),
+            "u" if !event.is_held => self.undo(cx),
             "escape" => {
                 self.board.deselect();
                 self.clear_hint();
@@ -592,7 +630,7 @@ impl GameView {
                                     && hitbox.is_hovered(window)
                                     && scene.hit(event.position).is_some_and(|cube| cube.id == id)
                                 {
-                                    view.choose(id);
+                                    view.choose(id, cx);
                                 }
                                 cx.notify();
                             }
@@ -674,7 +712,7 @@ impl GameView {
                         "Undo",
                         !self.board.moves().is_empty(),
                         None,
-                        |view, _| view.undo(),
+                        |view, cx| view.undo(cx),
                         cx,
                     ))
                     .child(button(
@@ -884,21 +922,25 @@ mod tests {
     #[test]
     fn saved_moves_replay_and_previous_daily_does_not_carry_over() {
         let yesterday = Table::Daily(1234);
-        let (mut board, seed, _) = load_round(yesterday, None);
+        let (mut board, seed, attempt, _) = load_round(yesterday, None);
         let pair = board.hint().unwrap();
         assert!(board.remove_pair(pair));
         let save = RoundProgress {
             seed,
+            attempt,
             moves: vec![pair],
             cleared: true,
         };
-        let (restored, resumed_seed, cleared) = load_round(yesterday, Some(&save));
+        let (restored, resumed_seed, resumed_attempt, cleared) = load_round(yesterday, Some(&save));
         assert_eq!(resumed_seed, seed);
+        assert!(resumed_attempt == attempt);
         assert!(cleared);
         assert!(restored.cubes().eq(board.cubes()));
 
-        let (today, todays_seed, cleared) = load_round(Table::Daily(1235), Some(&save));
+        let (today, todays_seed, todays_attempt, cleared) =
+            load_round(Table::Daily(1235), Some(&save));
         assert_ne!(todays_seed, seed);
+        assert!(todays_attempt != attempt);
         assert_ne!(today.shape(), board.shape());
         assert!(!cleared);
         assert!(today.moves().is_empty());
@@ -907,14 +949,16 @@ mod tests {
     #[test]
     fn corrupt_replay_cannot_partially_remove_cubes() {
         let table = Table::Daily(1234);
-        let (board, seed, _) = load_round(table, None);
+        let (board, seed, attempt, _) = load_round(table, None);
         let pair = board.hint().unwrap();
         let corrupt = RoundProgress {
             seed,
+            attempt,
             moves: vec![pair, pair],
             cleared: true,
         };
-        let (restored, _, cleared) = load_round(table, Some(&corrupt));
+        let (restored, _, restored_attempt, cleared) = load_round(table, Some(&corrupt));
+        assert!(restored_attempt != attempt);
         assert_eq!(restored.remaining(), board.remaining());
         assert!(restored.moves().is_empty());
         assert!(!cleared);

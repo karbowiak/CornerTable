@@ -4,14 +4,19 @@ mod table;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use corner_table_bubble_shooter::{Aim, Angle, Color, STAGE_COUNT, STAGES, Status};
+use corner_table_bubble_shooter::{
+    Aim, Angle, Cell as BubbleCell, Color, STAGE_COUNT, STAGES, Status,
+};
 use gpui::{
     Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, Render, Role, Stateful, Toggled, Window, canvas, div, prelude::*, px, relative,
     rgb, rgba,
 };
 
-use crate::theme as t;
+use crate::{
+    audio::{self, Effect},
+    theme as t,
+};
 
 use self::progress::{Mode, Progress};
 use self::table::{Flight, Impact, Playfield, TABLE_HEIGHT, TABLE_WIDTH};
@@ -77,10 +82,16 @@ impl GameView {
             Action::Restart => self.progress.restart(),
             Action::NewBoard => self.progress.new_board(),
             Action::Swap => {
-                if self.flight.is_none() && self.progress.swap() {
+                if self.flight.is_some() || self.progress.round.status() != Status::Playing {
+                    return;
+                }
+                if self.progress.swap() {
                     self.refresh_aim();
                     self.focus.focus(window, cx);
                     cx.notify();
+                    audio::play(cx, Effect::Move);
+                } else {
+                    audio::play(cx, Effect::InvalidMove);
                 }
                 return;
             }
@@ -107,18 +118,36 @@ impl GameView {
     }
 
     fn fire(&mut self, cx: &mut Context<Self>) {
-        if self.flight.is_none()
-            && let Some(aim) = self.aim.take()
-        {
-            self.impact = None;
-            if cx.reduce_motion() {
-                self.progress.fire(self.angle);
-                self.refresh_aim();
-            } else {
-                self.flight = Some(Flight::new(aim, self.angle));
-            }
-            cx.notify();
+        if self.flight.is_some() || self.progress.round.status() != Status::Playing {
+            return;
         }
+        let Some(aim) = self.aim.take() else {
+            audio::play(cx, Effect::InvalidMove);
+            return;
+        };
+        self.impact = None;
+        if cx.reduce_motion() {
+            self.resolve_shot(self.angle, None, cx);
+        } else {
+            self.flight = Some(Flight::new(aim, self.angle));
+        }
+        cx.notify();
+    }
+
+    fn resolve_shot(&mut self, angle: Angle, landing: Option<BubbleCell>, cx: &Context<Self>) {
+        if let Some(shot) = self.progress.fire(angle) {
+            let popped = !shot.popped.is_empty();
+            self.impact = landing.map(|landing| Impact::new(landing, shot));
+            let effect = if self.progress.round.status() == Status::Won {
+                Effect::Complete
+            } else if popped {
+                Effect::Clear
+            } else {
+                Effect::Move
+            };
+            audio::play(cx, effect);
+        }
+        self.refresh_aim();
     }
 
     fn animate(&mut self, cx: &mut Context<Self>) {
@@ -128,11 +157,11 @@ impl GameView {
             .is_some_and(|flight| flight.position(0.).is_none())
             && let Some(flight) = self.flight.take()
         {
-            let shot = self.progress.fire(flight.angle);
-            self.impact = shot
-                .filter(|_| !cx.reduce_motion())
-                .map(|shot| Impact::new(flight.aim.landing, shot));
-            self.refresh_aim();
+            self.resolve_shot(
+                flight.angle,
+                (!cx.reduce_motion()).then_some(flight.aim.landing),
+                cx,
+            );
         }
         if self.impact.as_ref().is_some_and(Impact::finished) {
             self.impact = None;

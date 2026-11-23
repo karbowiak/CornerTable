@@ -1,6 +1,8 @@
 use corner_table_mine_trails::{Expedition, Room};
 use serde::{Deserialize, Serialize};
 
+use crate::storage::AttemptId;
+
 const REVISION: u8 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +40,8 @@ pub(super) struct Best {
 pub(super) struct Record {
     revision: u8,
     pub(super) seed: u64,
+    #[serde(default)]
+    pub(super) attempt: AttemptId,
     moves: Vec<Move>,
     pub(super) best: Option<Best>,
 }
@@ -47,6 +51,7 @@ impl Record {
         Self {
             revision: REVISION,
             seed,
+            attempt: AttemptId::default(),
             moves: Vec::new(),
             best: None,
         }
@@ -85,12 +90,17 @@ impl Record {
 
     pub(super) fn restart(&mut self, seed: u64) -> Expedition {
         self.seed = seed;
+        self.attempt = AttemptId::default();
         self.moves.clear();
         Expedition::new(seed)
     }
 
     pub(super) fn has_progress(&self) -> bool {
         !self.moves.is_empty()
+    }
+
+    pub(super) fn move_count(&self) -> u64 {
+        self.moves.len() as u64
     }
 }
 

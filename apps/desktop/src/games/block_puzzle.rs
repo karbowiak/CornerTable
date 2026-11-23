@@ -9,7 +9,11 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{storage::Session, theme as t};
+use crate::{
+    audio::{self, Effect},
+    storage::{AttemptId, Outcome, ResultMetric, Session},
+    theme as t,
+};
 
 use super::{GameLaunch, board_space, themed_control};
 
@@ -71,6 +75,13 @@ enum Mode {
 }
 
 impl Mode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "Classic",
+            Self::TenTrays => "Ten Trays",
+        }
+    }
+
     fn game(self, seed: u64) -> Game {
         match self {
             Self::Classic => Game::new(seed),
@@ -88,6 +99,10 @@ struct SavedSession {
     mode: Mode,
     #[serde(default)]
     ten_trays: Option<SavedRound>,
+    #[serde(default)]
+    classic_attempt: AttemptId,
+    #[serde(default)]
+    ten_trays_attempt: AttemptId,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -102,6 +117,7 @@ struct SavedRound {
 struct Round {
     game: Game,
     seed: u64,
+    attempt: AttemptId,
     turns: Vec<(usize, usize, usize)>,
     undo: Option<Game>,
     best: u64,
@@ -112,13 +128,14 @@ impl Round {
         Self {
             game: mode.game(seed),
             seed,
+            attempt: AttemptId::default(),
             turns: Vec::new(),
             undo: None,
             best: 0,
         }
     }
 
-    fn restore(mode: Mode, saved: SavedRound) -> Option<Self> {
+    fn restore(mode: Mode, saved: SavedRound, attempt: AttemptId) -> Option<Self> {
         let mut round = Self::new(mode, saved.seed);
         for (index, &(slot, column, row)) in saved.turns.iter().enumerate() {
             if saved.can_undo && index + 1 == saved.turns.len() {
@@ -126,6 +143,7 @@ impl Round {
             }
             round.game.place(Move { slot, column, row })?;
         }
+        round.attempt = attempt;
         round.turns = saved.turns;
         round.best = saved.best.max(round.game.score());
         Some(round)
@@ -137,6 +155,15 @@ impl Round {
             turns: self.turns.clone(),
             can_undo: self.undo.is_some(),
             best: self.best,
+        }
+    }
+
+    fn outcome(&self) -> Option<Outcome> {
+        match self.game.placements_left() {
+            Some(0) => Some(Outcome::Won),
+            _ if self.game.has_moves() => None,
+            Some(_) => Some(Outcome::Lost),
+            None => Some(Outcome::Finished),
         }
     }
 }
@@ -360,10 +387,10 @@ impl GameView {
         let mode = saved.as_ref().map_or(Mode::Classic, |saved| saved.mode);
         let (classic, ten_trays) = saved.map_or((None, None), |saved| {
             (
-                Round::restore(Mode::Classic, saved.classic),
-                saved
-                    .ten_trays
-                    .and_then(|round| Round::restore(Mode::TenTrays, round)),
+                Round::restore(Mode::Classic, saved.classic, saved.classic_attempt),
+                saved.ten_trays.and_then(|round| {
+                    Round::restore(Mode::TenTrays, round, saved.ten_trays_attempt)
+                }),
             )
         });
         Self {
@@ -405,6 +432,8 @@ impl GameView {
             classic: self.classic.saved(),
             mode: self.mode,
             ten_trays: Some(self.ten_trays.saved()),
+            classic_attempt: self.classic.attempt,
+            ten_trays_attempt: self.ten_trays.attempt,
         });
     }
 
@@ -434,6 +463,7 @@ impl GameView {
             round.seed = round.seed.wrapping_add(1);
         }
         round.game = mode.game(round.seed);
+        round.attempt = AttemptId::default();
         round.turns.clear();
         round.undo = None;
         self.clear_input();
@@ -441,7 +471,7 @@ impl GameView {
         self.save();
     }
 
-    fn undo(&mut self) {
+    fn undo(&mut self, cx: &Context<Self>) {
         let round = self.round_mut();
         if let Some(previous) = round.undo.take() {
             round.game = previous;
@@ -449,6 +479,7 @@ impl GameView {
             self.clear_input();
             self.feedback = Some(Feedback::Undone);
             self.save();
+            audio::play(cx, Effect::Move);
         }
     }
 
@@ -484,26 +515,46 @@ impl GameView {
         })
     }
 
-    fn place(&mut self, anchor: Anchor, slot: usize, animate: bool) {
+    fn place(&mut self, anchor: Anchor, slot: usize, cx: &Context<Self>) {
+        let mode = self.mode;
         let round = self.round_mut();
         let Some(turn) = anchor.turn(slot).filter(|&turn| round.game.can_place(turn)) else {
             self.feedback = Some(Feedback::Invalid);
+            audio::play(cx, Effect::InvalidMove);
             return;
         };
         let piece = round.game.tray()[turn.slot].expect("validated tray slot");
         let before = round.game.clone();
         let placement = round.game.place(turn).expect("validated placement");
         round.best = round.best.max(round.game.score());
-        let clear =
-            (animate && placement.lines > 0).then(|| Clear::new(placement, turn, piece, &before));
         round.undo = Some(before);
         round.turns.push((slot, turn.column, turn.row));
-        self.clear = clear;
+        let outcome = round.outcome();
+        let attempt = round.attempt;
+        let score = round.game.score();
         self.revision = self.revision.wrapping_add(1);
         self.cursor = anchor;
         self.selection = None;
         self.feedback = Some(Feedback::Placed(placement));
         self.save();
+        if let Some(outcome) = outcome {
+            self.session
+                .record_result(attempt, mode.label(), outcome, ResultMetric::Points(score));
+        }
+        self.clear = self
+            .round()
+            .undo
+            .as_ref()
+            .filter(|_| placement.lines > 0 && !cx.reduce_motion())
+            .map(|before| Clear::new(placement, turn, piece, before));
+        audio::play(
+            cx,
+            match outcome {
+                Some(Outcome::Won) => Effect::Complete,
+                _ if placement.lines > 0 => Effect::Clear,
+                _ => Effect::Move,
+            },
+        );
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -514,7 +565,7 @@ impl GameView {
                 && key.modifiers.number_of_modifiers() == 1
             {
                 cx.stop_active_drag(window);
-                self.undo();
+                self.undo(cx);
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -701,7 +752,7 @@ impl GameView {
                 if let Some(anchor) = anchor {
                     view.focus.focus(window, cx);
                     if let Some(slot) = view.selection {
-                        view.place(anchor, slot, !cx.reduce_motion());
+                        view.place(anchor, slot, cx);
                     } else {
                         view.cursor = anchor;
                     }
@@ -718,7 +769,7 @@ impl GameView {
                         .get()
                         .and_then(|grid| drag.anchor_at(grid, window.mouse_position()))
                 {
-                    view.place(anchor, source.slot, !cx.reduce_motion());
+                    view.place(anchor, source.slot, cx);
                 }
                 cx.notify();
             }))
@@ -982,7 +1033,7 @@ impl GameView {
                                 "Control+Z"
                             })
                             .on_click(cx.listener(|view, _, window, cx| {
-                                view.undo();
+                                view.undo(cx);
                                 view.focus.focus(window, cx);
                                 cx.notify();
                             })),
@@ -1250,11 +1301,19 @@ mod tests {
     #[test]
     fn original_replay_restores_score_tray_and_undo() {
         let json = r#"{"seed":0,"turns":[[0,0,0]],"can_undo":true}"#;
-        let saved: SavedSession = serde_json::from_str(json).unwrap();
+        let mut saved: SavedSession = serde_json::from_str(json).unwrap();
         assert!(saved.mode == Mode::Classic);
         assert!(saved.ten_trays.is_none());
 
-        let round = Round::restore(Mode::Classic, saved.classic).unwrap();
+        saved.ten_trays = Some(Round::new(Mode::TenTrays, CHALLENGE_SEED).saved());
+        let encoded = serde_json::to_string(&saved).unwrap();
+        let restored: SavedSession = serde_json::from_str(&encoded).unwrap();
+        assert!(restored.classic_attempt == saved.classic_attempt);
+        assert!(restored.ten_trays_attempt == saved.ten_trays_attempt);
+
+        let round =
+            Round::restore(Mode::Classic, restored.classic, restored.classic_attempt).unwrap();
+        assert!(round.attempt == saved.classic_attempt);
         assert_eq!(round.game.score(), 3);
         assert_eq!(round.game.board()[0][1], Some(Wood::Plum));
         assert_eq!(round.game.board()[1][0], Some(Wood::Plum));

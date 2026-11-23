@@ -10,8 +10,9 @@ use gpui::{
 };
 
 use crate::{
+    audio::{self, Effect},
     games::{GameEntry, GameLaunch},
-    storage::Session,
+    storage::{Outcome, ResultMetric, Session},
     theme as t,
 };
 
@@ -104,7 +105,18 @@ impl GameView {
     fn apply(&mut self, action: Move, cx: &mut Context<Self>) {
         let excavation = matches!(action, Move::Dig(..) | Move::Sweep(..));
         let before = excavation.then(|| self.opened_tiles());
+        let room = self.expedition.current_room();
+        let was_complete = self.expedition.is_complete();
         if !action.apply(&mut self.expedition) {
+            if let Move::Dig(x, y) | Move::Flag(x, y) = action
+                && self.expedition.status(room) == RoomStatus::Exploring
+                && matches!(
+                    self.expedition.tile((usize::from(x), usize::from(y))),
+                    Some(Tile::Covered { .. } | Tile::Flagged)
+                )
+            {
+                audio::play(cx, Effect::InvalidMove);
+            }
             return;
         }
 
@@ -124,6 +136,24 @@ impl GameView {
         self.pending_reset = None;
         self.record.remember(action, &self.expedition);
         self.session.save(&self.record);
+        let effect = if !was_complete && self.expedition.is_complete() {
+            self.session.record_result(
+                self.record.attempt,
+                if self.challenge {
+                    "Challenge"
+                } else {
+                    "Expedition"
+                },
+                Outcome::Won,
+                ResultMetric::Moves(self.record.move_count()),
+            );
+            Effect::Complete
+        } else if excavation && self.expedition.status(room) == RoomStatus::Surveyed {
+            Effect::Clear
+        } else {
+            Effect::Move
+        };
+        audio::play(cx, effect);
         cx.notify();
     }
 
@@ -200,8 +230,10 @@ impl GameView {
             "right" => self.move_cursor(1, 0),
             "up" => self.move_cursor(0, -1),
             "down" => self.move_cursor(0, 1),
-            "enter" => self.activate_tile(self.cursor, cx),
-            "space" => self.apply(Move::Flag(self.cursor.0 as u8, self.cursor.1 as u8), cx),
+            "enter" if !event.is_held => self.activate_tile(self.cursor, cx),
+            "space" if !event.is_held => {
+                self.apply(Move::Flag(self.cursor.0 as u8, self.cursor.1 as u8), cx);
+            }
             "d" => self.tool = Tool::Dig,
             "f" => self.tool = Tool::Flag,
             "escape" => self.pinned_clue = None,
