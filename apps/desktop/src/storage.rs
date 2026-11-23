@@ -12,9 +12,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::games::GameLaunch;
 use crate::theme::Appearance;
 
+mod export;
+pub use export::export_progress;
+
 const FORMAT: u32 = 1;
 
-fn data_dir() -> Option<PathBuf> {
+pub(crate) fn data_dir() -> Option<PathBuf> {
     env::var_os("CORNER_TABLE_DATA_DIR")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
@@ -104,15 +107,7 @@ pub struct GameResult {
 
 impl Session {
     pub fn new(launch: &GameLaunch) -> Self {
-        let path = data_dir().map(|dir| {
-            let serialized = serde_json::to_vec(launch).expect("game launch consists of strings");
-            let key = serialized
-                .iter()
-                .fold(0xcbf29ce484222325_u64, |hash, byte| {
-                    (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-                });
-            dir.join("sessions").join(format!("{key:016x}.json"))
-        });
+        let path = data_dir().map(|dir| dir.join("sessions").join(session_filename(launch)));
         Self {
             path,
             launch: launch.clone(),
@@ -165,6 +160,23 @@ impl Session {
     }
 }
 
+fn session_filename(launch: &GameLaunch) -> String {
+    let serialized = serde_json::to_vec(launch).expect("game launch consists of strings");
+    let key = serialized
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    format!("{key:016x}.json")
+}
+
+fn result_filename(attempt: AttemptId) -> String {
+    format!(
+        "{:x}-{:x}-{:x}.json",
+        attempt.started, attempt.process, attempt.sequence
+    )
+}
+
 pub fn recent_results(limit: usize) -> Vec<GameResult> {
     data_dir()
         .map(|dir| load_results(&dir.join("results"), limit))
@@ -173,10 +185,7 @@ pub fn recent_results(limit: usize) -> Vec<GameResult> {
 
 fn save_result(dir: &Path, attempt: AttemptId, result: GameResult) -> anyhow::Result<()> {
     fs::create_dir_all(dir)?;
-    let path = dir.join(format!(
-        "{:x}-{:x}-{:x}.json",
-        attempt.started, attempt.process, attempt.sequence
-    ));
+    let path = dir.join(result_filename(attempt));
     let file = write_temp(
         dir,
         &Envelope {

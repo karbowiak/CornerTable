@@ -4,6 +4,12 @@ Corner Table is a native Rust and GPUI collection of twenty-one tabletop, puzzle
 
 [Game directory](games/README.md) · [Development handoff](HANDOFF.md)
 
+## Export progress
+
+Choose **File → Export Progress…** (or **Ctrl+Shift+E** on Linux) and select a file outside the active profile. Corner Table reports the destination and the number of saved sessions and results after the export finishes.
+
+The JSON file identifies its format as `corner-table-progress`, version `1`. The `preferences` object contains appearance, sound, reduced motion, window size, favorites, and the last played game. Unset preferences are `null`. The `sessions` and `results` arrays hold the saved records with their original keys and format versions. The export reads each saved record from disk. Jigsaw photos stay in the local gallery.
+
 ## Run on Linux
 
 Install stable Rust. On Debian or Ubuntu, install the build tools and desktop libraries.

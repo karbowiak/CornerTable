@@ -67,6 +67,7 @@ fn install_shortcuts(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-1", app::OpenLibrary, None),
         KeyBinding::new("ctrl-f", app::FindGame, None),
+        KeyBinding::new("ctrl-shift-e", app::ExportProgress, None),
         KeyBinding::new("ctrl-q", app::Quit, None),
     ]);
     // Search needs Option+Arrow for word movement while its field has focus.
@@ -77,6 +78,7 @@ fn install_shortcuts(cx: &mut App) {
 fn install_menus(cx: &mut App) {
     cx.set_menus([
         Menu::new("Corner Table").items([MenuItem::action("Quit Corner Table", app::Quit)]),
+        Menu::new("File").items([MenuItem::action("Export Progress…", app::ExportProgress)]),
         library_search::edit_menu(),
         Menu::new("Navigate").items([
             MenuItem::action("Back", app::NavigateBack),
@@ -92,6 +94,45 @@ fn install_menus(cx: &mut App) {
         ]),
         Menu::new("Help").items([MenuItem::action("How to Play", app::ToggleGuide)]),
     ]);
+}
+
+fn export_progress(_: &app::ExportProgress, window: &mut gpui::Window, cx: &mut App) {
+    let directory = dirs::document_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| ".".into());
+    let selection = cx.prompt_for_new_path(&directory, Some("corner-table-progress.json"));
+    let profile = storage::data_dir();
+    window
+        .spawn(cx, async move |cx| {
+            let result: anyhow::Result<Option<String>> = async {
+                let Some(path) = selection.await?? else {
+                    return Ok(None);
+                };
+                let profile = profile
+                    .ok_or_else(|| anyhow::anyhow!("Corner Table could not locate the profile"))?;
+                cx.background_executor()
+                    .spawn(async move {
+                        let (sessions, results) = storage::export_progress(&profile, &path)?;
+                        Ok(Some(format!(
+                            "Saved {sessions} sessions and {results} results to {}.",
+                            path.display()
+                        )))
+                    })
+                    .await
+            }
+            .await;
+            let (level, title, detail) = match result {
+                Ok(None) => return,
+                Ok(Some(detail)) => (gpui::PromptLevel::Info, "Progress exported", detail),
+                Err(error) => (
+                    gpui::PromptLevel::Warning,
+                    "Could not export progress",
+                    format!("{error:#}"),
+                ),
+            };
+            let _ = cx.prompt(level, title, Some(&detail), &["OK"]).await;
+        })
+        .detach();
 }
 
 fn open_main_window(fixtures: FixtureApi, cx: &mut App) {

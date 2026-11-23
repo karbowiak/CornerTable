@@ -24,6 +24,7 @@ gpui::actions!(
         ToggleGuide,
         ToggleFullScreen,
         ToggleReducedMotion,
+        ExportProgress,
         Quit,
     ]
 );
@@ -428,6 +429,7 @@ impl Render for Desktop {
             .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
+            .on_action(crate::export_progress)
             .on_action(cx.listener(|desktop, _: &NavigateBack, window, cx| {
                 desktop.dispatch(Action::History(NavigationDirection::Back), window, cx);
             }))
@@ -606,6 +608,55 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn progress_export_menu_handles_cancel_success_and_error(cx: &mut TestAppContext) {
+        cx.update(crate::install_shortcuts);
+        let file_menu = cx.update(|cx| {
+            cx.get_menus()
+                .unwrap()
+                .into_iter()
+                .find(|menu| menu.name == "File")
+                .unwrap()
+        });
+        assert!(file_menu.items.iter().any(|item| matches!(
+            item, gpui::OwnedMenuItem::Action { action, disabled: false, .. }
+                if action.as_any().is::<ExportProgress>()
+        )));
+        let window = cx.open_window(size(px(900.), px(600.)), |window, cx| {
+            let desktop = Desktop::new(
+                FixtureApi::load().unwrap(),
+                theme::Appearance::Dark,
+                window,
+                cx,
+            );
+            desktop.focus.focus(window, cx);
+            desktop
+        });
+        cx.run_until_parked();
+        let output = tempfile::tempdir().unwrap();
+        let destination = output.path().join("progress.json");
+        cx.dispatch_action(window.into(), ExportProgress);
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection(|_| None);
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(output.path().read_dir().unwrap().count(), 0);
+
+        cx.dispatch_action(window.into(), ExportProgress);
+        cx.simulate_new_path_selection(|_| Some(destination.clone()));
+        cx.run_until_parked();
+        assert_eq!(cx.pending_prompt().unwrap().0, "Progress exported");
+        assert!(destination.is_file());
+        cx.simulate_prompt_answer("OK");
+        cx.run_until_parked();
+
+        cx.dispatch_action(window.into(), ExportProgress);
+        cx.simulate_new_path_selection(|_| Some(output.path().join("missing/backup.json")));
+        cx.run_until_parked();
+        assert_eq!(cx.pending_prompt().unwrap().0, "Could not export progress");
+        cx.simulate_prompt_answer("OK");
     }
 
     #[gpui::test]
