@@ -10,8 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use corner_table_solitaire::{Card, DealMode, Game, Move, Place, Suit, Variant};
 use gpui::{
-    BoxShadow, Context, Div, EntityId, FocusHandle, FontWeight, KeyDownEvent, ObjectFit, Render,
-    Role, SharedString, Stateful, Window, div, img, prelude::*, px, relative, rgb, rgba,
+    BoxShadow, ClipboardItem, Context, Div, EntityId, FocusHandle, FontWeight, KeyDownEvent,
+    ObjectFit, Render, Role, SharedString, Stateful, Window, div, img, prelude::*, px, relative,
+    rgb, rgba,
 };
 
 use crate::{
@@ -24,7 +25,7 @@ use crate::{
 use self::{
     keyboard::{Cursor, Direction},
     motion::{Anchor, DealFrame, DealMotion, fan_len},
-    session::{Deal, TableSession},
+    session::{Deal, DealCode, TableSession},
     style::{TablePalette, TableStyle},
     suggestion::{Marker, Suggestion},
 };
@@ -176,10 +177,18 @@ impl TableSize {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShareFeedback {
+    Copied,
+    Invalid,
+}
+
 pub struct GameView {
     session: TableSession,
     deal: Deal,
     other_deals: Vec<Deal>,
+    regular_deal: Option<(Deal, Cursor)>,
+    share_feedback: Option<ShareFeedback>,
     revision: u64,
     show_title: bool,
     focus: FocusHandle,
@@ -201,6 +210,8 @@ impl GameView {
             session,
             deal,
             other_deals,
+            regular_deal: None,
+            share_feedback: None,
             revision: 0,
             show_title: !matches!(launch.entry, GameEntry::Mode(_)),
             focus: cx.focus_handle(),
@@ -218,10 +229,11 @@ impl GameView {
     }
 
     fn switch_mode(&mut self, mode: DealMode) {
-        if let Some(deal) = self
-            .other_deals
-            .iter_mut()
-            .find(|deal| deal.game.mode() == mode)
+        if self.regular_deal.is_none()
+            && let Some(deal) = self
+                .other_deals
+                .iter_mut()
+                .find(|deal| deal.game.mode() == mode)
         {
             std::mem::swap(&mut self.deal, deal);
             self.session.save_mode(mode);
@@ -233,7 +245,43 @@ impl GameView {
     fn board_changed(&mut self) {
         self.suggestion = None;
         self.deal_motion = None;
+        self.share_feedback = None;
         self.revision += 1;
+    }
+
+    fn copy_deal(&mut self, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(self.deal.code().encode()));
+        self.share_feedback = Some(ShareFeedback::Copied);
+        cx.notify();
+    }
+
+    fn paste_deal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let code = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .and_then(|text| DealCode::decode(&text));
+        if let Some(code) = code {
+            let previous = std::mem::replace(&mut self.deal, Deal::shared(code));
+            let cursor = std::mem::take(&mut self.cursor);
+            if self.regular_deal.is_none() {
+                self.regular_deal = Some((previous, cursor));
+            }
+            self.board_changed();
+            self.focus.focus(window, cx);
+        } else {
+            self.share_feedback = Some(ShareFeedback::Invalid);
+        }
+        cx.notify();
+    }
+
+    fn return_to_deal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((deal, cursor)) = self.regular_deal.take() {
+            self.deal = deal;
+            self.cursor = cursor;
+            self.board_changed();
+            self.focus.focus(window, cx);
+            cx.notify();
+        }
     }
 
     fn show_hint(&mut self, cx: &mut Context<Self>) {
@@ -770,7 +818,7 @@ impl GameView {
     fn mode_picker(&self, cx: &Context<Self>) -> Option<Div> {
         let game = &self.deal.game;
         let modes = game.variant.deal_modes();
-        if modes.len() < 2 {
+        if self.regular_deal.is_some() || modes.len() < 2 {
             return None;
         }
         let palette = t::colors(cx);
@@ -930,6 +978,48 @@ impl GameView {
             }))
     }
 
+    fn share_controls(&self, cx: &Context<Self>) -> Div {
+        let copied = self.share_feedback == Some(ShareFeedback::Copied);
+        let button = |id: &'static str, label| {
+            super::themed_control(cx, id, label, true).when(cfg!(test), |button| {
+                button.debug_selector(move || id.into())
+            })
+        };
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(
+                button(
+                    "solitaire-copy-deal",
+                    if copied {
+                        "Code copied"
+                    } else {
+                        "Copy deal code"
+                    },
+                )
+                .w(px(120.))
+                .justify_center()
+                .aria_label("Copy deal code")
+                .when(copied, |button| {
+                    button.aria_description("Deal code copied to the clipboard.")
+                })
+                .on_click(cx.listener(|view, _, _, cx| view.copy_deal(cx))),
+            )
+            .child(
+                button("solitaire-paste-deal", "Play copied deal")
+                    .on_click(cx.listener(|view, _, window, cx| view.paste_deal(window, cx))),
+            )
+            .when(self.regular_deal.is_some(), |row| {
+                row.child(
+                    button("solitaire-return-deal", "Return to my deal").on_click(
+                        cx.listener(|view, _, window, cx| view.return_to_deal(window, cx)),
+                    ),
+                )
+            })
+    }
+
     fn rack(&self, board: &BoardFrame<'_>, cx: &Context<Self>) -> Div {
         let size = board.size;
         let variant = self.deal.game.variant;
@@ -984,7 +1074,9 @@ impl GameView {
                 actions.child(self.undo_button(true, cx))
             })
             .child(Self::replay_button("solitaire-finish-replay", true, cx))
-            .child(Self::new_deal_button("solitaire-finish-new", cx));
+            .when(self.regular_deal.is_none(), |actions| {
+                actions.child(Self::new_deal_button("solitaire-finish-new", cx))
+            });
         let id = if won {
             "solitaire-won"
         } else {
@@ -1052,6 +1144,7 @@ impl Render for GameView {
             window.request_animation_frame();
         }
         let game = &self.deal.game;
+        let is_shared = self.regular_deal.is_some();
         let style = TableStyle::active(cx);
         let palette = style.palette();
         let table = TableSize::new(game, window, self.show_title);
@@ -1117,33 +1210,61 @@ impl Render for GameView {
             .flex()
             .flex_col()
             .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .when(!is_shared && self.show_title, |row| {
+                        row.child(t::display_type(game.variant.title(), 24.).mr_2())
+                    })
+                    .when(is_shared, |row| {
+                        let variant = game.variant.title();
+                        let label = if game.variant.deal_modes().len() == 1 {
+                            format!("Shared deal · {variant}")
+                        } else {
+                            format!("Shared deal · {variant} · {}", mode_label(game.mode()))
+                        };
+                        row.child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(t::colors(cx).ink))
+                                .child(label),
+                        )
+                    })
+                    .children(self.mode_picker(cx))
+                    .child(self.share_controls(cx))
+                    .when(outcome.is_none(), |row| {
+                        row.child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .ml_auto()
+                                .gap_2()
+                                .child(self.hint_button(cx))
+                                .child(self.undo_button(false, cx))
+                                .children(self.finish_button(cx))
+                                .child(Self::replay_button("solitaire-replay", false, cx))
+                                .when(!is_shared, |row| {
+                                    row.child(Self::new_deal_button("solitaire-new", cx))
+                                }),
+                        )
+                    }),
+            )
             .when(
-                outcome.is_none() || self.show_title || game.variant.deal_modes().len() > 1,
+                self.share_feedback == Some(ShareFeedback::Invalid),
                 |view| {
+                    let message = "No compatible Solitaire deal code in the clipboard.";
                     view.child(
                         div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap_2()
-                            .when(self.show_title, |row| {
-                                row.child(t::display_type(game.variant.title(), 24.).mr_2())
-                            })
-                            .children(self.mode_picker(cx))
-                            .when(outcome.is_none(), |row| {
-                                row.child(
-                                    div()
-                                        .flex()
-                                        .flex_wrap()
-                                        .ml_auto()
-                                        .gap_2()
-                                        .child(self.hint_button(cx))
-                                        .child(self.undo_button(false, cx))
-                                        .children(self.finish_button(cx))
-                                        .child(Self::replay_button("solitaire-replay", false, cx))
-                                        .child(Self::new_deal_button("solitaire-new", cx)),
-                                )
-                            }),
+                            .id("solitaire-share-status")
+                            .role(Role::Status)
+                            .aria_label(message)
+                            .text_size(px(13.))
+                            .text_color(rgb(t::colors(cx).ink))
+                            .child(message),
                     )
                 },
             )

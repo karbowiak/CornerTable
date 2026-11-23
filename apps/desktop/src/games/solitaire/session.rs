@@ -10,6 +10,58 @@ use super::mode_label;
 
 // Increment when a deal generator or move encoding changes incompatibly.
 const REPLAY_VERSION: u32 = 1;
+const DEAL_CODE_FORMAT: &str = "v1";
+// This version covers every opening layout, shuffle, and Verified Draw 1 catalog order.
+// If that mapping changes, preserve the old generator or reject its code version.
+const DEAL_GENERATOR: &str = "g1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct DealCode {
+    mode: DealMode,
+    seed: u64,
+}
+
+impl DealCode {
+    pub(super) fn encode(self) -> String {
+        let mode = mode_id(self.mode);
+        let seed = self.seed;
+        format!("solitaire:{DEAL_CODE_FORMAT}:{mode}:{DEAL_GENERATOR}:{seed:016x}")
+    }
+
+    pub(super) fn decode(code: &str) -> Option<Self> {
+        let mut parts = code.trim().split(':');
+        let ("solitaire", DEAL_CODE_FORMAT, id, DEAL_GENERATOR, seed) = (
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+        ) else {
+            return None;
+        };
+        if parts.next().is_some()
+            || seed.len() != 16
+            || !seed.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let mode = [
+            Variant::Klondike,
+            Variant::Spider,
+            Variant::FreeCell,
+            Variant::Pyramid,
+            Variant::TriPeaks,
+        ]
+        .iter()
+        .flat_map(|variant| variant.deal_modes())
+        .copied()
+        .find(|&mode| mode_id(mode) == id)?;
+        Some(Self {
+            mode,
+            seed: u64::from_str_radix(seed, 16).ok()?,
+        })
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 struct SavedTable {
@@ -55,7 +107,7 @@ impl TableSession {
 }
 
 pub(super) struct Deal {
-    session: Session,
+    session: Option<Session>,
     saved: SavedDeal,
     pub(super) game: Game,
     pub(super) selected: Option<Place>,
@@ -125,11 +177,29 @@ impl Deal {
             .filter(|&start| game.won() && start < saved.turns.len());
         saved.record_win(&game);
         Self {
-            session,
+            session: Some(session),
             saved,
             game,
             selected: None,
             status: "",
+        }
+    }
+
+    pub(super) fn shared(code: DealCode) -> Self {
+        // Shared play uses the same move history and undo without a persistent session.
+        Self {
+            session: None,
+            saved: SavedDeal::new(code.seed),
+            game: Game::with_mode(code.mode, code.seed),
+            selected: None,
+            status: "",
+        }
+    }
+
+    pub(super) fn code(&self) -> DealCode {
+        DealCode {
+            mode: self.game.mode(),
+            seed: self.saved.seed,
         }
     }
 
@@ -200,7 +270,9 @@ impl Deal {
 
     fn record_progress(&mut self) {
         self.saved.record_win(&self.game);
-        if self.game.won() {
+        if self.game.won()
+            && let Some(session) = &self.session
+        {
             let mode = self.game.mode();
             let variant = self.game.variant;
             let label = if variant.deal_modes().len() == 1 {
@@ -208,7 +280,7 @@ impl Deal {
             } else {
                 format!("{} · {}", variant.title(), mode_label(mode))
             };
-            self.session.record_result(
+            session.record_result(
                 self.saved.attempt,
                 label,
                 Outcome::Won,
@@ -244,7 +316,9 @@ impl Deal {
     fn save(&mut self) {
         self.selected = None;
         self.status = "";
-        self.session.save(&self.saved);
+        if let Some(session) = &self.session {
+            session.save(&self.saved);
+        }
     }
 }
 
@@ -297,13 +371,195 @@ mod tests {
     use super::*;
     #[cfg(debug_assertions)]
     use crate::{
-        games::solitaire::{GameView, Suggestion, TableStyle},
+        games::solitaire::{GameView, ShareFeedback, Suggestion, TableStyle},
         storage,
     };
     #[cfg(debug_assertions)]
     use corner_table_api::GameId;
     #[cfg(debug_assertions)]
-    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
+    use gpui::{
+        ClipboardItem, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size,
+    };
+
+    #[test]
+    fn deal_codes_round_trip_every_mode_and_validate_both_versions() {
+        for variant in [
+            Variant::Klondike,
+            Variant::Spider,
+            Variant::FreeCell,
+            Variant::Pyramid,
+            Variant::TriPeaks,
+        ] {
+            for &mode in variant.deal_modes() {
+                for seed in [0, u64::MAX] {
+                    let code = DealCode { mode, seed };
+                    assert_eq!(DealCode::decode(&code.encode()), Some(code));
+                    assert_eq!(Deal::shared(code).game, Game::with_mode(mode, seed));
+                }
+            }
+        }
+
+        let code = "solitaire:v1:draw-one-verified:g1:FFFFFFFFFFFFFFFF";
+        assert_eq!(
+            DealCode::decode(&format!("\n{code}\t")),
+            Some(DealCode {
+                mode: DealMode::KlondikeDrawOneVerified,
+                seed: u64::MAX,
+            })
+        );
+        for invalid in [
+            "mahjong:v1:draw-one:g1:0000000000000000",
+            "solitaire:v2:draw-one:g1:0000000000000000",
+            "solitaire:v1:draw-one:g2:0000000000000000",
+            "solitaire:v1:unknown:g1:0000000000000000",
+            "solitaire:v1:draw-one:0000000000000000",
+            "solitaire:v1:draw-one:g1:000000000000000",
+            "solitaire:v1:draw-one:g1:10000000000000000",
+            "solitaire:v1:draw-one:g1:+000000000000000",
+            "solitaire:v1:draw-one:g1:0000000000000000:extra",
+        ] {
+            assert!(DealCode::decode(invalid).is_none(), "accepted {invalid}");
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    fn sharing_uses_the_exact_opening_and_preserves_the_regular_table(cx: &mut TestAppContext) {
+        let launch = GameLaunch {
+            game: GameId("solitaire-sharing-test".into()),
+            entry: GameEntry::Mode("spider".into()),
+        };
+        let ordinary_seed = 266;
+        // Width available to the game after the compact sidebar and page gutters.
+        let window = cx.open_window(size(px(664.), px(540.)), |_, cx| {
+            let mut view = GameView::new(&launch, cx);
+            view.restart(Some(ordinary_seed));
+            for _ in 0..5 {
+                assert!(view.deal.apply(Move::Draw));
+            }
+            assert!(view.deal.game.stalled());
+            view
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        draw(&mut visual);
+        let click = |visual: &mut VisualTestContext, id| {
+            let button = visual.debug_bounds(id).unwrap();
+            assert!(button.right() <= px(664.));
+            assert!(button.bottom() <= px(540.));
+            visual.simulate_click(button.center(), Modifiers::none());
+            draw(visual);
+        };
+        let saved = |view: &GameView| serde_json::to_vec(&view.deal.saved).unwrap();
+        let table_settings =
+            || serde_json::to_vec(&Session::new(&launch).load::<SavedTable>().unwrap()).unwrap();
+        let ordinary_settings = table_settings();
+        let ordinary = window
+            .read_with(cx, |view, cx| {
+                (
+                    view.deal.game.clone(),
+                    saved(view),
+                    view.revision,
+                    TableStyle::active(cx),
+                )
+            })
+            .unwrap();
+
+        let blocked_result = visual.debug_bounds("solitaire-blocked").unwrap();
+        click(&mut visual, "solitaire-copy-deal");
+        assert_eq!(
+            visual.debug_bounds("solitaire-blocked"),
+            Some(blocked_result)
+        );
+        let blocked_code = "solitaire:v1:one-suit:g1:000000000000010a";
+        assert_eq!(
+            visual.read_from_clipboard().unwrap().text().unwrap(),
+            blocked_code
+        );
+        visual.write_to_clipboard(ClipboardItem::new_string(
+            "solitaire:v1:one-suit:g2:000000000000010a".into(),
+        ));
+        click(&mut visual, "solitaire-paste-deal");
+        assert!(visual.debug_bounds("solitaire-return-deal").is_none());
+        window
+            .read_with(cx, |view, _| {
+                assert!(matches!(view.share_feedback, Some(ShareFeedback::Invalid)));
+                assert_eq!(view.deal.game, ordinary.0);
+                assert_eq!(saved(view), ordinary.1);
+                assert_eq!(view.revision, ordinary.2);
+            })
+            .unwrap();
+
+        let mode = DealMode::KlondikeDrawOneVerified;
+        let seed = u64::MAX;
+        let code = DealCode { mode, seed }.encode();
+        visual.write_to_clipboard(ClipboardItem::new_string(format!("\n{code}\t")));
+        click(&mut visual, "solitaire-paste-deal");
+        assert!(visual.debug_bounds("solitaire-blocked").is_none());
+        let opening = Game::with_mode(mode, seed);
+        window
+            .read_with(cx, |view, _| {
+                assert_eq!(view.deal.game, opening);
+                assert!(!view.deal.can_undo());
+            })
+            .unwrap();
+
+        visual.simulate_keystrokes("d");
+        draw(&mut visual);
+        let flight = visual.debug_bounds("solitaire-flight-0").unwrap();
+        let mut after_draw = opening.clone();
+        assert!(after_draw.play(Move::Draw));
+        click(&mut visual, "solitaire-copy-deal");
+        assert_eq!(visual.read_from_clipboard().unwrap().text().unwrap(), code);
+        assert_eq!(visual.debug_bounds("solitaire-flight-0"), Some(flight));
+        window
+            .read_with(cx, |view, _| assert_eq!(view.deal.game, after_draw))
+            .unwrap();
+        click(&mut visual, "solitaire-replay");
+        assert!(visual.debug_bounds("solitaire-flight-0").is_none());
+        window
+            .update(cx, |view, _, cx| {
+                assert_eq!(view.deal.game, opening);
+                for action in Game::verified_klondike_solution(seed) {
+                    assert!(view.deal.apply(action));
+                }
+                cx.notify();
+            })
+            .unwrap();
+        draw(&mut visual);
+        assert!(visual.debug_bounds("solitaire-won").is_some());
+        assert!(
+            storage::recent_results(usize::MAX)
+                .iter()
+                .all(|result| result.game != launch.game)
+        );
+        // Sharing the same mode and seed still starts a fresh, separate attempt.
+        visual.write_to_clipboard(ClipboardItem::new_string(blocked_code.into()));
+        click(&mut visual, "solitaire-paste-deal");
+        visual.simulate_keystrokes("d");
+        draw(&mut visual);
+        let mut one_draw = Game::with_mode(DealMode::SpiderOneSuit, ordinary_seed);
+        assert!(one_draw.play(Move::Draw));
+        window
+            .read_with(cx, |view, _| assert_eq!(view.deal.game, one_draw))
+            .unwrap();
+
+        let (_, restored, _) = TableSession::open(&launch, Variant::Spider);
+        assert_eq!(restored.game, ordinary.0);
+        assert_eq!(serde_json::to_vec(&restored.saved).unwrap(), ordinary.1);
+        assert_eq!(table_settings(), ordinary_settings);
+
+        click(&mut visual, "solitaire-return-deal");
+        assert!(visual.debug_bounds("solitaire-return-deal").is_none());
+        assert!(visual.debug_bounds("solitaire-blocked").is_some());
+        window
+            .read_with(cx, |view, cx| {
+                assert_eq!(view.deal.game, ordinary.0);
+                assert_eq!(saved(view), ordinary.1);
+                assert_eq!(TableStyle::active(cx), ordinary.3);
+            })
+            .unwrap();
+        assert_eq!(table_settings(), ordinary_settings);
+    }
 
     #[cfg(debug_assertions)]
     #[gpui::test]
