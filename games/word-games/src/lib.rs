@@ -1,25 +1,24 @@
-//! Offline rules for Letter Grove, Letter Rack, and Mini Crossword.
+//! Seeded, offline rules for Letter Grove, Letter Rack, and Mini Crossword.
+
+mod crossword;
+
+pub use crossword::{Clue, Crossword, CrosswordPuzzle, GridSize};
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-const ENGLISH: &str = include_str!("english.txt");
 const SIDE: usize = 4;
-const GROVES: [&[u8; 16]; 8] = [
-    b"CRATSOPELINDMEGS",
-    b"BASTEROMNIPEDCLR",
-    b"SHORETIPNACELDUS",
-    b"PLANTERCOISDMEAT",
-    b"SLATEONIPERDSHUM",
-    b"FROSTALENIPEMDUS",
-    b"GRAINETOSLAPCREW",
-    b"STONELIAPURNMEDS",
-];
-const RACKS: [&[u8; 7]; 8] = [
-    b"GARDENS", b"FLOWERS", b"PAINTER", b"PLASTER", b"STAPLER", b"CANDLES", b"THREADS", b"MARBLES",
-];
+pub const WORD_GOAL: u32 = 12;
+pub const WORD_BONUS: u32 = 24;
 
-static WORDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| ENGLISH.lines().collect());
+static WORDS: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| include_str!("english.txt").lines().collect());
+static FAMILIAR: LazyLock<BTreeSet<&'static str>> =
+    LazyLock::new(|| include_str!("familiar.txt").split_whitespace().collect());
+static GROVES: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| include_str!("groves.txt").lines().collect());
+static RACKS: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| include_str!("racks.txt").lines().collect());
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -28,8 +27,19 @@ pub enum Mode {
     Crossword,
 }
 
+impl Mode {
+    pub fn puzzle_count(self) -> usize {
+        match self {
+            Self::Grove => GROVES.len(),
+            Self::Rack => RACKS.len(),
+            Self::Crossword => GridSize::Mini.puzzle_count(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Rejection {
+    Finished,
     TooShort,
     UnknownWord,
     AlreadyFound,
@@ -41,27 +51,28 @@ pub struct WordRound {
     letters: Vec<u8>,
     selection: Vec<usize>,
     found: Vec<(String, u32)>,
-    answers: BTreeSet<String>,
-    revealed: bool,
+    answers: BTreeSet<&'static str>,
+    finished: bool,
 }
 
 impl WordRound {
     pub fn new(mode: Mode, seed: u64) -> Self {
         assert!(matches!(mode, Mode::Grove | Mode::Rack));
+        let index = (seed % mode.puzzle_count() as u64) as usize;
+        let cycle = seed / mode.puzzle_count() as u64;
         let letters = match mode {
             Mode::Grove => {
-                let board = GROVES[(seed % GROVES.len() as u64) as usize];
-                let symmetry = seed / GROVES.len() as u64 % 8;
+                let board = GROVES[index].as_bytes();
                 (0..SIDE * SIDE)
                     .map(|index| {
                         let (mut row, mut column) = (index / SIDE, index % SIDE);
-                        if symmetry & 1 != 0 {
+                        if cycle & 1 != 0 {
                             std::mem::swap(&mut row, &mut column);
                         }
-                        if symmetry & 2 != 0 {
+                        if cycle & 2 != 0 {
                             row = SIDE - 1 - row;
                         }
-                        if symmetry & 4 != 0 {
+                        if cycle & 4 != 0 {
                             column = SIDE - 1 - column;
                         }
                         board[row * SIDE + column]
@@ -69,9 +80,15 @@ impl WordRound {
                     .collect()
             }
             Mode::Rack => {
-                let rack = RACKS[(seed % RACKS.len() as u64) as usize];
-                let rotation = (seed / RACKS.len() as u64 % 7) as usize;
-                (0..7).map(|index| rack[(index + rotation) % 7]).collect()
+                let mut rack = RACKS[index].as_bytes().to_vec();
+                let mut random = seed;
+                for end in (1..rack.len()).rev() {
+                    random = random
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    rack.swap(end, ((random >> 32) % (end as u64 + 1)) as usize);
+                }
+                rack
             }
             Mode::Crossword => unreachable!(),
         };
@@ -81,13 +98,35 @@ impl WordRound {
             selection: Vec::new(),
             found: Vec::new(),
             answers: BTreeSet::new(),
-            revealed: false,
+            finished: false,
         };
         let mut candidate = String::with_capacity(round.letters.len());
         let mut answers = BTreeSet::new();
         round.search(0, None, &mut candidate, &mut answers);
         round.answers = answers;
         round
+    }
+
+    pub fn restore(&mut self, found: Vec<String>, selection: &[usize], finished: bool) {
+        let mut seen = BTreeSet::new();
+        self.found = found
+            .into_iter()
+            .filter_map(|word| {
+                let word = word.to_ascii_lowercase();
+                (self.answers.contains(word.as_str()) && seen.insert(word.clone()))
+                    .then(|| (word.to_ascii_uppercase(), points(word.len())))
+            })
+            .collect();
+        self.clear();
+        self.finished = finished;
+        if !self.finished() {
+            for &tile in selection {
+                if self.selection.contains(&tile) || !self.choose(tile) {
+                    self.clear();
+                    break;
+                }
+            }
+        }
     }
 
     pub fn letters(&self) -> &[u8] {
@@ -117,39 +156,84 @@ impl WordRound {
         self.found.iter().map(|(_, points)| points).sum()
     }
 
-    pub fn revealed(&self) -> bool {
-        self.revealed
+    pub fn finished(&self) -> bool {
+        self.finished || self.found.len() == self.answer_count()
     }
 
-    pub fn remaining_words(&self) -> impl Iterator<Item = &str> {
-        self.answers.iter().map(String::as_str).filter(|answer| {
-            !self
-                .found
-                .iter()
-                .any(|(found, _)| found.eq_ignore_ascii_case(answer))
+    /// Familiar answers for hints and post-game review. The full dictionary is valid in play.
+    pub fn familiar_remaining(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.answers.iter().copied().filter(|answer| {
+            FAMILIAR.contains(answer)
+                && !self
+                    .found
+                    .iter()
+                    .any(|(found, _)| found.eq_ignore_ascii_case(answer))
         })
     }
 
-    pub fn reveal(&mut self) {
-        self.revealed = true;
+    pub fn hint_word(&self) -> Option<&'static str> {
+        let preferred_length = if self.mode == Mode::Rack { 7 } else { 5 };
+        self.familiar_remaining()
+            .min_by_key(|word| (word.len().abs_diff(preferred_length), *word))
+    }
+
+    pub fn finish(&mut self) {
+        self.finished = true;
         self.clear();
     }
 
+    pub fn can_choose(&self, index: usize) -> bool {
+        !self.finished()
+            && index < self.letters.len()
+            && (self.selection.last() == Some(&index)
+                || (!self.selection.contains(&index)
+                    && self.can_follow(self.selection.last().copied(), index)))
+    }
+
     pub fn choose(&mut self, index: usize) -> bool {
-        if self.revealed || index >= self.letters.len() {
+        if !self.can_choose(index) {
             return false;
         }
         if self.selection.last() == Some(&index) {
             self.undo();
-            return true;
+        } else {
+            self.selection.push(index);
         }
-        if self.selection.contains(&index)
-            || !self.can_follow(self.selection.last().copied(), index)
-        {
+        true
+    }
+
+    /// Preserve the current path when possible. Backtrack when identical tiles made
+    /// an earlier key ambiguous, so a playable spelling always works by keyboard.
+    pub fn type_letter(&mut self, letter: char) -> bool {
+        if self.finished() || !letter.is_ascii_alphabetic() {
             return false;
         }
-        self.selection.push(index);
-        true
+        let uppercase = letter.to_ascii_uppercase() as u8;
+        let next = self.letters.iter().enumerate().position(|(index, &tile)| {
+            tile == uppercase
+                && !self.selection.contains(&index)
+                && self.can_follow(self.selection.last().copied(), index)
+        });
+        if let Some(index) = next {
+            self.selection.push(index);
+            return true;
+        }
+        let mut input = self.candidate();
+        input.push(letter);
+        if let Some(path) = self.path_for(&input) {
+            self.selection = path;
+            return true;
+        }
+        false
+    }
+
+    pub fn path_for(&self, word: &str) -> Option<Vec<usize>> {
+        if word.is_empty() || word.len() > self.letters.len() || !word.is_ascii() {
+            return None;
+        }
+        let mut path = Vec::with_capacity(word.len());
+        self.find_path(word.as_bytes(), 0, &mut path)
+            .then_some(path)
     }
 
     pub fn undo(&mut self) {
@@ -161,26 +245,26 @@ impl WordRound {
     }
 
     pub fn submit(&mut self) -> Result<u32, Rejection> {
+        if self.finished() {
+            return Err(Rejection::Finished);
+        }
         let candidate = self.candidate();
         if candidate.len() < 3 {
             return Err(Rejection::TooShort);
         }
-        if !self.answers.contains(&candidate.to_ascii_lowercase()) {
+        if !self
+            .answers
+            .contains(candidate.to_ascii_lowercase().as_str())
+        {
             return Err(Rejection::UnknownWord);
         }
         if self.found.iter().any(|(word, _)| word == &candidate) {
             return Err(Rejection::AlreadyFound);
         }
-        let points = match candidate.len() {
-            3 | 4 => 1,
-            5 => 2,
-            6 => 3,
-            7 => 5,
-            _ => 11,
-        };
-        self.found.push((candidate, points));
+        let awarded = points(candidate.len());
+        self.found.push((candidate, awarded));
         self.clear();
-        Ok(points)
+        Ok(awarded)
     }
 
     fn can_follow(&self, previous: Option<usize>, next: usize) -> bool {
@@ -191,12 +275,33 @@ impl WordRound {
             })
     }
 
+    fn find_path(&self, word: &[u8], used: u16, path: &mut Vec<usize>) -> bool {
+        let Some((&letter, remaining)) = word.split_first() else {
+            return true;
+        };
+        for (index, tile) in self.letters.iter().enumerate() {
+            let flag = 1 << index;
+            if used & flag != 0
+                || !tile.eq_ignore_ascii_case(&letter)
+                || !self.can_follow(path.last().copied(), index)
+            {
+                continue;
+            }
+            path.push(index);
+            if self.find_path(remaining, used | flag, path) {
+                return true;
+            }
+            path.pop();
+        }
+        false
+    }
+
     fn search(
         &self,
         used: u16,
         previous: Option<usize>,
         candidate: &mut String,
-        answers: &mut BTreeSet<String>,
+        answers: &mut BTreeSet<&'static str>,
     ) {
         for (index, letter) in self.letters.iter().enumerate() {
             let flag = 1 << index;
@@ -209,8 +314,8 @@ impl WordRound {
                 .get(lower_bound)
                 .filter(|word| word.starts_with(candidate.as_str()))
             {
-                if word == candidate {
-                    answers.insert(candidate.clone());
+                if word == candidate && candidate.len() >= 3 {
+                    answers.insert(word);
                 }
                 self.search(used | flag, Some(index), candidate, answers);
             }
@@ -219,114 +324,13 @@ impl WordRound {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct CrosswordPuzzle {
-    solution: &'static [u8; 9],
-    pub across: [&'static str; 3],
-    pub down: [&'static str; 3],
-}
-
-const CROSSWORDS: [CrosswordPuzzle; 3] = [
-    CrosswordPuzzle {
-        solution: b"CATOREDEN",
-        across: [
-            "Common household feline",
-            "Rock containing valuable minerals",
-            "A fox's home",
-        ],
-        down: [
-            "Fish often served with chips",
-            "Plural form of ‘is’",
-            "Number of fingers and thumbs combined",
-        ],
-    },
-    CrosswordPuzzle {
-        solution: b"TAPOREWET",
-        across: ["Faucet", "Iron or copper source", "Soaked by the rain"],
-        down: [
-            "Pull a trailer",
-            "You ___ here",
-            "Animal that lives with you",
-        ],
-    },
-    CrosswordPuzzle {
-        solution: b"BAYICETEA",
-        across: [
-            "A sheltered part of the coast",
-            "Frozen water",
-            "Drink steeped in a pot",
-        ],
-        down: [
-            "A tiny piece",
-            "Playing card with one suit symbol",
-            "An affirmative vote",
-        ],
-    },
-];
-
-pub const ACROSS_NUMBERS: [usize; 3] = [1, 4, 5];
-pub const DOWN_NUMBERS: [usize; 3] = [1, 2, 3];
-
-pub struct Crossword {
-    puzzle: &'static CrosswordPuzzle,
-    letters: [Option<u8>; 9],
-    revealed: bool,
-}
-
-impl Crossword {
-    pub fn new(seed: u64) -> Self {
-        Self {
-            puzzle: &CROSSWORDS[(seed % CROSSWORDS.len() as u64) as usize],
-            letters: [None; 9],
-            revealed: false,
-        }
-    }
-
-    pub fn puzzle(&self) -> &CrosswordPuzzle {
-        self.puzzle
-    }
-
-    pub fn letters(&self) -> &[Option<u8>; 9] {
-        &self.letters
-    }
-
-    pub fn put(&mut self, index: usize, letter: Option<char>) -> bool {
-        if self.revealed || index >= self.letters.len() {
-            return false;
-        }
-        if let Some(letter) = letter {
-            if !letter.is_ascii_alphabetic() {
-                return false;
-            }
-            self.letters[index] = Some(letter.to_ascii_uppercase() as u8);
-        } else {
-            self.letters[index] = None;
-        }
-        true
-    }
-
-    pub fn incorrect_count(&self) -> usize {
-        self.letters
-            .iter()
-            .zip(self.puzzle.solution)
-            .filter(|(entered, correct)| entered.is_some_and(|letter| letter != **correct))
-            .count()
-    }
-
-    pub fn complete(&self) -> bool {
-        self.letters
-            .iter()
-            .zip(self.puzzle.solution)
-            .all(|(entered, &correct)| *entered == Some(correct))
-    }
-
-    pub fn reveal(&mut self) {
-        self.letters = self.puzzle.solution.map(Some);
-        self.revealed = true;
-    }
-
-    pub fn revealed(&self) -> bool {
-        self.revealed
+fn points(length: usize) -> u32 {
+    match length {
+        3 | 4 => 1,
+        5 => 2,
+        6 => 3,
+        7 => 5,
+        _ => 11,
     }
 }
 
@@ -352,73 +356,76 @@ mod tests {
     }
 
     #[test]
-    fn rack_scores_valid_words_only_once_and_stops_after_reveal() {
+    fn grove_keyboard_can_revisit_an_ambiguous_tile_choice() {
+        let mut round = WordRound::new(Mode::Grove, 0);
+        for letter in "ELM".chars() {
+            assert!(round.type_letter(letter), "could not add {letter}");
+        }
+        assert_eq!(round.selection(), &[13, 8, 12]);
+        assert_eq!(round.submit(), Ok(1));
+    }
+
+    #[test]
+    fn rack_scores_words_and_can_rehydrate_mid_word() {
         let mut round = WordRound::new(Mode::Rack, 0);
         assert_eq!(round.submit(), Err(Rejection::TooShort));
-        for index in 0..7 {
-            assert!(round.choose(index));
+        for letter in "gardens".chars() {
+            assert!(round.type_letter(letter));
         }
-        assert_eq!(round.candidate(), "GARDENS");
         assert_eq!(round.submit(), Ok(5));
-        for index in 0..7 {
-            assert!(round.choose(index));
+        for letter in "GARDENS".chars() {
+            assert!(round.type_letter(letter));
         }
         assert_eq!(round.submit(), Err(Rejection::AlreadyFound));
-        round.reveal();
-        assert!(round.revealed());
-        assert!(!round.choose(2));
-        assert!(round.selection().is_empty());
-        assert!(!round.remaining_words().any(|word| word == "gardens"));
-        assert_eq!(round.score(), 5);
+        let mut restored = WordRound::new(Mode::Rack, 0);
+        restored.restore(
+            vec!["gardens".into(), "GARDENS".into(), "plum".into()],
+            round.selection(),
+            false,
+        );
+        assert_eq!(restored.found(), round.found());
+        assert_eq!(restored.candidate(), "GARDENS");
+        restored.finish();
+        assert!(restored.finished());
+        assert!(!restored.choose(2));
+        assert_eq!(restored.submit(), Err(Rejection::Finished));
+        assert!(!restored.familiar_remaining().any(|word| word == "gardens"));
+        assert_eq!(restored.score(), 5);
     }
 
     #[test]
-    fn all_seeded_word_sets_offer_many_answers() {
+    fn each_letter_puzzle_has_a_distinct_pool_with_room_to_exceed_the_goal() {
+        assert!(WORDS.windows(2).all(|words| words[0] < words[1]));
+        assert!(
+            FAMILIAR
+                .iter()
+                .all(|word| WORDS.binary_search(word).is_ok())
+        );
         for mode in [Mode::Grove, Mode::Rack] {
-            let counts: Vec<_> = (0..8)
-                .map(|seed| WordRound::new(mode, seed).answer_count())
-                .collect();
-            assert!(counts.iter().all(|&count| count >= 20), "{counts:?}");
-            for (seed, count) in counts.into_iter().enumerate() {
-                assert_eq!(WordRound::new(mode, seed as u64 + 8).answer_count(), count);
-            }
-        }
-    }
-
-    #[test]
-    fn crossword_solutions_are_english_in_both_directions() {
-        for puzzle in CROSSWORDS {
-            for line in 0..3 {
-                let across = &puzzle.solution[(line * 3)..(line * 3 + 3)];
-                let down = [
-                    puzzle.solution[line],
-                    puzzle.solution[line + 3],
-                    puzzle.solution[line + 6],
-                ];
-                for word in [across, &down] {
-                    let word = String::from_utf8_lossy(word).to_ascii_lowercase();
-                    assert!(WORDS.binary_search(&word.as_str()).is_ok(), "{word}");
+            assert!(mode.puzzle_count() >= 60);
+            let mut signatures = BTreeSet::new();
+            for seed in 0..mode.puzzle_count() as u64 {
+                let round = WordRound::new(mode, seed);
+                let mut letters = round.letters().to_vec();
+                assert_eq!(letters.len(), if mode == Mode::Grove { 16 } else { 7 });
+                letters.sort_unstable();
+                assert!(signatures.insert(letters), "{mode:?} {seed}");
+                let available: u32 = round
+                    .familiar_remaining()
+                    .map(|word| points(word.len()))
+                    .sum();
+                assert!(available >= WORD_BONUS, "{mode:?} {seed}: {available}");
+                if mode == Mode::Rack || seed >= 8 {
+                    assert!(
+                        round.familiar_remaining().any(|word| word.len() >= 7),
+                        "{mode:?} {seed} is missing a long answer"
+                    );
                 }
+                let hint = round.hint_word().unwrap();
+                let path = round.path_for(hint).unwrap();
+                assert_eq!(path.len(), hint.len());
+                assert_eq!(round.letters(), WordRound::new(mode, seed).letters());
             }
         }
-    }
-
-    #[test]
-    fn crossword_accepts_case_insensitive_entries_and_reports_mistakes() {
-        let mut crossword = Crossword::new(0);
-        assert!(!crossword.complete());
-        assert!(!crossword.put(0, Some('9')));
-        assert!(crossword.put(0, Some('x')));
-        assert_eq!(crossword.incorrect_count(), 1);
-        assert!(crossword.put(0, None));
-        for (index, letter) in "catoreden".chars().enumerate() {
-            assert!(crossword.put(index, Some(letter)));
-        }
-        assert!(crossword.complete());
-        assert_eq!(crossword.incorrect_count(), 0);
-        let mut revealed = Crossword::new(1);
-        revealed.reveal();
-        assert!(revealed.complete());
-        assert!(!revealed.put(0, Some('a')));
     }
 }
