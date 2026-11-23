@@ -56,6 +56,61 @@ struct Visit {
     scroll: Point<Pixels>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidebarLayout {
+    Compact,
+    Medium,
+    Wide,
+}
+
+pub(crate) struct ShellLayout {
+    pub sidebar: SidebarLayout,
+    viewport_width: f32,
+}
+
+impl ShellLayout {
+    const MAX_PAGE_WIDTH: f32 = 1440.;
+
+    pub fn new(viewport_width: Pixels) -> Self {
+        let viewport_width = f32::from(viewport_width);
+        let sidebar = if viewport_width < 960. {
+            SidebarLayout::Compact
+        } else if viewport_width < 1080. {
+            SidebarLayout::Medium
+        } else {
+            SidebarLayout::Wide
+        };
+        Self {
+            sidebar,
+            viewport_width,
+        }
+    }
+
+    pub fn page_width(&self) -> f32 {
+        (self.viewport_width - self.sidebar_width()).clamp(0., Self::MAX_PAGE_WIDTH)
+    }
+
+    pub fn content_width(&self) -> f32 {
+        self.page_width() - 2. * self.page_gutter()
+    }
+
+    pub fn sidebar_width(&self) -> f32 {
+        match self.sidebar {
+            SidebarLayout::Compact => 64.,
+            SidebarLayout::Medium => 174.,
+            SidebarLayout::Wide => 220.,
+        }
+    }
+
+    fn page_gutter(&self) -> f32 {
+        match self.sidebar {
+            SidebarLayout::Compact => 16.,
+            SidebarLayout::Medium => 22.,
+            SidebarLayout::Wide => 34.,
+        }
+    }
+}
+
 pub struct Desktop {
     pub api: FixtureApi,
     pub page: Page,
@@ -311,9 +366,11 @@ impl Desktop {
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = window.viewport_size();
-        let narrow = viewport.width < px(1080.);
+        let layout = ShellLayout::new(viewport.width);
+        let narrow = layout.sidebar != SidebarLayout::Wide;
+        let short = viewport.height < px(630.);
         let playing = matches!(self.page, Page::Game(_));
-        let compact_daily = viewport.width < px(900.) || viewport.height < px(630.);
+        let compact_daily = viewport.width < px(900.) || short;
         let page_padding = if playing || (self.page == Page::DailyChallenge && compact_daily) {
             16.
         } else {
@@ -321,7 +378,7 @@ impl Render for Desktop {
         };
         let palette = theme::colors(cx);
         let content = match &self.page {
-            Page::Library => pages::library(self, window.viewport_size().width.into(), cx),
+            Page::Library => pages::library(self, layout.content_width(), cx),
             Page::Solitaire => pages::solitaire(self, narrow, cx),
             Page::DailyChallenge => pages::daily_challenge(self, compact_daily, cx),
             Page::Records => pages::records(self, narrow, cx),
@@ -332,7 +389,7 @@ impl Render for Desktop {
                     let host = cx.new(|cx| GameHost::new(view, window, cx));
                     self.games.insert(launch.clone(), host);
                 }
-                let compact_header = window.viewport_size().width < px(900.);
+                let compact_header = viewport.width < px(900.);
                 pages::game(
                     self,
                     launch,
@@ -405,12 +462,7 @@ impl Render for Desktop {
             .line_height(px(23.))
             .text_color(rgb(palette.ink))
             .bg(rgb(palette.paper))
-            .child(widgets::sidebar(
-                self,
-                narrow,
-                window.viewport_size().height < px(630.),
-                cx,
-            ))
+            .child(widgets::sidebar(self, &layout, short, cx))
             .child(
                 div()
                     .id("page-scroll")
@@ -421,10 +473,9 @@ impl Render for Desktop {
                     .track_scroll(&self.scroll)
                     .child(
                         div()
-                            .w_full()
-                            .max_w(px(1440.))
+                            .w(px(layout.page_width()))
                             .mx_auto()
-                            .px(px(if narrow { 22. } else { 34. }))
+                            .px(px(layout.page_gutter()))
                             .py(px(page_padding))
                             .child(content),
                     ),
@@ -435,14 +486,93 @@ impl Render for Desktop {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{Modifiers, MouseDownEvent, PlatformInput, TestAppContext};
+    use gpui::{
+        KeyUpEvent, Keystroke, Modifiers, MouseDownEvent, PlatformInput, TestAppContext, size,
+    };
 
     use super::*;
+
+    #[test]
+    fn shell_widths_account_for_sidebar_gutters_and_page_cap() {
+        for (viewport, sidebar, content) in [
+            (760., 64., 664.),
+            (900., 64., 804.),
+            (960., 174., 742.),
+            (1080., 220., 792.),
+            (1800., 220., 1372.),
+        ] {
+            let layout = ShellLayout::new(px(viewport));
+            assert_eq!(layout.sidebar_width(), sidebar, "{viewport}pt sidebar");
+            assert_eq!(layout.content_width(), content, "{viewport}pt content");
+        }
+    }
+
+    #[gpui::test]
+    fn compact_sidebar_supports_tab_activation_and_preserves_focus_on_resize(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::install_shortcuts);
+        let compact = size(px(760.), px(540.));
+        let window = cx.open_window(compact, |window, cx| {
+            let desktop = Desktop::new(
+                FixtureApi::load().unwrap(),
+                theme::Appearance::Dark,
+                window,
+                cx,
+            );
+            desktop.focus.focus(window, cx);
+            desktop
+        });
+        cx.run_until_parked();
+
+        let focused = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| window.focused(cx))
+                .unwrap()
+                .unwrap()
+        };
+        let root = focused(cx);
+        cx.simulate_keystrokes(window.into(), "tab");
+        let library = focused(cx);
+        assert_ne!(root, library);
+        cx.simulate_window_resize(window.into(), size(px(1100.), px(700.)));
+        cx.run_until_parked();
+        assert_eq!(focused(cx), library);
+        cx.simulate_window_resize(window.into(), compact);
+        cx.run_until_parked();
+        assert_eq!(focused(cx), library);
+
+        cx.simulate_keystrokes(window.into(), "tab shift-tab");
+        assert_eq!(focused(cx), library);
+
+        for (tabs, key, page) in [
+            ("tab", "enter", Page::Solitaire),
+            ("tab", "space", Page::Library),
+            ("tab", "enter", Page::Solitaire),
+            ("tab tab tab tab", "enter", Page::DailyChallenge),
+            ("tab tab tab tab tab", "enter", Page::Records),
+            ("tab tab", "enter", Page::Library),
+        ] {
+            cx.simulate_keystrokes(window.into(), tabs);
+            let keystroke = Keystroke::parse(key).unwrap();
+            cx.dispatch_keystroke(window.into(), keystroke.clone());
+            // GPUI buttons activate on key release. The test helper sends key down only.
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke }), cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            window
+                .read_with(cx, |desktop, _| {
+                    assert_eq!(desktop.page, page, "{tabs} {key}")
+                })
+                .unwrap();
+        }
+    }
 
     #[gpui::test]
     fn navigation_buttons_restore_history_and_new_routes_drop_forward(cx: &mut TestAppContext) {
         cx.update(crate::install_shortcuts);
-        let window = cx.add_window(|window, cx| {
+        let window = cx.open_window(size(px(900.), px(540.)), |window, cx| {
             let desktop = Desktop::new(
                 FixtureApi::load().unwrap(),
                 theme::Appearance::Light,

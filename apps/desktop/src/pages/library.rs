@@ -65,7 +65,7 @@ pub fn matching_games<'a>(app: &'a Desktop, query: &str) -> impl Iterator<Item =
     })
 }
 
-pub fn library(app: &Desktop, width: f32, cx: &Context<Desktop>) -> Div {
+pub fn library(app: &Desktop, content_width: f32, cx: &Context<Desktop>) -> Div {
     let palette = t::colors(cx);
     let query = app.search.read(cx).query().trim();
     let featured = app.library_filter == LibraryFilter::All && query.is_empty();
@@ -89,9 +89,9 @@ pub fn library(app: &Desktop, width: f32, cx: &Context<Desktop>) -> Div {
             },
         )
     } else {
-        let columns = if width >= 1160. {
+        let columns = if content_width >= 872. {
             4
-        } else if width >= 900. {
+        } else if content_width >= 682. {
             3
         } else {
             2
@@ -112,7 +112,7 @@ pub fn library(app: &Desktop, width: f32, cx: &Context<Desktop>) -> Div {
                     .text_size(px(13.))
                     .aria_toggled(active.into())
             }));
-    let wide = width >= 1290.;
+    let wide = content_width >= 1002.;
     let (header_filters, second_row_filters) = if wide {
         (Some(filters), None)
     } else {
@@ -125,16 +125,12 @@ pub fn library(app: &Desktop, width: f32, cx: &Context<Desktop>) -> Div {
         .gap_3()
         .child(t::display_type(
             "Game Library",
-            if width < 1080. { 32. } else { 36. },
+            if content_width < 792. { 32. } else { 36. },
         ))
         .children(header_filters)
         .child(
             div()
-                .w(px(if wide {
-                    246.
-                } else {
-                    246_f32.min(width * 0.29)
-                }))
+                .w(px(246_f32.min(content_width / 3.)))
                 .child(app.search.clone()),
         );
 

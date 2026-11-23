@@ -30,7 +30,10 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{app::Desktop, theme};
+use crate::{
+    app::{Desktop, ShellLayout},
+    theme,
+};
 
 pub use host::GameHost;
 
@@ -91,13 +94,7 @@ pub fn open(launch: &GameLaunch, cx: &mut Context<Desktop>) -> Option<AnyView> {
 }
 
 fn board_space(window: &Window) -> f32 {
-    let width = f32::from(window.viewport_size().width);
-    let content = if width < 1080. {
-        width - 218.
-    } else {
-        width - 288.
-    };
-    content.min(1372.) - 36.
+    ShellLayout::new(window.viewport_size().width).content_width() - 36.
 }
 
 fn control(id: &'static str, label: impl Into<SharedString>, enabled: bool) -> Stateful<Div> {
