@@ -10,6 +10,8 @@ hot-reload = ["gpui/hot-reload"]
 # Match GPUI's AccessKit types at the accessibility boundary.
 accesskit = "0.24"
 anyhow = "1"
+base64 = "0.22"
+cargo-packager-updater = "=0.2.3"
 chrono = "0.4"
 corner-table-api = { path = "../../crates/api" }
 corner-table-block-puzzle = { path = "../../games/block-puzzle" }
@@ -39,7 +41,9 @@ gpui = { package = "gpui-pre", version = "=0.3.14", default-features = false }
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 include_dir = "0.7"
+minisign-verify = "0.2"
 same-file = "1"
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tempfile = "3"

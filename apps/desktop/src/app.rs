@@ -25,6 +25,7 @@ gpui::actions!(
         ToggleFullScreen,
         ToggleReducedMotion,
         ExportProgress,
+        CheckForUpdates,
         Quit,
     ]
 );
@@ -455,6 +456,7 @@ impl Render for Desktop {
             .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(crate::export_progress)
+            .on_action(crate::updates::check_for_updates)
             .on_action(cx.listener(|desktop, _: &NavigateBack, window, cx| {
                 desktop.dispatch(Action::History(NavigationDirection::Back), window, cx);
             }))

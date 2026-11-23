@@ -53,6 +53,7 @@ jobs:
             installer: corner-table-macos-arm64.dmg
     env:
       CARGO_BUILD_JOBS: '2'
+      CORNER_TABLE_RELEASE_BUILD: '1'
       PACKAGE_NAME: corner-table-${{ matrix.platform }}
       PACKAGE_TARGET: ${{ matrix.target }}
     steps:
@@ -155,12 +156,21 @@ jobs:
           ditto -c -k --sequesterRsrc "$stage" "$stage.zip"
           unzip -Z1 "$stage.zip" | grep -Fx 'Corner Table.app/Contents/MacOS/corner-table'
           bash scripts/package-dmg.sh "$stage" "$stage.dmg"
+          tar -C "$stage" -czf "$stage.app.tar.gz" 'Corner Table.app'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.PACKAGE_NAME }}
           path: |
             dist/${{ env.PACKAGE_NAME }}.${{ matrix.extension }}
             dist/${{ matrix.installer }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: runner.os == 'macOS'
+        with:
+          name: corner-table-macos-update
+          path: dist/corner-table-macos-arm64.app.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -187,6 +197,14 @@ jobs:
           pattern: corner-table-*
           path: dist
           merge-multiple: true
+      - name: Sign update packages
+        shell: bash
+        env:
+          CORNER_TABLE_UPDATE_KEY: ${{ secrets.CORNER_TABLE_UPDATE_KEY }}
+          CORNER_TABLE_UPDATE_PASSWORD: ${{ secrets.CORNER_TABLE_UPDATE_PASSWORD }}
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          cargo run --locked --quiet -p xtask -- sign-updates dist "${GITHUB_REF_NAME#v}" "$GITHUB_REPOSITORY"
       - name: Publish the verified installers and archives
         shell: bash
         working-directory: dist
@@ -196,7 +214,9 @@ jobs:
           packages=(
             corner-table-linux-x86_64.AppImage corner-table-linux-x86_64.tar.gz
             corner-table-windows-x86_64-setup.exe corner-table-windows-x86_64.zip
-            corner-table-macos-arm64.dmg corner-table-macos-arm64.zip
+            corner-table-macos-arm64.dmg corner-table-macos-arm64.zip corner-table-macos-arm64.app.tar.gz
+            corner-table-linux-x86_64.AppImage.sig corner-table-windows-x86_64-setup.exe.sig
+            corner-table-macos-arm64.app.tar.gz.sig latest.json
           )
           for package in "${packages[@]}"; do test -s "$package"; done
           sha256sum "${packages[@]}" > SHA256SUMS

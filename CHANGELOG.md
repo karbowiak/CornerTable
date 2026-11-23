@@ -14,6 +14,8 @@ All notable changes to Corner Table are recorded here. The format follows
   their original boards.
 - Release builds include a Linux AppImage, a per-user Windows setup executable, and an
   Apple silicon disk image. Portable archives and SHA-256 checksums are still available.
+- Release builds can check for signed updates and offer to install them. Open
+  **Help → Check for Updates** to check at any time.
 
 ### Changed
 

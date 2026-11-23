@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 mod macos;
+mod release;
 
 use anyhow::{Context, Result, bail};
 use std::{
@@ -9,11 +10,13 @@ use std::{
 };
 
 const DX_VERSION: &str = "0.7.10";
-const USAGE: &str = "Usage: cargo xtask <dev [--restart] | bundle>\n\
+const USAGE: &str = "Usage: cargo xtask <dev [--restart] | bundle | update-key DIR | sign-updates DIST VERSION REPO>\n\
     \n\
     dev             Start the Dioxus hot reload server\n\
     dev --restart   Rebuild and relaunch on source or asset changes (Python 3)\n\
-    bundle          Build target/Corner Table.app (macOS)";
+    bundle          Build target/Corner Table.app (macOS)\n\
+    update-key DIR  Generate a Corner Table signing key pair in a private directory\n\
+    sign-updates    Sign updater packages and write latest.json";
 
 fn main() -> Result<()> {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -21,6 +24,13 @@ fn main() -> Result<()> {
         [command] if command == "dev" => dev(),
         [command, flag] if command == "dev" && flag == "--restart" => dev_restart(),
         [command] if command == "bundle" => bundle(),
+        [command, dir] if command == "update-key" => release::key_pair(Path::new(dir)),
+        [command, dir, version, repo] if command == "sign-updates" => release::sign(
+            workspace_root(),
+            Path::new(dir),
+            version.to_str().context("release version must be UTF-8")?,
+            repo.to_str().context("repository name must be UTF-8")?,
+        ),
         [] => {
             println!("{USAGE}");
             Ok(())

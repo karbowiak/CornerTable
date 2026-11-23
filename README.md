@@ -16,6 +16,8 @@ An offline desktop collection of 21 classic card, board, and puzzle games, with 
 
 The 0.1.0 preview ships portable archives. Linux needs a Wayland or X11 desktop and a Vulkan driver. The macOS app uses an ad hoc signature.
 
+Release builds check for updates at launch. To check manually, open **Help → Check for Updates**. Corner Table verifies update signatures and asks before installing. Portable copies can open the downloads page from the update prompt.
+
 Use **How to Play** or press **F1** for rules and controls. The sidebar follows your system appearance by default, and **View → Always Reduce Motion** reduces gameplay effects. The macOS build offers a **Game sounds** toggle.
 
 Share the starting layout in Solitaire, Mahjong, and Minesweeper with a deal or field code. **File → Export Progress…** saves your preferences, sessions, and results as JSON. Imported Jigsaw photos stay in the local gallery.
@@ -46,3 +48,5 @@ bash scripts/check.sh
 On Windows, run the shell commands in Git Bash. The commit hook checks formatting and Clippy against staged Rust changes. The push hook runs those checks plus workspace tests against the commits being sent. GitHub Actions runs the same checks and builds the installers and portable archives. A `v` tag matching the workspace version publishes both sets with `SHA256SUMS` and that version’s changelog entry.
 
 Game rules live in `games/`, GPUI views and assets in `apps/desktop/`, and the offline catalog in `crates/api/fixtures/`. Release archives include third-party notices. [Audio sources and attribution](apps/desktop/local-audio/README.md)
+
+The release workflow signs update packages with the repository’s `CORNER_TABLE_UPDATE_KEY` and `CORNER_TABLE_UPDATE_PASSWORD` secrets. The app trusts `packaging/updater.pub`. A new signing key is a new trust anchor, so keep the current key available for releases that existing installs can verify.

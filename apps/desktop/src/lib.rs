@@ -8,6 +8,7 @@ mod motion;
 mod pages;
 mod storage;
 mod theme;
+mod updates;
 mod widgets;
 
 use corner_table_api::FixtureApi;
@@ -92,7 +93,10 @@ fn install_menus(cx: &mut App) {
             MenuItem::action("Always Reduce Motion", app::ToggleReducedMotion)
                 .checked(motion::always_reduce(cx)),
         ]),
-        Menu::new("Help").items([MenuItem::action("How to Play", app::ToggleGuide)]),
+        Menu::new("Help").items([
+            MenuItem::action("How to Play", app::ToggleGuide),
+            MenuItem::action("Check for Updates…", app::CheckForUpdates),
+        ]),
     ]);
 }
 
@@ -170,7 +174,10 @@ fn open_main_window(fixtures: FixtureApi, cx: &mut App) {
             desktop
         })
     }) {
-        Ok(_) => cx.activate(true),
+        Ok(handle) => {
+            cx.activate(true);
+            let _ = handle.update(cx, |_, window, cx| updates::check_at_startup(window, cx));
+        }
         Err(error) => {
             eprintln!("Unable to open Corner Table: {error:#}");
             cx.quit();
