@@ -22,6 +22,12 @@ pub fn run() -> anyhow::Result<()> {
             cx.bind_keys([
                 KeyBinding::new("tab", app::FocusNext, None),
                 KeyBinding::new("shift-tab", app::FocusPrevious, None),
+                KeyBinding::new("alt-left", app::NavigateBack, None),
+                KeyBinding::new("alt-right", app::NavigateForward, None),
+                #[cfg(target_os = "macos")]
+                KeyBinding::new("cmd-[", app::NavigateBack, None),
+                #[cfg(target_os = "macos")]
+                KeyBinding::new("cmd-]", app::NavigateForward, None),
             ]);
             let bounds = Bounds::centered(None, size(px(1380.), px(900.)), cx);
             let options = WindowOptions {

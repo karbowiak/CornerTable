@@ -1,6 +1,6 @@
 use gpui::{
-    Context, Div, ElementId, FontWeight, ObjectFit, SharedString, Stateful, div, img, prelude::*,
-    px, relative, rgb,
+    Context, Div, ElementId, FontWeight, NavigationDirection, ObjectFit, Role, SharedString,
+    Stateful, div, img, prelude::*, px, relative, rgb,
 };
 
 use crate::app::{Action, Desktop, Page};
@@ -9,9 +9,12 @@ use crate::{games::GameEntry, theme as t};
 pub fn clickable(id: impl Into<ElementId>, action: Action, cx: &Context<Desktop>) -> Stateful<Div> {
     div()
         .id(id)
+        .role(Role::Button)
         .tab_index(0)
         .cursor_pointer()
-        .on_click(cx.listener(move |desktop, _, _, cx| desktop.dispatch(action.clone(), cx)))
+        .on_click(cx.listener(move |desktop, _, window, cx| {
+            desktop.dispatch(action.clone(), window, cx);
+        }))
 }
 
 pub fn button(
@@ -43,9 +46,9 @@ pub fn button(
 pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
     let current = match &app.page {
         Page::Game(launch) => match launch.entry {
-            GameEntry::Classic => Page::Library,
-            GameEntry::Mode(_) => Page::Solitaire,
+            GameEntry::Mode(_) if launch.game.0 == "solitaire" => Page::Solitaire,
             GameEntry::Challenge(_) => Page::DailyChallenge,
+            _ => Page::Library,
         },
         page => page.clone(),
     };
@@ -81,7 +84,7 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
             div()
                 .flex()
                 .flex_col()
-                .gap_7()
+                .gap_4()
                 .child(
                     div()
                         .flex()
@@ -94,6 +97,16 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                                 .whitespace_nowrap(),
                         ),
                 )
+                .child(div().flex().gap_2().children([
+                    history_button("nav-back", "Back", NavigationDirection::Back, app, cx),
+                    history_button(
+                        "nav-forward",
+                        "Forward",
+                        NavigationDirection::Forward,
+                        app,
+                        cx,
+                    ),
+                ]))
                 .child(div().flex().flex_col().gap_2().children(pages.map(
                     |(id, icon, label, page)| {
                         let active = page == current;
@@ -143,6 +156,41 @@ pub fn sidebar(app: &Desktop, narrow: bool, cx: &Context<Desktop>) -> Div {
                         ),
                 ),
         )
+}
+
+fn history_button(
+    id: &'static str,
+    label: &'static str,
+    direction: NavigationDirection,
+    app: &Desktop,
+    cx: &Context<Desktop>,
+) -> Stateful<Div> {
+    let enabled = app.can_step_history(direction);
+    div()
+        .id(id)
+        .flex_1()
+        .h(px(36.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(if enabled { 0x587669 } else { 0x36564a }))
+        .text_size(px(13.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(if enabled { t::PAPER } else { 0x9fb4a9 }))
+        .child(label)
+        .when(enabled, |button| {
+            button
+                .role(Role::Button)
+                .tab_index(0)
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(t::RAIL_ACTIVE)))
+                .focus_visible(|style| style.border_color(rgb(t::GOLD)))
+                .on_click(cx.listener(move |desktop, _, window, cx| {
+                    desktop.dispatch(Action::History(direction), window, cx);
+                }))
+        })
 }
 
 pub fn avatar(label: &str, background: u32, foreground: u32) -> Div {

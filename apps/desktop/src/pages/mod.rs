@@ -58,30 +58,22 @@ pub fn daily_challenge(app: &Desktop, cx: &Context<Desktop>) -> Div {
         )
 }
 
-pub fn game(
-    app: &Desktop,
-    launch: &GameLaunch,
-    view: Option<AnyView>,
-    cx: &Context<Desktop>,
-) -> Div {
+pub fn game(app: &Desktop, launch: &GameLaunch, view: Option<AnyView>) -> Div {
     let (title, description) = app
         .api
         .game(&launch.game)
         .map(|game| (game.title.as_str(), game.description.as_str()))
         .unwrap_or(("Game unavailable", "This game is missing from the library."));
-    let (title, description, back, back_label) = match &launch.entry {
-        GameEntry::Classic => (title, description, Page::Library, "Back to library"),
-        GameEntry::Mode(id) => {
+    let (title, description) = match &launch.entry {
+        GameEntry::Mode(id) if launch.game.0 == "solitaire" => {
             let mode = app
                 .api
                 .library
                 .solitaire_modes
                 .iter()
                 .find(|mode| &mode.id == id);
-            let (title, description) = mode
-                .map(|mode| (mode.title.as_str(), mode.description.as_str()))
-                .unwrap_or((title, description));
-            (title, description, Page::Solitaire, "Back to Solitaire")
+            mode.map(|mode| (mode.title.as_str(), mode.description.as_str()))
+                .unwrap_or((title, description))
         }
         GameEntry::Challenge(id) => {
             let daily = &app.api.home.challenge;
@@ -90,27 +82,16 @@ pub fn game(
             } else {
                 description
             };
-            (
-                title,
-                description,
-                Page::DailyChallenge,
-                "Back to daily challenge",
-            )
+            (title, description)
         }
+        _ => (title, description),
     };
     let header = div()
         .flex()
         .flex_col()
         .items_start()
-        .gap_5()
-        .child(widgets::button(
-            "game-back",
-            back_label,
-            Action::Navigate(back),
-            false,
-            cx,
-        ))
-        .child(t::heading(title.to_owned()));
+        .gap_3()
+        .child(t::display_type(title.to_owned(), 30.));
 
     match view {
         Some(view) => header.child(div().w_full().child(view)),
