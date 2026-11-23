@@ -118,13 +118,14 @@ pub fn library(app: &Desktop, content_width: f32, cx: &Context<Desktop>) -> Div 
                     Action::OpenGame(game.id.clone()),
                 )
             };
-            widgets::tile(id, title, 124., action, cx)
+            let favorite = (id == game.id.0).then(|| (&game.id, app.favorites.contains(&game.id)));
+            widgets::tile(id, title, 124., action, favorite, cx)
         })
         .collect::<Vec<_>>();
     let catalog = if games.is_empty() {
         t::panel(cx).p_6().text_color(rgb(palette.muted)).child(
             if app.library_filter == LibraryFilter::Favorites && app.favorites.is_empty() {
-                "No favorites yet. Open a game and choose Add favorite."
+                "No favorites yet. Use the star on a game in the library."
             } else {
                 "No games found. Try another search or category."
             },

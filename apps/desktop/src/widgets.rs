@@ -1,6 +1,7 @@
+use corner_table_api::GameId;
 use gpui::{
     Context, Div, ElementId, FontWeight, NavigationDirection, ObjectFit, Role, SharedString,
-    Stateful, Toggled, Window, div, img, prelude::*, px, relative, rgb,
+    Stateful, Toggled, Window, div, img, prelude::*, px, relative, rgb, rgba,
 };
 
 use crate::app::{Action, Desktop, Page, ShellLayout, SidebarLayout};
@@ -413,12 +414,12 @@ fn rail_icon(
         .items_center()
         .justify_center()
         .child(symbol(icon, color, 21.))
-        .tooltip(move |_, cx| cx.new(|_| SidebarTooltip(label.clone())).into())
+        .tooltip(move |_, cx| cx.new(|_| ControlTooltip(label.clone())).into())
 }
 
-struct SidebarTooltip(SharedString);
+struct ControlTooltip(SharedString);
 
-impl Render for SidebarTooltip {
+impl Render for ControlTooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = t::colors(cx);
         div()
@@ -505,10 +506,11 @@ pub fn tile(
     title: &str,
     height: f32,
     action: Action,
+    favorite: Option<(&GameId, bool)>,
     cx: &Context<Desktop>,
-) -> Stateful<Div> {
+) -> Div {
     let palette = t::colors(cx);
-    clickable(SharedString::from(format!("tile-{id}")), action, cx)
+    let tile = clickable(SharedString::from(format!("tile-{id}")), action, cx)
         .aria_label(title.to_owned())
         .w_full()
         .min_w_0()
@@ -537,7 +539,53 @@ pub fn tile(
         .child(
             t::display_type(title.to_owned(), 19.)
                 .truncate()
-                .px_3()
+                .pl_3()
+                .pr(px(if favorite.is_some() { 42. } else { 12. }))
                 .py_2(),
-        )
+        );
+    div()
+        .relative()
+        .child(tile)
+        .children(favorite.map(|(game, active)| {
+            let (label, tooltip) = if active {
+                (format!("Remove {title} from favorites"), "Remove favorite")
+            } else {
+                (format!("Add {title} to favorites"), "Add favorite")
+            };
+            let id = format!("library-favorite-{id}");
+            clickable(
+                SharedString::from(id.clone()),
+                Action::ToggleFavorite(game.clone()),
+                cx,
+            )
+            .debug_selector(move || id)
+            .aria_label(label)
+            .aria_toggled(active.into())
+            .absolute()
+            .bottom(px(7.))
+            .right(px(7.))
+            .size(px(30.))
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgba(0))
+            .text_color(rgb(if active {
+                palette.gold_text
+            } else {
+                palette.muted
+            }))
+            .text_size(px(22.))
+            .line_height(px(24.))
+            .hover(|style| {
+                style
+                    .bg(rgb(palette.hover))
+                    .text_color(rgb(palette.gold_text))
+            })
+            .focus_visible(|style| style.border_color(rgb(palette.ink)))
+            .tooltip(move |_, cx| cx.new(|_| ControlTooltip(tooltip.into())).into())
+            .child(if active { "★" } else { "☆" })
+        }))
 }

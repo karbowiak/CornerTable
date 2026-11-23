@@ -4,6 +4,14 @@ pub fn enabled(cx: &App) -> bool {
     !cx.reduce_motion() && !system_reduces_motion()
 }
 
+pub fn sync_from_system(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    cx.set_reduce_motion(system_reduces_motion());
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = cx;
+}
+
 #[cfg(target_os = "macos")]
 fn system_reduces_motion() -> bool {
     use objc2::{

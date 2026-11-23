@@ -152,6 +152,12 @@ impl Desktop {
         .detach();
         cx.observe_window_bounds(window, Self::remember_window_size)
             .detach();
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                crate::motion::sync_from_system(cx);
+            }
+        })
+        .detach();
         let focus = cx.focus_handle();
         let search = cx.new(|cx| SearchInput::new(focus.clone(), window, cx));
         cx.subscribe(&search, |_, _, _: &QueryChanged, cx| cx.notify())
@@ -472,7 +478,8 @@ impl Render for Desktop {
 #[cfg(test)]
 mod tests {
     use gpui::{
-        KeyUpEvent, Keystroke, Modifiers, MouseDownEvent, PlatformInput, TestAppContext, size,
+        KeyUpEvent, Keystroke, Modifiers, MouseDownEvent, PlatformInput, TestAppContext,
+        VisualTestContext, size,
     };
 
     use super::*;
@@ -489,6 +496,36 @@ mod tests {
             let layout = ShellLayout::new(px(viewport));
             assert_eq!(layout.sidebar_width(), sidebar, "{viewport}pt sidebar");
             assert_eq!(layout.content_width(), content, "{viewport}pt content");
+        }
+    }
+
+    #[gpui::test]
+    fn library_star_toggles_the_favorite_without_opening_the_game(cx: &mut TestAppContext) {
+        let window = cx.open_window(size(px(900.), px(540.)), |window, cx| {
+            Desktop::new(
+                FixtureApi::load().unwrap(),
+                theme::Appearance::Light,
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let star = visual
+            .debug_bounds("library-favorite-solitaire")
+            .unwrap()
+            .center();
+        let game = GameId("solitaire".into());
+        for expected in [true, false] {
+            visual.simulate_mouse_down(star, MouseButton::Left, Modifiers::none());
+            visual.simulate_mouse_up(star, MouseButton::Left, Modifiers::none());
+            window
+                .read_with(cx, |desktop, _| {
+                    assert_eq!(desktop.page, Page::Library);
+                    assert_eq!(desktop.favorites.contains(&game), expected);
+                })
+                .unwrap();
         }
     }
 

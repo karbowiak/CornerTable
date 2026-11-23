@@ -31,6 +31,7 @@ pub fn run() -> anyhow::Result<()> {
         if let Err(error) = assets::register_fonts(cx) {
             eprintln!("Could not load bundled fonts: {error:#}");
         }
+        motion::sync_from_system(cx);
         install_shortcuts(cx);
         open_main_window(fixtures, cx);
     });
