@@ -1,3 +1,5 @@
+mod session;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use corner_table_solitaire::{Card, DealMode, Game, Move, Place, Suit, Variant};
@@ -10,6 +12,8 @@ use crate::{
     games::{GameEntry, GameLaunch},
     theme as t,
 };
+
+use self::session::{Deal, TableSession};
 
 const FELT: u32 = 0x153b30;
 const SLOT: u32 = 0x15392f;
@@ -98,30 +102,11 @@ impl TableSize {
 }
 
 pub struct GameView {
+    session: TableSession,
     deal: Deal,
     other_deals: Vec<Deal>,
     revision: u64,
     show_title: bool,
-}
-
-struct Deal {
-    game: Game,
-    seed: u64,
-    selected: Option<Place>,
-    history: Vec<Game>,
-    status: &'static str,
-}
-
-impl Deal {
-    fn new(game: Game, seed: u64) -> Self {
-        Self {
-            game,
-            seed,
-            selected: None,
-            history: Vec::new(),
-            status: "",
-        }
-    }
 }
 
 impl GameView {
@@ -130,20 +115,18 @@ impl GameView {
             GameEntry::Mode(id) => Variant::from_id(id),
             GameEntry::Classic | GameEntry::Challenge(_) => Variant::Klondike,
         };
-        let seed = launch.seed();
+        let (session, deal, other_deals) = TableSession::open(launch, variant);
         Self {
-            deal: Deal::new(Game::new(variant, seed), seed),
-            other_deals: variant.deal_modes()[1..]
-                .iter()
-                .map(|&mode| Deal::new(Game::with_mode(mode, seed), seed))
-                .collect(),
+            session,
+            deal,
+            other_deals,
             revision: 0,
             show_title: !matches!(launch.entry, GameEntry::Mode(_)),
         }
     }
 
-    fn restart(&mut self, seed: u64) {
-        self.deal = Deal::new(Game::with_mode(self.deal.game.mode(), seed), seed);
+    fn restart(&mut self, seed: Option<u64>) {
+        self.deal.restart(seed);
         self.revision += 1;
     }
 
@@ -154,20 +137,15 @@ impl GameView {
             .find(|deal| deal.game.mode() == mode)
         {
             std::mem::swap(&mut self.deal, deal);
+            self.session.save_mode(mode);
             self.revision += 1;
         }
     }
 
     fn apply(&mut self, action: Move) -> bool {
-        let mut next = self.deal.game.clone();
-        if !next.play(action) {
+        if !self.deal.apply(action) {
             return false;
         }
-        self.deal.status = "";
-        self.deal
-            .history
-            .push(std::mem::replace(&mut self.deal.game, next));
-        self.deal.selected = None;
         self.revision += 1;
         true
     }
@@ -554,6 +532,7 @@ impl GameView {
         if modes.len() < 2 {
             return None;
         }
+        let palette = t::colors(cx);
         Some(
             div()
                 .flex()
@@ -561,8 +540,8 @@ impl GameView {
                 .p(px(3.))
                 .rounded_lg()
                 .border_1()
-                .border_color(rgb(t::BORDER))
-                .bg(rgb(0xebe7dc))
+                .border_color(rgb(palette.border))
+                .bg(rgb(palette.paper))
                 .children(modes.iter().map(|&mode| {
                     let label = mode_label(mode);
                     let active = mode == game.mode();
@@ -585,16 +564,19 @@ impl GameView {
                         .border_color(rgba(0x00000000))
                         .text_size(px(13.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .focus(|style| style.border_color(rgb(t::INK)))
                         .when(active, |button| {
-                            button.bg(rgb(t::SURFACE)).border_color(rgb(t::BORDER))
+                            button
+                                .bg(rgb(palette.surface))
+                                .border_color(rgb(palette.border))
+                                .text_color(rgb(palette.ink))
                         })
                         .when(!active, |button| {
                             button
-                                .text_color(rgb(t::MUTED))
+                                .text_color(rgb(palette.muted))
                                 .cursor_pointer()
-                                .hover(|style| style.bg(rgb(t::SAGE)))
+                                .hover(|style| style.bg(rgb(palette.hover)))
                         })
+                        .focus_visible(|style| style.border_color(rgb(palette.ink)))
                         .child(label)
                         .on_click(cx.listener(move |view, _, _, cx| {
                             view.switch_mode(mode);
@@ -605,34 +587,35 @@ impl GameView {
     }
 
     fn undo_button(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let can_undo = !self.deal.history.is_empty();
-        super::control("solitaire-undo", "Undo", can_undo)
-            .role(Role::Button)
-            .aria_label("Undo move")
-            .when(can_undo, |button| {
-                button.on_click(cx.listener(|view, _, _, cx| {
-                    if let Some(previous) = view.deal.history.pop() {
-                        view.deal.game = previous;
-                        view.deal.selected = None;
-                        view.deal.status = "";
+        let can_undo = self.deal.can_undo();
+        super::themed_control(cx, "solitaire-undo", "Undo", can_undo).when(can_undo, |button| {
+            button
+                .aria_label("Undo move")
+                .on_click(cx.listener(|view, _, _, cx| {
+                    if view.deal.undo() {
                         view.revision += 1;
                         cx.notify();
                     }
                 }))
-            })
+        })
     }
 
-    fn replay_button(id: &'static str, cx: &Context<Self>) -> Stateful<Div> {
-        super::control(id, "Replay", true)
-            .role(Role::Button)
+    fn replay_button(id: &'static str, on_table: bool, cx: &Context<Self>) -> Stateful<Div> {
+        let button = if on_table {
+            super::control(id, "Replay", true)
+        } else {
+            super::themed_control(cx, id, "Replay", true)
+        };
+        button
             .aria_label("Replay this deal")
             .on_click(cx.listener(|view, _, _, cx| {
-                view.restart(view.deal.seed);
+                view.restart(None);
                 cx.notify();
             }))
     }
 
-    fn new_deal_button(id: &'static str, cx: &Context<Self>) -> Stateful<Div> {
+    fn new_deal_button(id: &'static str, on_table: bool, cx: &Context<Self>) -> Stateful<Div> {
+        let focus_color = if on_table { FLAX } else { t::colors(cx).ink };
         div()
             .id(id)
             .role(Role::Button)
@@ -651,10 +634,10 @@ impl GameView {
             .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
             .hover(|style| style.bg(rgb(t::GOLD_HOVER)))
-            .focus(|style| style.border_color(rgb(t::INK)))
+            .focus_visible(|style| style.border_color(rgb(focus_color)))
             .child("New deal")
             .on_click(cx.listener(|view, _, _, cx| {
-                view.restart(fresh_seed());
+                view.restart(Some(fresh_seed()));
                 cx.notify();
             }))
     }
@@ -714,8 +697,8 @@ impl GameView {
                     .mt_2()
                     .flex()
                     .gap_2()
-                    .child(Self::replay_button("solitaire-finish-replay", cx))
-                    .child(Self::new_deal_button("solitaire-finish-new", cx)),
+                    .child(Self::replay_button("solitaire-finish-replay", true, cx))
+                    .child(Self::new_deal_button("solitaire-finish-new", true, cx)),
             )
     }
 
@@ -795,8 +778,8 @@ impl Render for GameView {
                             .ml_auto()
                             .gap_2()
                             .child(self.undo_button(cx))
-                            .child(Self::replay_button("solitaire-replay", cx))
-                            .child(Self::new_deal_button("solitaire-new", cx)),
+                            .child(Self::replay_button("solitaire-replay", false, cx))
+                            .child(Self::new_deal_button("solitaire-new", false, cx)),
                     ),
             )
             .child(
@@ -839,7 +822,7 @@ impl Render for GameView {
                             .pt(px(14.))
                             .pb(px(11.))
                             .text_color(rgb(t::SURFACE))
-                            .child(score_strip(game))
+                            .child(score_strip(game, self.deal.best_moves()))
                             .child(field)
                             .when(!won, |table| {
                                 table.child(
@@ -864,7 +847,7 @@ impl Render for GameView {
     }
 }
 
-fn score_strip(game: &Game) -> Div {
+fn score_strip(game: &Game, best_moves: Option<usize>) -> Div {
     const METER_WIDTH: f32 = 75.;
     let (label, completed, total) = match game.variant {
         Variant::Klondike | Variant::FreeCell => ("Foundations", game.foundation_count(), 52),
@@ -919,6 +902,18 @@ fn score_strip(game: &Game) -> Div {
                 .flex()
                 .items_center()
                 .gap_2()
+                .when_some(best_moves, |strip, best| {
+                    let label = format!("Best {best} moves");
+                    strip.child(
+                        div()
+                            .id("solitaire-best")
+                            .role(Role::Label)
+                            .aria_label(label.clone())
+                            .mr_2()
+                            .text_color(rgb(LIGHT))
+                            .child(label),
+                    )
+                })
                 .child(div().text_color(rgb(LIGHT)).child("Moves"))
                 .child(
                     div()

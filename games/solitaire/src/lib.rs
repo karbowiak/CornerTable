@@ -116,7 +116,7 @@ pub enum Move {
     Clear(Place),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Game {
     pub variant: Variant,
     mode: DealMode,
@@ -164,6 +164,19 @@ impl Game {
 
     pub fn mode(&self) -> DealMode {
         self.mode
+    }
+
+    /// Reconstruct a seeded deal and reject a replay containing any illegal move.
+    pub fn replay(
+        mode: DealMode,
+        seed: u64,
+        turns: impl IntoIterator<Item = Move>,
+    ) -> Option<Self> {
+        let mut game = Self::with_mode(mode, seed);
+        turns
+            .into_iter()
+            .all(|turn| game.play(turn))
+            .then_some(game)
     }
 
     pub fn play(&mut self, action: Move) -> bool {

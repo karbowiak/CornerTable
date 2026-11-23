@@ -120,16 +120,26 @@ mod tests {
     #[test]
     fn solvable_deal_replays_its_construction_with_only_three_draws() {
         for mut seed in [0, 1, 18, u64::MAX] {
-            let mut game = Game::with_mode(DealMode::TriPeaksSolvable, seed);
+            let deal_seed = seed;
+            let mode = DealMode::TriPeaksSolvable;
+            let mut turns = Vec::new();
             let order = removal_order(next_random(&mut seed));
             for (step, index) in order.into_iter().enumerate() {
                 if step != 0 && step % CHAIN_LENGTH == 0 {
-                    assert!(game.play(Move::Draw));
+                    turns.push(Move::Draw);
                 }
-                assert!(game.play(Move::Clear(Place::Layout(index))));
+                turns.push(Move::Clear(Place::Layout(index)));
             }
+            assert!(
+                !Game::replay(mode, deal_seed, turns[..30].iter().copied())
+                    .unwrap()
+                    .won()
+            );
+            let game = Game::replay(mode, deal_seed, turns.iter().copied()).unwrap();
             assert!(game.won());
             assert_eq!(game.moves, 31);
+            turns.push(Move::Draw);
+            assert!(Game::replay(mode, deal_seed, turns).is_none());
         }
     }
 }
