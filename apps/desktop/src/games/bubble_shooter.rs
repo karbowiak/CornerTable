@@ -1,16 +1,18 @@
 mod progress;
 mod table;
+#[cfg(all(test, debug_assertions))]
+mod tests;
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use corner_table_bubble_shooter::{
-    Aim, Angle, Cell as BubbleCell, Color, STAGE_COUNT, STAGES, Status,
+    Aim, Angle, Cell as BubbleCell, Color, PUZZLE_COUNT, PUZZLES, STAGE_COUNT, STAGES, Status,
 };
 use gpui::{
     Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, Render, Role, Stateful, Toggled, Window, canvas, div, prelude::*, px, relative,
-    rgb, rgba,
+    MouseMoveEvent, Render, Role, SharedString, Stateful, Toggled, Window, canvas, div, prelude::*,
+    px, relative, rgb, rgba,
 };
 
 use crate::{
@@ -36,7 +38,7 @@ pub struct GameView {
 enum Action {
     Mode(Mode),
     Stage(usize),
-    NextStage,
+    Puzzle(usize),
     Restart,
     NewBoard,
     Swap,
@@ -58,13 +60,29 @@ impl GameView {
         }
     }
 
-    fn next_stage(&self) -> Option<usize> {
+    fn next_level(&self) -> Option<(Action, &'static str)> {
         let progress = &self.progress;
-        let next = progress.stage() + 1;
-        (progress.mode() == Mode::Stages
-            && progress.round.status() == Status::Won
-            && progress.stage_unlocked(next))
-        .then_some(next)
+        if progress.round.status() != Status::Won {
+            return None;
+        }
+        match progress.mode() {
+            Mode::Stages => {
+                let next = progress.stage() + 1;
+                progress
+                    .stage_unlocked(next)
+                    .then_some((Action::Stage(next), "Next stage"))
+            }
+            Mode::Puzzles => {
+                let next = progress.puzzle() + 1;
+                (next < PUZZLE_COUNT).then_some((Action::Puzzle(next), "Next puzzle"))
+            }
+            _ => None,
+        }
+    }
+
+    fn has_next_ammo(&self) -> bool {
+        let round = &self.progress.round;
+        round.puzzle_info().is_none() || round.shots_left() > 1
     }
 
     fn perform(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
@@ -73,11 +91,8 @@ impl GameView {
             Action::Stage(index) if self.progress.stage() != index => {
                 self.progress.select_stage(index);
             }
-            Action::NextStage => {
-                let Some(index) = self.next_stage() else {
-                    return;
-                };
-                self.progress.select_stage(index);
+            Action::Puzzle(index) if self.progress.puzzle() != index => {
+                self.progress.select_puzzle(index);
             }
             Action::Restart => self.progress.restart(),
             Action::NewBoard => self.progress.new_board(),
@@ -95,7 +110,7 @@ impl GameView {
                 }
                 return;
             }
-            Action::Mode(_) | Action::Stage(_) => return,
+            Action::Mode(_) | Action::Stage(_) | Action::Puzzle(_) => return,
         }
         self.flight = None;
         self.impact = None;
@@ -187,11 +202,9 @@ impl GameView {
             "x" if !event.is_held => self.perform(Action::Swap, window, cx),
             "r" if !event.is_held => self.perform(Action::Restart, window, cx),
             "enter" if !event.is_held && self.progress.round.status() != Status::Playing => {
-                let action = if self.next_stage().is_some() {
-                    Action::NextStage
-                } else {
-                    Action::Restart
-                };
+                let action = self
+                    .next_level()
+                    .map_or(Action::Restart, |(action, _)| action);
                 self.perform(action, window, cx);
             }
             _ => return,
@@ -207,13 +220,14 @@ impl GameView {
         let status = self.progress.round.status();
         div()
             .id("bubble-shooter-board")
+            .debug_selector(|| "bubble-shooter-board".into())
             .accessibility_id("bubble-shooter-board")
             .role(Role::Group)
             .aria_label("Playfield")
-            .aria_description(if status == Status::Playing {
-                "Left and Right aim. Shift adjusts more finely. Up centers. Space shoots, X swaps, and R restarts."
-            } else {
-                "The round has ended. Enter continues, and R restarts."
+            .aria_description(match (status, self.has_next_ammo()) {
+                (Status::Playing, true) => "Left and Right aim. Shift adjusts more finely. Up centers. Space shoots, X swaps, and R restarts.",
+                (Status::Playing, false) => "Left and Right aim. Shift adjusts more finely. Up centers. Space shoots, and R restarts.",
+                _ => "The round has ended. Enter continues, and R restarts.",
             })
             .aria_value(self.aim_description())
             .track_focus(&self.focus)
@@ -304,17 +318,20 @@ impl GameView {
     fn completion(&self, cx: &Context<Self>) -> Div {
         let round = &self.progress.round;
         let mode = self.progress.mode();
+        let next = self.next_level();
         let title = match mode {
-            Mode::Stages if self.next_stage().is_none() => "All stages cleared",
+            Mode::Stages if next.is_none() => "All stages cleared",
             Mode::Stages => "Stage cleared",
             Mode::Classic => "Board cleared",
             Mode::Challenge => "Challenge cleared",
+            Mode::Puzzles => "Puzzle solved",
         };
-        let (action, button_label) = if self.next_stage().is_some() {
-            (Action::NextStage, "Next stage")
+        let replay = if mode == Mode::Puzzles {
+            "Replay puzzle"
         } else {
-            (Action::Restart, "Play again")
+            "Play again"
         };
+        let (action, button_label) = next.unwrap_or((Action::Restart, replay));
         let shots = round.shots_used();
         div()
             .absolute()
@@ -361,9 +378,16 @@ impl GameView {
         let state = &self.progress;
         let round = &state.round;
         let stage = round.stage_info();
+        let puzzle = round.puzzle_info();
         let status = round.status();
-        let lost = matches!(status, Status::HitDangerLine | Status::OutOfShots);
-        let title = stage.map_or("Classic", |stage| stage.name);
+        let lost = matches!(
+            status,
+            Status::HitDangerLine | Status::OutOfShots | Status::BankGoalMissed
+        );
+        let title = puzzle
+            .map(|puzzle| puzzle.name)
+            .or_else(|| stage.map(|stage| stage.name))
+            .unwrap_or("Classic");
         let compact = width < 220.;
         div()
             .flex_none()
@@ -397,10 +421,20 @@ impl GameView {
                             stage.expect("challenge mode has stage info").par,
                         ),
                         Mode::Classic => "Clear the table".into(),
+                        Mode::Puzzles => {
+                            let shots = puzzle.expect("puzzle mode has puzzle info").shots();
+                            format!(
+                                "Clear in {shots} {}",
+                                if shots == 1 { "shot" } else { "shots" }
+                            )
+                        }
                     })),
             )
             .when(state.mode() == Mode::Stages, |rail| {
                 rail.child(self.stage_picker(cx))
+            })
+            .when(state.mode() == Mode::Puzzles, |rail| {
+                rail.child(self.puzzle_picker(cx))
             })
             .child(self.scoreboard(cx))
             .when(status == Status::Playing, |rail| {
@@ -411,7 +445,7 @@ impl GameView {
             .when(!lost, |rail| rail.child(self.feedback(cx)))
             .when(status == Status::Playing && !compact, |rail| {
                 rail.child(
-                    keyboard_help(p)
+                    keyboard_help(p, self.has_next_ammo())
                         .border_t_1()
                         .border_color(rgb(p.border))
                         .pt_3(),
@@ -420,10 +454,11 @@ impl GameView {
     }
 
     fn mode_buttons(&self, cx: &Context<Self>) -> Div {
-        div().flex().gap_2().children(
+        div().flex().gap(px(4.)).children(
             [
                 (Mode::Stages, "bubble-mode-stages", "Stages"),
                 (Mode::Classic, "bubble-mode-classic", "Classic"),
+                (Mode::Puzzles, "bubble-mode-puzzles", "Puzzles"),
             ]
             .map(|(mode, id, label)| {
                 let active = self.progress.mode() == mode;
@@ -443,13 +478,14 @@ impl GameView {
                 } else {
                     Toggled::False
                 })
+                .px_1()
+                .min_w_0()
                 .flex_1()
             }),
         )
     }
 
     fn stage_picker(&self, cx: &Context<Self>) -> Div {
-        let p = t::colors(cx);
         div()
             .flex()
             .gap(px(4.))
@@ -467,50 +503,97 @@ impl GameView {
                     None if !enabled => format!("Stage {}, {}, locked", index + 1, stage.name),
                     None => format!("Stage {}, {}", index + 1, stage.name),
                 };
-                div()
-                    .id(("bubble-stage", index))
-                    .role(if enabled { Role::Button } else { Role::Label })
-                    .aria_label(label)
-                    .aria_selected(active)
-                    .h(px(36.))
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(2.))
-                    .rounded_md()
-                    .border_1()
-                    .border_color(rgb(if active { p.gold_text } else { p.border }))
-                    .bg(rgb(if active { p.hover } else { p.paper }))
-                    .text_size(px(13.))
-                    .line_height(px(15.))
-                    .text_color(rgb(if active { p.ink } else { p.muted }))
-                    .font_weight(if active {
-                        FontWeight::BOLD
-                    } else {
-                        FontWeight::SEMIBOLD
-                    })
-                    .when(!enabled, |chip| chip.opacity(0.65))
-                    .when(enabled, |chip| {
-                        chip.tab_index(0)
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(rgb(p.hover)))
-                            .focus_visible(move |style| style.border_color(rgb(p.ink)))
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.perform(Action::Stage(index), window, cx);
-                            }))
-                    })
-                    .child((index + 1).to_string())
-                    .child(
-                        div()
-                            .h(px(3.))
-                            .w(px(11.))
-                            .rounded_full()
-                            .when(record.is_some(), |dot| dot.bg(rgb(p.gold_text))),
-                    )
+                self.level_chip(
+                    ("bubble-stage", index),
+                    label,
+                    enabled.then_some(Action::Stage(index)),
+                    active,
+                    record.is_some(),
+                    cx,
+                )
             }))
+    }
+
+    fn puzzle_picker(&self, cx: &Context<Self>) -> Div {
+        div()
+            .flex()
+            .gap(px(4.))
+            .children(PUZZLES.iter().enumerate().map(|(index, puzzle)| {
+                let solved = self.progress.puzzle_solved(index);
+                self.level_chip(
+                    ("bubble-puzzle", index),
+                    format!(
+                        "Puzzle {}, {}{}",
+                        index + 1,
+                        puzzle.name,
+                        if solved { ", solved" } else { "" },
+                    ),
+                    Some(Action::Puzzle(index)),
+                    self.progress.puzzle() == index,
+                    solved,
+                    cx,
+                )
+            }))
+    }
+
+    fn level_chip(
+        &self,
+        id: (&'static str, usize),
+        label: String,
+        action: Option<Action>,
+        active: bool,
+        cleared: bool,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let p = t::colors(cx);
+        div()
+            .id(id)
+            .debug_selector(move || format!("{}-{}", id.0, id.1))
+            .role(if action.is_some() {
+                Role::Button
+            } else {
+                Role::Label
+            })
+            .aria_label(label)
+            .aria_selected(active)
+            .h(px(36.))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(2.))
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if active { p.gold_text } else { p.border }))
+            .bg(rgb(if active { p.hover } else { p.paper }))
+            .text_size(px(13.))
+            .line_height(px(15.))
+            .text_color(rgb(if active { p.ink } else { p.muted }))
+            .font_weight(if active {
+                FontWeight::BOLD
+            } else {
+                FontWeight::SEMIBOLD
+            })
+            .when(action.is_none(), |chip| chip.opacity(0.65))
+            .when_some(action, |chip, action| {
+                chip.tab_index(0)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(p.hover)))
+                    .focus_visible(move |style| style.border_color(rgb(p.ink)))
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.perform(action, window, cx);
+                    }))
+            })
+            .child((id.1 + 1).to_string())
+            .child(
+                div()
+                    .h(px(3.))
+                    .w(px(11.))
+                    .rounded_full()
+                    .when(cleared, |dot| dot.bg(rgb(p.gold_text))),
+            )
     }
 
     fn scoreboard(&self, cx: &Context<Self>) -> Div {
@@ -519,6 +602,7 @@ impl GameView {
         let left = round.shots_left();
         let initial = left + round.shots_used();
         let best = self.progress.best();
+        let puzzle = round.puzzle_info();
         div()
             .flex()
             .flex_col()
@@ -530,8 +614,20 @@ impl GameView {
                 div()
                     .flex()
                     .gap_3()
-                    .child(metric("Shots left", left, p))
-                    .child(metric("Score", round.score(), p)),
+                    .child(metric("Shots left", left.to_string(), p))
+                    .child(if let Some(puzzle) = puzzle {
+                        metric(
+                            "Bank matches",
+                            format!(
+                                "{} / {}",
+                                round.banked_matches().min(puzzle.bank_target),
+                                puzzle.bank_target,
+                            ),
+                            p,
+                        )
+                    } else {
+                        metric("Score", round.score().to_string(), p)
+                    }),
             )
             .child(
                 div()
@@ -543,7 +639,11 @@ impl GameView {
                             .h(px(4.))
                             .rounded_full()
                             .bg(rgb(if index < left {
-                                if left <= 3 { 0xd78a64 } else { p.gold_text }
+                                if puzzle.is_none() && left <= 3 {
+                                    0xd78a64
+                                } else {
+                                    p.gold_text
+                                }
                             } else {
                                 p.border
                             }))
@@ -556,7 +656,13 @@ impl GameView {
                     .justify_between()
                     .gap_x_3()
                     .child(muted(p).child(format!("{} bubbles left", round.bubbles().count())))
-                    .children(best.map(|record| muted(p).child(format!("Best {}", record.score)))),
+                    .when(puzzle.is_some(), |row| {
+                        row.child(muted(p).child(format!("{} points", round.score())))
+                    })
+                    .children(
+                        best.filter(|_| puzzle.is_none())
+                            .map(|record| muted(p).child(format!("Best {}", record.score))),
+                    ),
             )
     }
 
@@ -567,18 +673,24 @@ impl GameView {
             .flex()
             .gap_2()
             .child(ammo("Loaded", round.current(), p))
-            .child(ammo("Next", round.next(), p))
+            .when(self.has_next_ammo(), |rack| {
+                rack.child(ammo("Next", round.next(), p))
+            })
     }
 
     fn round_actions(&self, cx: &Context<Self>) -> Div {
-        let status = self.progress.round.status();
-        let can_swap = self.flight.is_none() && self.progress.round.can_swap();
+        let round = &self.progress.round;
+        let status = round.status();
+        let can_swap = self.flight.is_none() && round.can_swap();
+        let puzzle = self.progress.mode() == Mode::Puzzles;
         div()
             .flex()
             .flex_wrap()
             .gap_2()
-            .when(status == Status::Playing, |actions| {
-                actions.child(
+            .when(
+                status == Status::Playing && self.has_next_ammo(),
+                |actions| {
+                    actions.child(
                     self.button(
                         "bubble-swap",
                         "Swap",
@@ -600,16 +712,28 @@ impl GameView {
                         "Trade the loaded bubble for the next one once per shot when they differ.",
                     ),
                 )
-            })
+                },
+            )
             .when(
-                status != Status::Won || self.next_stage().is_some(),
+                status != Status::Won || self.next_level().is_some(),
                 |actions| {
-                    let (label, style) = match status {
-                        Status::Playing => ("Restart", ButtonStyle::Plain),
-                        Status::Won => ("Replay stage", ButtonStyle::Plain),
+                    let (label, style) = match (status, puzzle) {
+                        (Status::Playing, _) => ("Restart", ButtonStyle::Plain),
+                        (Status::Won, true) => ("Replay puzzle", ButtonStyle::Plain),
+                        (Status::Won, false) => ("Replay stage", ButtonStyle::Plain),
+                        (_, true) => ("Retry puzzle", ButtonStyle::Gold),
                         _ => ("Try again", ButtonStyle::Gold),
                     };
-                    actions.child(self.button("bubble-restart", label, Action::Restart, style, cx))
+                    actions.child(
+                        self.button("bubble-restart", label, Action::Restart, style, cx)
+                            .when(puzzle, |button| {
+                                button
+                                    .aria_label(label)
+                                    .aria_keyshortcuts("R")
+                                    .gap_2()
+                                    .child(div().text_size(px(11.)).opacity(0.8).child("R"))
+                            }),
+                    )
                 },
             )
             .when(self.progress.mode() == Mode::Classic, |actions| {
@@ -640,6 +764,10 @@ impl GameView {
                 "Out of shots".into(),
                 "Clear the rack within the shot budget.".into(),
             ),
+            (Status::BankGoalMissed, _) => (
+                "Bank goal missed".into(),
+                "A bank match bounces off a wall and pops a group.".into(),
+            ),
             (Status::HitDangerLine, _) => (
                 "Danger line reached".into(),
                 "A bubble crossed the dashed line. Clear the low rows first.".into(),
@@ -666,6 +794,8 @@ impl GameView {
                 "Line up a shot".into(),
                 if self.progress.mode() == Mode::Challenge {
                     "Score with pops, drops, bank shots, and unused shots.".into()
+                } else if let Some(puzzle) = round.puzzle_info() {
+                    puzzle.hint.into()
                 } else {
                     round
                         .stage_info()
@@ -711,6 +841,7 @@ impl GameView {
         let enabled = style != ButtonStyle::Disabled;
         div()
             .id(id)
+            .debug_selector(move || id.into())
             .role(if enabled { Role::Button } else { Role::Label })
             .flex()
             .items_center()
@@ -784,7 +915,9 @@ impl Render for GameView {
                     .child(self.board(width, height, cx))
                     .when(
                         compact && self.progress.round.status() == Status::Playing,
-                        |column| column.child(keyboard_help(t::colors(cx)).px_1()),
+                        |column| {
+                            column.child(keyboard_help(t::colors(cx), self.has_next_ammo()).px_1())
+                        },
                     ),
             )
             .child(self.rail(rail_width, cx))
@@ -806,14 +939,18 @@ fn muted(p: t::Palette) -> Div {
         .text_color(rgb(p.muted))
 }
 
-fn keyboard_help(p: t::Palette) -> Div {
+fn keyboard_help(p: t::Palette, has_next_ammo: bool) -> Div {
     muted(p)
         .child("Click the table to shoot.")
         .child(div().child("← or → aims · Hold Shift for fine aim"))
-        .child(div().child("Space shoots · X swaps · R restarts"))
+        .child(div().child(if has_next_ammo {
+            "Space shoots · X swaps · R restarts"
+        } else {
+            "Space shoots · R restarts"
+        }))
 }
 
-fn metric(label: &'static str, number: usize, p: t::Palette) -> Div {
+fn metric(label: &'static str, value: impl Into<SharedString>, p: t::Palette) -> Div {
     div()
         .flex_1()
         .min_w_0()
@@ -821,7 +958,7 @@ fn metric(label: &'static str, number: usize, p: t::Palette) -> Div {
         .flex_col()
         .gap(px(2.))
         .child(muted(p).child(label))
-        .child(t::display_type(number.to_string(), 27.))
+        .child(t::display_type(value, 27.))
 }
 
 fn ammo(label: &'static str, color: Color, p: t::Palette) -> Div {

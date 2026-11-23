@@ -39,7 +39,7 @@ impl Playfield {
         }
     }
 
-    fn screen(self, at: Point) -> gpui::Point<Pixels> {
+    pub(super) fn screen(self, at: Point) -> gpui::Point<Pixels> {
         self.bounds.origin + point(self.scale * at.x as f32, self.scale * at.y as f32)
     }
 

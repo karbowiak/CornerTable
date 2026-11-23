@@ -1,4 +1,6 @@
-use corner_table_bubble_shooter::{Angle, Round, SHOT_LIMIT, STAGE_COUNT, STAGES, Shot, Status};
+use corner_table_bubble_shooter::{
+    Angle, PUZZLE_COUNT, Round, SHOT_LIMIT, STAGE_COUNT, STAGES, Shot, Status,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -15,6 +17,7 @@ pub(super) enum Mode {
     Stages,
     Classic,
     Challenge,
+    Puzzles,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -38,6 +41,12 @@ struct Attempt {
     best: Option<Record>,
 }
 
+#[derive(Default, Deserialize, Serialize)]
+struct Practice {
+    selected: usize,
+    attempts: [Attempt; PUZZLE_COUNT],
+}
+
 #[derive(Deserialize, Serialize)]
 struct SavedGame {
     version: u8,
@@ -47,6 +56,8 @@ struct SavedGame {
     stage: usize,
     stages: [Attempt; STAGE_COUNT],
     challenge: Attempt,
+    #[serde(default)]
+    practice: Practice,
 }
 
 impl SavedGame {
@@ -59,6 +70,7 @@ impl SavedGame {
             stage: 0,
             stages: Default::default(),
             challenge: Attempt::default(),
+            practice: Practice::default(),
         }
     }
 
@@ -67,6 +79,7 @@ impl SavedGame {
             Mode::Stages => &self.stages[self.stage],
             Mode::Classic => &self.classic,
             Mode::Challenge => &self.challenge,
+            Mode::Puzzles => &self.practice.attempts[self.practice.selected],
         }
     }
 
@@ -75,6 +88,7 @@ impl SavedGame {
             Mode::Stages => &mut self.stages[self.stage],
             Mode::Classic => &mut self.classic,
             Mode::Challenge => &mut self.challenge,
+            Mode::Puzzles => &mut self.practice.attempts[self.practice.selected],
         }
     }
 
@@ -89,6 +103,7 @@ impl SavedGame {
             Mode::Challenge => {
                 Round::challenge(challenge_seed.expect("challenge launch has a seed"))
             }
+            Mode::Puzzles => Round::puzzle(self.practice.selected).expect("selected puzzle exists"),
         }
     }
 }
@@ -107,6 +122,7 @@ impl Progress {
         let (default_mode, challenge_seed) = match &launch.entry {
             GameEntry::Challenge(id) => (Mode::Challenge, Some(stable_seed(id))),
             GameEntry::Mode(id) if id == "classic" => (Mode::Classic, None),
+            GameEntry::Mode(id) if id == "puzzles" => (Mode::Puzzles, None),
             _ => (Mode::Stages, None),
         };
         let session = Session::new(launch);
@@ -119,6 +135,9 @@ impl Progress {
         }
         if !saved.stage_unlocked(saved.stage) {
             saved.stage = 0;
+        }
+        if saved.practice.selected >= PUZZLE_COUNT {
+            saved.practice.selected = 0;
         }
         let round = saved.make_round(challenge_seed);
         let mut progress = Self {
@@ -139,6 +158,14 @@ impl Progress {
 
     pub fn stage(&self) -> usize {
         self.saved.stage
+    }
+
+    pub fn puzzle(&self) -> usize {
+        self.saved.practice.selected
+    }
+
+    pub fn puzzle_solved(&self, index: usize) -> bool {
+        self.saved.practice.attempts[index].best.is_some()
     }
 
     pub fn stage_unlocked(&self, stage: usize) -> bool {
@@ -164,6 +191,14 @@ impl Progress {
     pub fn select_stage(&mut self, stage: usize) {
         if self.mode() == Mode::Stages && self.stage() != stage && self.stage_unlocked(stage) {
             self.saved.stage = stage;
+            self.resume();
+            self.save();
+        }
+    }
+
+    pub fn select_puzzle(&mut self, index: usize) {
+        if self.mode() == Mode::Puzzles && self.puzzle() != index && index < PUZZLE_COUNT {
+            self.saved.practice.selected = index;
             self.resume();
             self.save();
         }
@@ -205,19 +240,24 @@ impl Progress {
         let outcome = match status {
             Status::Playing => None,
             Status::Won => Some(Outcome::Won),
-            Status::HitDangerLine | Status::OutOfShots => Some(Outcome::Lost),
+            Status::HitDangerLine | Status::OutOfShots | Status::BankGoalMissed => {
+                Some(Outcome::Lost)
+            }
         };
         if let Some(outcome) = outcome {
             let mode = match self.mode() {
                 Mode::Stages => {
                     let stage = self.stage();
-                    format!("Stage {} · {}", stage + 1, STAGES[stage].name)
+                    Some(format!("Stage {} · {}", stage + 1, STAGES[stage].name))
                 }
-                Mode::Classic => "Classic".into(),
-                Mode::Challenge => "Challenge".into(),
+                Mode::Classic => Some("Classic".into()),
+                Mode::Challenge => Some("Challenge".into()),
+                Mode::Puzzles => None,
             };
-            self.session
-                .record_result(id, mode, outcome, ResultMetric::Points(score as u64));
+            if let Some(mode) = mode {
+                self.session
+                    .record_result(id, mode, outcome, ResultMetric::Points(score as u64));
+            }
         }
         self.last_shot.as_ref()
     }
@@ -273,4 +313,40 @@ fn stable_seed(id: &str) -> u64 {
     id.bytes().fold(0xcbf29ce484222325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{from_value, json};
+
+    #[test]
+    fn legacy_saves_replay_with_empty_practice_progress() {
+        let stage = json!({"turns": [{"shoot": 0}], "best": {"score": 340, "stars": 3}});
+        let fresh = json!({"turns": [], "best": null});
+        let save = json!({
+            "version": 1,
+            "mode": "stages",
+            "classic_seed": 10,
+            "classic": fresh,
+            "stage": 0,
+            "stages": [stage, fresh, fresh, fresh, fresh, fresh],
+            "challenge": fresh,
+        });
+        let mut saved: SavedGame = from_value(save).unwrap();
+        assert!(saved.stage_unlocked(1));
+        assert_eq!(saved.attempt().best.unwrap().stars, 3);
+        let (stage, _) = replay(saved.make_round(None), &saved.attempt().turns).unwrap();
+        assert_eq!(stage.shots_used(), 1);
+
+        saved.mode = Mode::Puzzles;
+        assert!(saved.attempt().turns.is_empty());
+        assert!(saved.attempt().best.is_none());
+        assert_eq!(saved.make_round(None).shots_left(), 1);
+
+        saved.mode = Mode::Classic;
+        assert_eq!(saved.make_round(None).shots_left(), SHOT_LIMIT);
+        saved.mode = Mode::Challenge;
+        assert!(saved.make_round(Some(10)).puzzle_info().is_none());
+    }
 }

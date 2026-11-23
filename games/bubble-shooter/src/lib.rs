@@ -1,7 +1,9 @@
 //! Rules and shot geometry for Bubble Shooter. Coordinates use one bubble diameter as a unit.
 
+mod puzzles;
 mod stages;
 
+pub use puzzles::{PUZZLE_COUNT, PUZZLES, Puzzle};
 pub use stages::{STAGE_COUNT, STAGES, Stage};
 
 pub const COLUMNS: usize = 10;
@@ -41,7 +43,7 @@ impl Color {
             b'J' => Some(Self::Jade),
             b'V' => Some(Self::Violet),
             b'.' => None,
-            _ => unreachable!("unknown stage bubble"),
+            _ => unreachable!("unknown rack bubble"),
         }
     }
 }
@@ -52,6 +54,7 @@ pub enum Status {
     Won,
     HitDangerLine,
     OutOfShots,
+    BankGoalMissed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -182,12 +185,19 @@ pub struct Round {
     next: Color,
     color_order: [Color; 4],
     stage_index: Option<usize>,
+    puzzle: Option<PuzzleRun>,
     shot_limit: usize,
     shots_left: usize,
     score: usize,
     streak: usize,
     swapped: bool,
     status: Status,
+}
+
+#[derive(Clone, Copy)]
+struct PuzzleRun {
+    index: usize,
+    banked_matches: usize,
 }
 
 impl Round {
@@ -221,7 +231,7 @@ impl Round {
         let stage = STAGES.get(index)?;
         let seed = 0x5eab_b1e5_u64.wrapping_add(index as u64);
         let mut round = Self::empty(seed, Some(index), stage.shots);
-        round.fill_stage(stage, false, Color::ALL);
+        round.fill_rack(stage.rack, false, Color::ALL);
         round.current = if index < 2 {
             Color::Gold
         } else {
@@ -242,11 +252,24 @@ impl Round {
             colors.swap(end, random_index(&mut random, end + 1));
         }
         let mut round = Self::stage(index).expect("challenge selects a stage in range");
-        round.fill_stage(&STAGES[index], mirrored, colors);
+        round.fill_rack(STAGES[index].rack, mirrored, colors);
         round.current = colors[round.current as usize];
         round.next = colors[round.next as usize];
         round.color_order = colors;
         round
+    }
+
+    pub fn puzzle(index: usize) -> Option<Self> {
+        let puzzle = PUZZLES.get(index)?;
+        let mut round = Self::empty(0, None, puzzle.shots());
+        round.puzzle = Some(PuzzleRun {
+            index,
+            banked_matches: 0,
+        });
+        round.fill_rack(puzzle.rack, false, Color::ALL);
+        round.current = puzzle.ammo[0];
+        round.next = puzzle.ammo.get(1).copied().unwrap_or(round.current);
+        Some(round)
     }
 
     fn empty(seed: u64, stage_index: Option<usize>, shot_limit: usize) -> Self {
@@ -257,6 +280,7 @@ impl Round {
             next: Color::Coral,
             color_order: Color::ALL,
             stage_index,
+            puzzle: None,
             shot_limit,
             shots_left: shot_limit,
             score: 0,
@@ -266,8 +290,8 @@ impl Round {
         }
     }
 
-    fn fill_stage(&mut self, stage: &Stage, mirrored: bool, colors: [Color; 4]) {
-        for (row, layout) in stage.rack.iter().enumerate() {
+    fn fill_rack(&mut self, rack: &[&str], mirrored: bool, colors: [Color; 4]) {
+        for (row, layout) in rack.iter().enumerate() {
             debug_assert_eq!(layout.len(), COLUMNS - row % 2);
             for (column, letter) in layout.bytes().enumerate() {
                 let col = if mirrored {
@@ -305,6 +329,14 @@ impl Round {
 
     pub fn stage_info(&self) -> Option<&'static Stage> {
         self.stage_index.map(|index| &STAGES[index])
+    }
+
+    pub fn puzzle_info(&self) -> Option<&'static Puzzle> {
+        self.puzzle.map(|run| &PUZZLES[run.index])
+    }
+
+    pub fn banked_matches(&self) -> usize {
+        self.puzzle.map_or(0, |run| run.banked_matches)
     }
 
     pub fn score(&self) -> usize {
@@ -438,17 +470,45 @@ impl Round {
                 + 25 * shot.dropped.len()
                 + 15 * usize::from(shot.bounces > 0)
                 + 10 * (self.streak - 1);
+            if shot.bounces > 0
+                && let Some(run) = &mut self.puzzle
+            {
+                run.banked_matches += 1;
+            }
         } else {
             self.streak = 0;
         }
 
         self.status = if self.bubbles().next().is_none() {
-            shot.clear_bonus = 30 * self.shots_left;
-            Status::Won
+            if self
+                .puzzle_info()
+                .is_some_and(|puzzle| self.banked_matches() < puzzle.bank_target)
+            {
+                Status::BankGoalMissed
+            } else {
+                shot.clear_bonus = 30 * self.shots_left;
+                Status::Won
+            }
         } else if self.grid[ROWS - 1].iter().any(Option::is_some) {
             Status::HitDangerLine
         } else if self.shots_left == 0 {
             Status::OutOfShots
+        } else {
+            self.reload();
+            Status::Playing
+        };
+        self.score += shot.points + shot.clear_bonus;
+        Some(shot)
+    }
+
+    fn reload(&mut self) {
+        if let Some(puzzle) = self.puzzle_info() {
+            self.current = self.next;
+            self.next = puzzle
+                .ammo
+                .get(self.shots_used() + 1)
+                .copied()
+                .unwrap_or(self.current);
         } else {
             self.current = if self.bubbles().any(|(_, color)| color == self.next) {
                 self.next
@@ -456,10 +516,7 @@ impl Round {
                 self.draw_color(None)
             };
             self.next = self.draw_next();
-            Status::Playing
-        };
-        self.score += shot.points + shot.clear_bonus;
-        Some(shot)
+        }
     }
 
     fn remove_where(&mut self, mask: Grid<bool>, remove_marked: bool) -> Vec<(Cell, Color)> {
