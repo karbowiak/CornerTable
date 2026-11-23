@@ -344,7 +344,6 @@ impl GameView {
                 )
                 .bg(rgb(t::GOLD))
                 .border_color(rgb(t::GOLD))
-                .hover(|style| style.bg(rgb(t::GOLD_HOVER)))
                 .on_click(cx.listener(|view, _, window, cx| {
                     view.reset(view.difficulty, !view.challenge);
                     view.focus.focus(window);
