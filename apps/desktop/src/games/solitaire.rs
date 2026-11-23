@@ -203,7 +203,7 @@ impl GameView {
     fn apply(&mut self, action: Move, cx: &mut Context<Self>) -> bool {
         let runs = self.deal.game.runs;
         let before_draw =
-            (action == Move::Draw && motion::enabled(cx)).then(|| self.deal.game.clone());
+            (action == Move::Draw && crate::motion::enabled(cx)).then(|| self.deal.game.clone());
         if !self.deal.apply(action) {
             return false;
         }
@@ -957,7 +957,7 @@ impl Render for GameView {
         if self
             .deal_motion
             .as_ref()
-            .is_some_and(|deal| deal.finished(now) || !motion::enabled(cx))
+            .is_some_and(|deal| deal.finished(now) || !crate::motion::enabled(cx))
         {
             self.deal_motion = None;
         }

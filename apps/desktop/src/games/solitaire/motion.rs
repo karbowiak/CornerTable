@@ -1,20 +1,9 @@
 use std::{cell::Cell, rc::Rc, time::Instant};
 
 use corner_table_solitaire::{Card, DealMode, Game, TableCard, Variant};
-use gpui::{
-    App, AvailableSpace, BoxShadow, IntoElement, Pixels, Point, canvas, point, prelude::*, px, rgba,
-};
+use gpui::{AvailableSpace, BoxShadow, IntoElement, Pixels, Point, canvas, point, prelude::*, px, rgba};
 
 use super::{CardFace, CardSize, TablePalette, card_surface};
-
-pub(super) fn enabled(cx: &App) -> bool {
-    #[cfg(test)]
-    if cx.is_test() {
-        // Headless GPUI contexts have a fake preference and can run off the macOS main thread.
-        return !cx.reduce_motion();
-    }
-    crate::motion::enabled(cx)
-}
 
 pub(super) struct DealMotion {
     started: Instant,
