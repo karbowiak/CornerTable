@@ -89,6 +89,11 @@ pub(crate) fn install_shortcuts(cx: &mut App) {
             KeyBinding::new(key, edit, Some(KEY_CONTEXT))
         }),
     );
+    cx.bind_keys([KeyBinding::new(
+        "enter",
+        crate::app::OpenSearchResult,
+        Some(KEY_CONTEXT),
+    )]);
 }
 
 pub(crate) fn edit_menu() -> Menu {
@@ -145,6 +150,11 @@ impl SearchInput {
 
     pub(crate) fn query(&self) -> &str {
         &self.text
+    }
+
+    pub(crate) fn submitted_query(&self) -> Option<&str> {
+        let query = self.text.trim();
+        (self.marked.is_none() && !query.is_empty()).then_some(query)
     }
 
     pub(crate) fn find(&mut self, window: &mut Window, cx: &mut Context<Self>) {

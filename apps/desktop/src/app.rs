@@ -20,6 +20,7 @@ gpui::actions!(
         NavigateForward,
         OpenLibrary,
         FindGame,
+        OpenSearchResult,
         ToggleFullScreen,
         Quit,
     ]
@@ -43,7 +44,7 @@ pub enum Action {
     SelectGame(GameId),
     SelectPeriod(Period),
     ToggleFavorite(GameId),
-    ShowFavorites(bool),
+    FilterLibrary(pages::LibraryFilter),
     SetAppearance(theme::Appearance),
     SetSound(bool),
     OpenGuide,
@@ -64,7 +65,7 @@ pub struct Desktop {
     pub search: Entity<SearchInput>,
     pub recent: Option<GameLaunch>,
     pub favorites: Vec<GameId>,
-    pub favorites_only: bool,
+    pub library_filter: pages::LibraryFilter,
     pub appearance: theme::Appearance,
     pub sound_enabled: bool,
     pub guide: pages::GuideOverlay,
@@ -110,7 +111,7 @@ impl Desktop {
             search,
             recent,
             favorites,
-            favorites_only: false,
+            library_filter: pages::LibraryFilter::All,
             appearance,
             sound_enabled,
             guide: pages::GuideOverlay::new(cx),
@@ -174,8 +175,8 @@ impl Desktop {
                 }
                 storage::save_favorites(&self.favorites);
             }
-            Action::ShowFavorites(only) => {
-                self.favorites_only = only;
+            Action::FilterLibrary(filter) => {
+                self.library_filter = filter;
                 self.scroll.set_offset(point(px(0.), px(0.)));
             }
             Action::SetAppearance(appearance) => {
@@ -258,6 +259,22 @@ impl Desktop {
         self.game_picker_open = false;
         self.scroll.set_offset(visit.scroll);
     }
+
+    fn search_result(&self, cx: &Context<Self>) -> Option<GameId> {
+        let query = self.search.read(cx).submitted_query()?;
+        let mut matches = pages::matching_games(self, query);
+        let first = matches.next()?;
+        let other = matches.next();
+        let exact = |game: &corner_table_api::Game| game.title.eq_ignore_ascii_case(query);
+        if other.is_none() || exact(first) {
+            return Some(first.id.clone());
+        }
+        other
+            .into_iter()
+            .chain(matches)
+            .find(|game| exact(game))
+            .map(|game| game.id.clone())
+    }
 }
 
 impl Render for Desktop {
@@ -266,7 +283,7 @@ impl Render for Desktop {
         let playing = matches!(self.page, Page::Game(_));
         let palette = theme::colors(cx);
         let content = match &self.page {
-            Page::Library => pages::library(self, narrow, cx),
+            Page::Library => pages::library(self, window.viewport_size().width.into(), cx),
             Page::Solitaire => pages::solitaire(self, narrow, cx),
             Page::DailyChallenge => pages::daily_challenge(cx),
             Page::Leaderboard => pages::leaderboard(self, narrow, cx),
@@ -306,9 +323,16 @@ impl Render for Desktop {
             .on_action(cx.listener(|desktop, _: &OpenLibrary, window, cx| {
                 desktop.dispatch(Action::Navigate(Page::Library), window, cx);
             }))
+            .on_action(cx.listener(|desktop, _: &OpenSearchResult, window, cx| {
+                if desktop.page == Page::Library
+                    && let Some(game) = desktop.search_result(cx)
+                {
+                    desktop.dispatch(Action::OpenGame(game), window, cx);
+                }
+            }))
             .on_action(cx.listener(|desktop, _: &FindGame, window, cx| {
                 desktop.dispatch(Action::Navigate(Page::Library), window, cx);
-                desktop.favorites_only = false;
+                desktop.library_filter = pages::LibraryFilter::All;
                 desktop.scroll.set_offset(point(px(0.), px(0.)));
                 cx.on_next_frame(window, |desktop, window, cx| {
                     if desktop.page == Page::Library {

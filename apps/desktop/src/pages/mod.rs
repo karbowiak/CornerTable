@@ -5,7 +5,7 @@ mod solitaire;
 
 pub use guide::GuideOverlay;
 pub use leaderboard::leaderboard;
-pub use library::library;
+pub use library::{LibraryFilter, library, matching_games};
 pub use solitaire::solitaire;
 
 use gpui::{AnyView, Context, Div, Role, div, prelude::*, px, rgb};

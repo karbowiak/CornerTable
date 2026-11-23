@@ -20,6 +20,29 @@ pub struct Game {
     pub id: GameId,
     pub title: String,
     pub description: String,
+    pub category: GameCategory,
+    #[serde(default)]
+    pub search_terms: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GameCategory {
+    Cards,
+    Puzzles,
+    Board,
+    Arcade,
+}
+
+impl GameCategory {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cards => "Cards",
+            Self::Puzzles => "Puzzles",
+            Self::Board => "Board games",
+            Self::Arcade => "Arcade",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
