@@ -15,7 +15,22 @@ GPUI uses your desktop's Wayland or X11 session and a Vulkan driver. Mesa users 
 
 ## Run on macOS
 
-Install Rust and Apple's Command Line Tools, then run `cargo run --locked`.
+Install Rust and Apple's Command Line Tools (`xcode-select --install`). Run
+directly with `cargo run --locked`, or build and open the local macOS app from
+the repository root.
+
+```sh
+cargo xtask bundle
+open "target/Corner Table.app"
+```
+
+The bundle contains a release build for your Mac's architecture, with the
+artwork, fonts, and sample data embedded in the executable. You can also open it
+in Finder. The app version comes from Cargo and the minimum macOS version
+comes from the executable's deployment target. This command builds an app for
+local use. Add or replace `packaging/macos/icon.png` with a 1024×1024 PNG and
+rerun the command to update the app icon. The bundle uses the default macOS
+app icon when that file is absent.
 
 ## Develop with hot reload
 
@@ -28,9 +43,11 @@ current game and its in-memory state. Changes to data layouts, startup code,
 dependencies, or bundled assets can require a full build. Press `r` in the
 interactive Dioxus terminal for a full rebuild, or restart the dev command.
 
-Run `python3 scripts/dev.py` for automatic rebuilds and fresh launches after
-source or asset edits. The current window stays open if a build fails. Press
-Ctrl+C in either watcher terminal to stop it and its game client.
+For structural changes or edits to assets, run `cargo xtask dev --restart`
+with Python 3 installed. This watcher rebuilds on source or asset changes and
+launches a fresh process after each successful build. Your current window
+stays open if a build fails. Press Ctrl+C in either watcher terminal to stop
+it and its game client.
 
 ## Checks
 

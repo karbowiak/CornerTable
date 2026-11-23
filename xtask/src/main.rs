@@ -1,3 +1,6 @@
+#[cfg(target_os = "macos")]
+mod macos;
+
 use anyhow::{Context, Result, bail};
 use std::{
     env,
@@ -6,12 +9,18 @@ use std::{
 };
 
 const DX_VERSION: &str = "0.7.10";
-const USAGE: &str = "Usage: cargo xtask dev";
+const USAGE: &str = "Usage: cargo xtask <dev [--restart] | bundle>\n\
+    \n\
+    dev             Start the Dioxus hot reload server\n\
+    dev --restart   Rebuild and relaunch on source or asset changes (Python 3)\n\
+    bundle          Build target/Corner Table.app (macOS)";
 
 fn main() -> Result<()> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     match args.as_slice() {
         [command] if command == "dev" => dev(),
+        [command, flag] if command == "dev" && flag == "--restart" => dev_restart(),
+        [command] if command == "bundle" => bundle(),
         [] => {
             println!("{USAGE}");
             Ok(())
@@ -22,6 +31,31 @@ fn main() -> Result<()> {
         }
         _ => bail!("{USAGE}"),
     }
+}
+
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask lives inside the workspace")
+}
+
+fn bundle() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    return macos::bundle(workspace_root());
+    #[cfg(not(target_os = "macos"))]
+    bail!("cargo xtask bundle requires macOS and Apple's Command Line Tools");
+}
+
+fn dev_restart() -> Result<()> {
+    let status = Command::new("python3")
+        .current_dir(workspace_root())
+        .arg("scripts/dev.py")
+        .status()
+        .context("start the rebuild watcher with python3; install Python 3 if it is missing")?;
+    if !status.success() {
+        bail!("rebuild watcher exited with {status}");
+    }
+    Ok(())
 }
 
 fn dev() -> Result<()> {
@@ -47,9 +81,8 @@ fn dev() -> Result<()> {
         );
     }
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let status = Command::new(dx)
-        .current_dir(root)
+        .current_dir(workspace_root())
         .args([
             "serve",
             "--platform",
