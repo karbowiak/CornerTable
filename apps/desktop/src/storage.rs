@@ -18,12 +18,22 @@ fn data_dir() -> Option<PathBuf> {
     env::var_os("CORNER_TABLE_DATA_DIR")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .or_else(|| {
-            if cfg!(test) {
-                return None;
-            }
-            dirs::data_local_dir().map(|dir| dir.join("dk.karbowiak.CornerTable"))
-        })
+        .or_else(default_data_dir)
+}
+
+#[cfg(not(test))]
+fn default_data_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join("dk.karbowiak.CornerTable"))
+}
+
+#[cfg(test)]
+fn default_data_dir() -> Option<PathBuf> {
+    thread_local! {
+        // GPUI tests can reopen the same saves across windows on their test thread.
+        static PROFILE: tempfile::TempDir =
+            tempfile::tempdir().expect("create isolated Corner Table test profile");
+    }
+    Some(PROFILE.with(|profile| profile.path().to_owned()))
 }
 
 pub struct Session {
