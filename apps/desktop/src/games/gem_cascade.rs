@@ -1,65 +1,293 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+mod art;
+mod run;
+
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use corner_table_gem_cascade::{
-    COLUMNS, Direction, GROUP_SIZE, Game, Gem, PlacedGem, ROWS, Rotation, SPAWN_COLUMN, SPAWN_ROW,
+    COLUMNS, Clear, Fall, GROUP_SIZE, Gem, PAIRS_PER_LEVEL, PlacedGem, ROWS, SPAWN_COLUMN,
+    SPAWN_ROW, Wave,
 };
 use gpui::{
-    ClickEvent, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, Render, Stateful,
-    Window, div, prelude::*, px, rgb,
+    ClickEvent, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, Render, Role,
+    Stateful, Subscription, Task, Toggled, Window, div, prelude::*, px, rgb,
 };
 
-use crate::games::{GameEntry, GameLaunch};
-use crate::theme as t;
+use crate::{
+    games::{GameEntry, GameLaunch},
+    storage::Session,
+    theme::{self as t, Palette},
+};
 
-const GAP: f32 = 3.;
-const PANEL_MIN_WIDTH: f32 = 220.;
-const WELL: u32 = 0x1c3b34;
-const SLOT_EDGE: u32 = 0x294e42;
+use self::{
+    art::{Finish, name, stone},
+    run::{Mode, Record, Run, SAVE_VERSION, SavedSession},
+};
+use run::Move;
+
+const GAP: f32 = 2.;
+const WELL_INSET: f32 = 7.;
+const FRAME: u32 = 0x142b29;
+const SLOT: u32 = 0x203e39;
+const SLOT_EDGE: u32 = 0x2b4c46;
+const SPAWN_EDGE: u32 = 0x567268;
+const CLEAR_SLOT: u32 = 0x435749;
+const WAVE_TIME: Duration = Duration::from_millis(260);
+const FALL_TIME: Duration = Duration::from_millis(85);
+const IMPACT_TIME: Duration = Duration::from_millis(125);
 
 pub struct GameView {
-    game: Game,
+    session: Session,
+    runs: [Run; 2],
+    mode: Mode,
+    phase: Phase,
+    challenge: bool,
+    timer: Option<Task<()>>,
+    motion: Option<Motion>,
+    cascade: Option<Cascade>,
+    scope: FocusHandle,
     focus: FocusHandle,
-    focus_on_open: bool,
+    window_observers: Vec<Subscription>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Ready,
+    Playing,
+    Paused,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Play(Move),
+    Toggle,
+    Pause,
+    Retry,
+    NewDeal,
+    Select(Mode),
 }
 
 #[derive(Clone, Copy)]
-enum Action {
-    Shift(Direction),
-    Rotate(Rotation),
-    Drop,
-    Restart,
+enum Motion {
+    Falling(Instant),
+    Impact(Instant, [PlacedGem; 2]),
+}
+
+struct Cascade {
+    started: Instant,
+    waves: Vec<Wave>,
+    previous_best: u32,
+}
+
+#[derive(Clone, Copy)]
+struct WaveFrame<'a> {
+    wave: &'a Wave,
+    number: usize,
+    progress: f32,
+    points_pending: u32,
+    previous_best: u32,
+}
+
+impl Cascade {
+    fn frame(&self, now: Instant) -> WaveFrame<'_> {
+        let elapsed = now.saturating_duration_since(self.started).as_secs_f32();
+        let stage = elapsed / WAVE_TIME.as_secs_f32();
+        let index = (stage as usize).min(self.waves.len() - 1);
+        WaveFrame {
+            wave: &self.waves[index],
+            number: index + 1,
+            progress: (stage - index as f32).min(1.),
+            points_pending: self.waves[index + 1..].iter().map(|wave| wave.points).sum(),
+            previous_best: self.previous_best,
+        }
+    }
 }
 
 impl GameView {
     pub fn new(launch: &GameLaunch, cx: &mut Context<Self>) -> Self {
-        let seed = match &launch.entry {
-            GameEntry::Challenge(id) => id.bytes().fold(0xcbf29ce484222325, |hash, byte| {
-                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
-            }),
-            GameEntry::Classic | GameEntry::Mode(_) => SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |time| time.as_nanos() as u64),
+        let session = Session::new(launch);
+        let saved = session
+            .load::<SavedSession<Record>>()
+            .filter(|save| save.version == SAVE_VERSION);
+        let (mode, runs) = if let Some(saved) = saved {
+            (saved.mode, saved.runs.map(Run::restore))
+        } else {
+            let seed = match &launch.entry {
+                GameEntry::Challenge(id) => id.bytes().fold(0xcbf29ce484222325, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                }),
+                _ => fresh_seed(),
+            };
+            (Mode::default(), [Run::new(seed), Run::new(seed)])
         };
+        let phase = open_phase(mode, &runs[mode.index()]);
         Self {
-            game: Game::new(seed),
+            session,
+            runs,
+            mode,
+            phase,
+            challenge: matches!(launch.entry, GameEntry::Challenge(_)),
+            timer: None,
+            motion: None,
+            cascade: None,
+            scope: cx.focus_handle(),
             focus: cx.focus_handle().tab_stop(true),
-            focus_on_open: true,
+            window_observers: Vec::new(),
         }
     }
 
-    fn perform(&mut self, action: Action, cx: &mut Context<Self>) {
-        let changed = match action {
-            Action::Shift(direction) => self.game.shift(direction),
-            Action::Rotate(rotation) => self.game.rotate(rotation),
-            Action::Drop => self.game.drop_pair().is_some(),
-            Action::Restart => {
-                self.game.restart();
-                true
-            }
-        };
-        if changed {
-            cx.notify();
+    fn run(&self) -> &Run {
+        &self.runs[self.mode.index()]
+    }
+
+    fn save(&self) {
+        self.session.save(&SavedSession {
+            version: SAVE_VERSION,
+            mode: self.mode,
+            runs: self.runs.each_ref().map(|run| &run.record),
+        });
+    }
+
+    fn playable(&self) -> bool {
+        self.phase == Phase::Playing && self.cascade.is_none() && !self.run().game.is_over()
+    }
+
+    fn reset_clock(&mut self, window: &Window, cx: &Context<Self>) {
+        self.timer = None;
+        if self.phase != Phase::Playing {
+            return;
         }
+        let delay = if let Some(cascade) = &self.cascade {
+            (WAVE_TIME * cascade.waves.len() as u32).saturating_sub(cascade.started.elapsed())
+        } else if self.mode == Mode::Timed && !self.run().game.is_over() {
+            self.run().game.fall_interval()
+        } else {
+            return;
+        };
+
+        let executor = cx.background_executor().clone();
+        self.timer = Some(cx.spawn_in(window, async move |view, cx| {
+            executor.timer(delay).await;
+            let _ = view.update_in(cx, |view, window, cx| view.clock_tick(window, cx));
+        }));
+    }
+
+    fn clock_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.timer = None;
+        if self.cascade.take().is_some() {
+            self.reset_clock(window, cx);
+            cx.notify();
+        } else if self.mode == Mode::Timed && self.playable() {
+            self.play(Move::Fall, window, cx);
+        }
+    }
+
+    fn pause(&mut self, cx: &mut Context<Self>) {
+        if self.phase != Phase::Playing {
+            return;
+        }
+        self.phase = Phase::Paused;
+        self.timer = None;
+        self.motion = None;
+        self.cascade = None;
+        self.save();
+        cx.notify();
+    }
+
+    fn leave_play_area(&mut self, cx: &mut Context<Self>) {
+        if self.mode == Mode::Timed {
+            self.pause(cx);
+        } else if self.phase == Phase::Playing {
+            self.save();
+        }
+    }
+
+    fn enabled(&self, action: Action) -> bool {
+        match action {
+            Action::Play(Move::Fall) if self.mode == Mode::Practice => false,
+            Action::Play(_) => self.playable(),
+            Action::Toggle => !self.run().game.is_over(),
+            Action::Pause => {
+                self.phase == Phase::Playing
+                    && (self.cascade.is_some() || !self.run().game.is_over())
+            }
+            Action::Retry => self.run().has_moves(),
+            Action::NewDeal => !self.challenge,
+            Action::Select(_) => true,
+        }
+    }
+
+    fn perform(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.enabled(action) {
+            return;
+        }
+        match action {
+            Action::Play(movement) => self.play(movement, window, cx),
+            Action::Toggle if self.phase == Phase::Playing => self.pause(cx),
+            Action::Toggle => {
+                self.phase = Phase::Playing;
+                self.save();
+                self.reset_clock(window, cx);
+                cx.notify();
+            }
+            Action::Pause => self.pause(cx),
+            Action::Retry | Action::NewDeal => {
+                let seed = (action == Action::NewDeal).then(fresh_seed);
+                let run = &mut self.runs[self.mode.index()];
+                run.reset(seed);
+                self.phase = open_phase(self.mode, run);
+                self.timer = None;
+                self.cascade = None;
+                self.motion = None;
+                self.save();
+                cx.notify();
+            }
+            Action::Select(mode) if self.mode != mode => {
+                self.mode = mode;
+                self.phase = open_phase(mode, self.run());
+                self.timer = None;
+                self.cascade = None;
+                self.motion = None;
+                self.save();
+                cx.notify();
+            }
+            Action::Select(_) => {}
+        }
+    }
+
+    fn play(&mut self, movement: Move, window: &mut Window, cx: &mut Context<Self>) {
+        let run = &mut self.runs[self.mode.index()];
+        let landing = run.game.landing();
+        let previous_best = run.best();
+        let Some(result) = run.play(movement) else {
+            return;
+        };
+        match result {
+            Fall::Moved if movement == Move::Fall => {
+                if !cx.reduce_motion() {
+                    self.motion = Some(Motion::Falling(Instant::now()));
+                }
+                self.reset_clock(window, cx);
+            }
+            Fall::Moved => self.motion = None,
+            Fall::Locked(result) => {
+                if !cx.reduce_motion() {
+                    let started = Instant::now();
+                    if result.waves.is_empty() {
+                        self.motion = landing.map(|cells| Motion::Impact(started, cells));
+                    } else {
+                        self.cascade = Some(Cascade {
+                            started,
+                            waves: result.waves,
+                            previous_best,
+                        });
+                        self.motion = None;
+                    }
+                }
+                self.save();
+                self.reset_clock(window, cx);
+            }
+        }
+        cx.notify();
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -67,303 +295,598 @@ impl GameView {
         if stroke.modifiers.control || stroke.modifiers.platform || stroke.modifiers.alt {
             return;
         }
+        let game_key = self.focus.is_focused(window);
         let action = match stroke.key.as_str() {
-            "left" => Action::Shift(Direction::Left),
-            "right" => Action::Shift(Direction::Right),
-            "up" => Action::Rotate(Rotation::Clockwise),
-            "z" => Action::Rotate(Rotation::Counterclockwise),
-            // Focused buttons handle Space themselves.
-            "space" if self.focus.is_focused(window) => Action::Drop,
-            "r" => Action::Restart,
+            "left" => Action::Play(Move::Left),
+            "right" => Action::Play(Move::Right),
+            "up" => Action::Play(Move::TurnRight),
+            "z" => Action::Play(Move::TurnLeft),
+            "down" => Action::Play(Move::Fall),
+            "p" => Action::Toggle,
+            "escape" if self.playable() || self.cascade.is_some() => Action::Pause,
+            "r" => Action::Retry,
+            "space" | "enter" if game_key && self.cascade.is_none() => {
+                if self.run().game.is_over() {
+                    Action::Retry
+                } else if self.phase != Phase::Playing {
+                    Action::Toggle
+                } else {
+                    Action::Play(Move::Drop)
+                }
+            }
             _ => return,
         };
         cx.stop_propagation();
-        if !event.is_held || matches!(action, Action::Shift(_)) {
-            self.perform(action, cx);
+        if !event.is_held || matches!(action, Action::Play(Move::Left | Move::Right | Move::Fall)) {
+            self.perform(action, window, cx);
         }
     }
 
-    fn board(&self, size: f32, cx: &Context<Self>) -> Stateful<Div> {
-        let active = self.game.active();
-        let landing = self.game.landing();
+    fn observe_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.window_observers.is_empty() {
+            return;
+        }
+        self.window_observers = vec![
+            cx.on_focus_out(&self.scope, window, |view, _, _, cx| {
+                view.leave_play_area(cx);
+            }),
+            cx.observe_window_activation(window, |view, window, cx| {
+                if !window.is_window_active() {
+                    view.leave_play_area(cx);
+                }
+            }),
+        ];
+        let focus = self.focus.clone();
+        window.on_next_frame(move |window, cx| focus.focus(window, cx));
+    }
+
+    fn well(
+        &self,
+        size: f32,
+        wave: Option<WaveFrame<'_>>,
+        now: Instant,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let game = &self.run().game;
+        let board = wave.map_or(game.board(), |frame| &frame.wave.board);
+        let active = wave.is_none().then(|| game.active()).flatten();
+        let landing = (wave.is_none() && self.phase == Phase::Playing)
+            .then(|| game.landing())
+            .flatten();
+        let impact = match self.motion {
+            Some(Motion::Impact(started, cells)) if now - started < IMPACT_TIME => Some(cells),
+            _ => None,
+        };
+        let fall_offset = match self.motion {
+            Some(Motion::Falling(started)) => {
+                let progress = (now - started).as_secs_f32() / FALL_TIME.as_secs_f32();
+                -(size + GAP) * (1. - progress.min(1.)).powi(3)
+            }
+            _ => 0.,
+        };
+
         div()
             .id("gem-cascade-board")
+            .role(Role::Grid)
+            .aria_label("Gem Cascade board")
+            .aria_row_count(ROWS)
+            .aria_column_count(COLUMNS)
+            .aria_description("Left and Right move. Up and Z rotate. Down lowers the pair in Timed. Space drops. P pauses or resumes.")
             .track_focus(&self.focus)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|view, _, window, cx| view.focus.focus(window, cx)),
-            )
+            .on_mouse_down(MouseButton::Left, cx.listener(|view, _, window, cx| view.focus.focus(window, cx)))
+            .relative()
             .flex()
             .flex_col()
             .flex_none()
+            .overflow_hidden()
             .gap(px(GAP))
-            .p(px(9.))
+            .p(px(WELL_INSET))
             .rounded_lg()
             .border_2()
-            .border_color(rgb(t::RAIL))
+            .border_color(rgb(0x4b665b))
             .focus(|style| style.border_color(rgb(t::GOLD)))
-            .bg(rgb(t::RAIL))
-            .children(self.game.board().iter().enumerate().map(|(row, cells)| {
+            .bg(rgb(FRAME))
+            .children(board.iter().enumerate().map(|(row, cells)| {
                 div()
+                    .id(("gem-row", row))
+                    .role(Role::Row)
+                    .aria_row_index(row)
                     .flex()
                     .gap(px(GAP))
-                    .children(cells.iter().enumerate().map(|(column, &gem)| {
-                        if let Some(gem) = gem_at(active, row, column) {
-                            gem_tile(gem, size, Appearance::Active)
-                        } else if let Some(gem) = gem {
-                            gem_tile(gem, size, Appearance::Settled)
-                        } else if let Some(gem) = gem_at(landing, row, column) {
-                            gem_tile(gem, size, Appearance::Landing)
+                    .children(cells.iter().enumerate().map(|(column, &settled)| {
+                        let active = gem_at(active, row, column);
+                        let ghost = gem_at(landing, row, column);
+                        let clearing = wave.filter(|frame| frame.wave.cleared.iter().any(|cell| cell.row == row && cell.column == column));
+                        let appearance = if let Some(gem) = active {
+                            Some((gem, Finish::Active, format!("{} falling", name(gem))))
+                        } else if let Some(gem) = settled {
+                            let finish = clearing.map_or(Finish::Settled, |frame| Finish::Clearing(frame.progress));
+                            Some((gem, finish, name(gem).to_owned()))
                         } else {
-                            slot(size).bg(rgb(WELL)).border_color(rgb(
-                                if column == SPAWN_COLUMN && row <= SPAWN_ROW {
-                                    0x5c7964
-                                } else {
-                                    SLOT_EDGE
-                                },
-                            ))
-                        }
+                            ghost.map(|gem| (gem, Finish::Ghost, format!("{} landing outline", name(gem))))
+                        };
+                        let spawn = column == SPAWN_COLUMN && row <= SPAWN_ROW;
+                        let flashed = gem_at(impact, row, column).is_some() || clearing.is_some();
+                        let slot = div()
+                            .id(("gem-cell", column))
+                            .role(Role::GridCell)
+                            .aria_column_index(column)
+                            .aria_label(appearance.as_ref().map_or("Empty", |(_, _, label)| label.as_str()).to_owned())
+                            .size(px(size))
+                            .flex_none()
+                            .rounded_sm()
+                            .border_1()
+                            .bg(rgb(if flashed { CLEAR_SLOT } else { SLOT }))
+                            .border_color(rgb(if spawn { SPAWN_EDGE } else { SLOT_EDGE }))
+                            .flex()
+                            .items_center()
+                            .justify_center();
+                        slot.children(appearance.map(|(gem, finish, _)| {
+                            div().relative()
+                                .top(px(if active.is_some() { fall_offset } else { 0. }))
+                                .child(stone(gem, size - 3., finish))
+                        }))
                     }))
             }))
+            .children(self.overlay(cx))
+    }
+
+    fn overlay(&self, cx: &Context<Self>) -> Option<Div> {
+        let palette = t::colors(cx);
+        let (title, detail, label, action) = if self.cascade.is_some() {
+            return None;
+        } else if self.run().game.is_over() {
+            (
+                "Game over",
+                Some("The entrance is blocked."),
+                "Retry deal",
+                Action::Retry,
+            )
+        } else {
+            match self.phase {
+                Phase::Ready => (
+                    "Ready?",
+                    Some("Join 4 gems of the same kind along their edges."),
+                    "Start timed run",
+                    Action::Toggle,
+                ),
+                Phase::Paused => ("Paused", None, "Resume", Action::Toggle),
+                Phase::Playing => return None,
+            }
+        };
+        let offer_deal = self.run().game.is_over() && !self.challenge;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::rgba(0x0d201ec4))
+                .p_3()
+                .child(
+                    t::panel(cx)
+                        .w_full()
+                        .max_w(px(232.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_2()
+                        .text_center()
+                        .px_3()
+                        .py_4()
+                        .child(t::display_type(title, 23.))
+                        .when_some(detail, |overlay, detail| {
+                            overlay.child(
+                                div()
+                                    .line_height(px(17.))
+                                    .text_size(px(13.))
+                                    .text_color(rgb(palette.muted))
+                                    .child(detail),
+                            )
+                        })
+                        .child(
+                            self.button("gem-overlay-primary", label, action, true, cx)
+                                .mt_1()
+                                .w_full(),
+                        )
+                        .when(offer_deal, |overlay| {
+                            overlay.child(
+                                self.button("gem-new-deal", "New deal", Action::NewDeal, false, cx)
+                                    .w_full(),
+                            )
+                        }),
+                ),
+        )
     }
 
     fn button(
         &self,
-        (id, label, key, action): (&'static str, &'static str, &'static str, Action),
+        id: &'static str,
+        label: &'static str,
+        action: Action,
+        primary: bool,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
-        let primary = matches!(action, Action::Drop);
-        let enabled = !self.game.is_over() || matches!(action, Action::Restart);
-        let fill = if primary && enabled {
+        let palette = t::colors(cx);
+        let enabled = self.enabled(action);
+        let accent = primary && enabled;
+        let selected = matches!(action, Action::Select(mode) if mode == self.mode);
+        let background = if accent {
             t::GOLD
+        } else if selected {
+            palette.hover
         } else {
-            t::SURFACE
+            palette.surface
         };
+        let stroke = if accent {
+            t::GOLD
+        } else if selected {
+            palette.gold_text
+        } else {
+            palette.border
+        };
+        let shortcut = shortcut(action);
         let button = div()
             .id(id)
+            .role(Role::Button)
+            .accessibility_id(id)
+            .aria_label(label)
+            .tab_index(0)
+            .tab_stop(enabled)
+            .when(matches!(action, Action::Select(_)), |button| {
+                button.aria_toggled(if selected {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+            })
             .flex()
+            .flex_1()
             .items_center()
             .justify_between()
-            .flex_1()
-            .gap_2()
-            .min_h(px(38.))
+            .gap_1()
+            .min_h(px(34.))
             .px_2()
             .rounded_md()
             .border_1()
-            .border_color(rgb(if primary && enabled {
-                t::GOLD
+            .border_color(rgb(stroke))
+            .bg(rgb(background))
+            .text_color(rgb(if accent {
+                t::INK
+            } else if enabled {
+                palette.ink
             } else {
-                t::BORDER
+                palette.muted
             }))
-            .bg(rgb(fill))
-            .text_color(rgb(if enabled { t::INK } else { t::MUTED }))
-            .font_weight(FontWeight::SEMIBOLD)
             .text_size(px(13.))
+            .line_height(px(17.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .focus(move |style| style.border_color(rgb(palette.ink)).border_2())
             .child(label)
-            .child(
-                div()
-                    .text_color(rgb(if primary && enabled { t::INK } else { t::MUTED }))
-                    .text_size(px(12.))
-                    .child(key),
-            );
+            .when_some(shortcut, |button, (visible, spoken)| {
+                button.aria_keyshortcuts(spoken).child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(rgb(if accent { t::INK } else { palette.muted }))
+                        .child(visible),
+                )
+            });
         if !enabled {
-            return button.opacity(0.55);
+            return button.aria_description("Unavailable");
         }
         button
-            .tab_index(0)
             .cursor_pointer()
-            .hover(|style| style.bg(rgb(if primary { t::GOLD_HOVER } else { t::SAGE })))
-            .focus(|style| style.border_color(rgb(t::MUTED)))
+            .hover(move |style| style.bg(rgb(if accent { t::GOLD_HOVER } else { palette.hover })))
+            .active(move |style| style.bg(rgb(if accent { 0xcd9634 } else { palette.paper })))
             .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
-                if matches!(event, ClickEvent::Mouse(_)) {
+                if matches!(event, ClickEvent::Mouse(_)) || !matches!(action, Action::Play(_)) {
                     view.focus.focus(window, cx);
                 }
-                view.perform(action, cx);
+                view.perform(action, window, cx);
             }))
     }
 
-    fn panel(&self, cx: &Context<Self>) -> Div {
-        let [pivot, satellite] = self.game.next_pair();
-        let clear = self.game.last_clear();
-        let status = if self.game.is_over() {
-            "Game over. Restart to clear the blocked entrance.".to_string()
-        } else {
-            match clear.chain {
-                0 => "Outlines show where the pair will land.".to_string(),
-                1 => format!("{} gems cleared · +{}", clear.gems, clear.points),
-                chain => format!(
-                    "{chain}-step chain · {} gems · +{}",
-                    clear.gems, clear.points
-                ),
+    fn console(&self, wave: Option<WaveFrame<'_>>, compact: bool, cx: &Context<Self>) -> Div {
+        let p = t::colors(cx);
+        let run = self.run();
+        let clear = if let Some(frame) = wave {
+            Clear {
+                gems: frame.wave.cleared.len(),
+                chain: frame.number as u32,
+                points: frame.wave.points,
             }
+        } else {
+            run.last_scoring
         };
-        div()
+        let row = |left, right| div().flex().w_full().gap_2().child(left).child(right);
+        let move_button = |id, label, movement| {
+            self.button(
+                id,
+                label,
+                Action::Play(movement),
+                movement == Move::Drop,
+                cx,
+            )
+        };
+        let group = div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_1()
+            .child(row(
+                move_button("gem-left", "Move left", Move::Left),
+                move_button("gem-right", "Move right", Move::Right),
+            ))
+            .child(row(
+                move_button("gem-turn-left", "Rotate left", Move::TurnLeft),
+                move_button("gem-turn-right", "Rotate right", Move::TurnRight),
+            ))
+            .child(if self.mode == Mode::Timed {
+                row(
+                    move_button("gem-lower", "Lower", Move::Fall),
+                    move_button("gem-drop", "Drop", Move::Drop),
+                )
+            } else {
+                div()
+                    .flex()
+                    .child(move_button("gem-drop", "Drop", Move::Drop))
+            })
+            .child(row(
+                self.button("gem-pause", "Pause", Action::Pause, false, cx),
+                self.button("gem-retry", "Retry", Action::Retry, false, cx),
+            ));
+
+        div()
+            .flex()
             .flex_1()
-            .min_w(px(PANEL_MIN_WIDTH))
-            .max_w(px(260.))
+            .min_w_0()
+            .flex_col()
+            .gap(px(if compact { 10. } else { 12. }))
+            .child(row(
+                self.button("gem-timed", Mode::Timed.label(), Action::Select(Mode::Timed), false, cx),
+                self.button("gem-practice", Mode::Practice.label(), Action::Select(Mode::Practice), false, cx),
+            ))
+            .child(self.scoreboard(wave, p))
+            .child(self.pace(p))
+            .child(clear_status(clear, p))
+            .child(group)
             .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_6()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_start()
-                            .gap_1()
-                            .child(label("Next pair"))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(GAP))
-                                    .p_1()
-                                    .rounded_md()
-                                    .bg(rgb(t::RAIL))
-                                    .opacity(if self.game.is_over() { 0.45 } else { 1. })
-                                    .child(gem_tile(satellite, 26., Appearance::Settled))
-                                    .child(gem_tile(pivot, 26., Appearance::Settled)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(label("Score"))
-                            .child(t::display_type(self.game.score().to_string(), 31.)),
-                    ),
+                div().text_size(px(12.)).line_height(px(17.)).text_color(rgb(p.muted))
+                    .child(format!("Match {GROUP_SIZE} edge to edge. Each link in a chain multiplies the points it earns.")),
             )
-            .child(
-                div()
-                    .min_h(px(42.))
-                    .text_size(px(13.))
-                    .line_height(px(18.))
-                    .text_color(rgb(if self.game.is_over() { 0x963f33 } else { t::MUTED }))
-                    .child(status),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(self.button(
-                        ("gem-left", "Move left", "←", Action::Shift(Direction::Left)),
-                        cx,
-                    ))
-                    .child(self.button(
-                        ("gem-right", "Move right", "→", Action::Shift(Direction::Right)),
-                        cx,
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(self.button(
-                        ("gem-rotate-left", "Rotate left", "Z", Action::Rotate(Rotation::Counterclockwise)),
-                        cx,
-                    ))
-                    .child(self.button(
-                        ("gem-rotate-right", "Rotate right", "↑", Action::Rotate(Rotation::Clockwise)),
-                        cx,
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(self.button(("gem-drop", "Drop", "Space", Action::Drop), cx))
-                    .child(self.button(("gem-restart", "Restart", "R", Action::Restart), cx)),
-            )
+    }
+
+    fn scoreboard(&self, wave: Option<WaveFrame<'_>>, p: Palette) -> Div {
+        let run = self.run();
+        let game = &run.game;
+        let [pivot, satellite] = if wave.is_some() {
+            game.active()
+                .map_or_else(|| game.next_pair(), |pair| pair.map(|cell| cell.gem))
+        } else {
+            game.next_pair()
+        };
+        let score = game
+            .score()
+            .saturating_sub(wave.map_or(0, |frame| frame.points_pending));
+        let best = wave.map_or(run.best(), |frame| frame.previous_best.max(score));
+        let score = div()
+            .id("gem-score")
+            .role(Role::Group)
+            .aria_label(format!("Score {score}. Best {best}."))
+            .flex()
+            .flex_col()
+            .items_start()
+            .child(caption("Score", p))
+            .child(t::display_type(score.to_string(), 36.))
             .child(
                 div()
                     .text_size(px(13.))
                     .line_height(px(18.))
-                    .text_color(rgb(t::MUTED))
-                    .child(format!(
-                        "Connect {GROUP_SIZE} or more matching gems along their edges. A clear that sets off another earns more points."
-                    )),
-            )
+                    .text_color(rgb(p.muted))
+                    .child(format!("Best {best}")),
+            );
+        let preview_label = if game.is_over() {
+            "No next pair".to_owned()
+        } else {
+            format!("Next pair. {} above {}", name(satellite), name(pivot))
+        };
+        let preview = div()
+            .id("gem-preview")
+            .role(Role::Group)
+            .aria_label(preview_label)
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .child(caption("Next", p))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(1.))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(FRAME))
+                    .opacity(if game.is_over() { 0.45 } else { 1. })
+                    .child(stone(satellite, 25., Finish::Settled))
+                    .child(stone(pivot, 25., Finish::Settled)),
+            );
+        div()
+            .flex()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .child(score)
+            .child(preview)
+    }
+
+    fn pace(&self, p: Palette) -> Div {
+        let game = &self.run().game;
+        let pairs = game.pairs() % PAIRS_PER_LEVEL;
+        let pace = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .border_t_1()
+            .border_color(rgb(p.border))
+            .pt_2();
+        match self.mode {
+            Mode::Timed => pace
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .child(caption(format!("Level {}", game.level()), p))
+                        .child(caption(
+                            format!("{:.2} s / row", game.fall_interval().as_secs_f32()),
+                            p,
+                        )),
+                )
+                .child(
+                    div()
+                        .id("gem-level-progress")
+                        .role(Role::ProgressIndicator)
+                        .aria_label("Pairs placed toward the next level")
+                        .aria_numeric_value(f64::from(pairs))
+                        .aria_min_numeric_value(0.)
+                        .aria_max_numeric_value(f64::from(PAIRS_PER_LEVEL))
+                        .flex()
+                        .gap(px(2.))
+                        .children((0..PAIRS_PER_LEVEL).map(|step| {
+                            div()
+                                .flex_1()
+                                .h(px(3.))
+                                .rounded_sm()
+                                .bg(rgb(if step < pairs { p.gold_text } else { p.border }))
+                        })),
+                ),
+            Mode::Practice => pace.child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(caption("Drop at your pace", p))
+                    .child(caption(format!("{} pairs placed", game.pairs()), p)),
+            ),
+        }
     }
 }
 
 impl Render for GameView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.focus_on_open) {
-            let focus = self.focus.clone();
-            window.on_next_frame(move |window, cx| focus.focus(window, cx));
+        self.observe_window(window, cx);
+        let now = Instant::now();
+        let motion_time = match self.motion {
+            Some(Motion::Falling(started)) => Some((started, FALL_TIME)),
+            Some(Motion::Impact(started, _)) => Some((started, IMPACT_TIME)),
+            None => None,
+        };
+        if motion_time.is_some_and(|(started, duration)| now - started >= duration) {
+            self.motion = None;
         }
+        let wave = self.cascade.as_ref().map(|cascade| cascade.frame(now));
+        if wave.is_some() || self.motion.is_some() {
+            window.request_animation_frame();
+        }
+
         let viewport = window.viewport_size();
-        let height = f32::from(viewport.height);
-        let width = f32::from(viewport.width);
-        let sidebar_and_gutters = if width < 1080. { 218. } else { 288. };
-        let board_space = width - sidebar_and_gutters - PANEL_MIN_WIDTH - 76.;
-        let size = (((height - 230.) / ROWS as f32).min(board_space / COLUMNS as f32) - GAP)
+        let compact = viewport.width < px(930.);
+        let inset = if compact { 12. } else { 20. };
+        // The parent play page supplies the title, scroll padding and navigation rail.
+        let height = f32::from(viewport.height) - 90. - 2. * (inset + WELL_INSET + 3.);
+        let size = ((height - GAP * (ROWS - 1) as f32) / ROWS as f32)
             .floor()
-            .clamp(24., 45.);
-        t::surface()
+            .clamp(26., 54.);
+
+        t::panel(cx)
+            .id("gem-cascade")
+            .track_focus(&self.scope)
             .on_key_down(cx.listener(Self::key_down))
-            .text_color(rgb(t::INK))
             .w_full()
+            .max_w(px(780.))
             .flex()
-            .flex_wrap()
             .items_start()
-            .gap_5()
-            .p_4()
-            .child(self.board(size, cx))
-            .child(self.panel(cx))
+            .gap(px(if compact { 16. } else { 24. }))
+            .p(px(inset))
+            .child(self.well(size, wave, now, cx))
+            .child(self.console(wave, compact, cx))
     }
 }
 
-fn label(text: &'static str) -> Div {
-    div()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_size(px(13.))
-        .text_color(rgb(t::MUTED))
-        .child(text)
+fn open_phase(mode: Mode, run: &Run) -> Phase {
+    match mode {
+        Mode::Practice => Phase::Playing,
+        Mode::Timed if run.has_moves() => Phase::Paused,
+        Mode::Timed => Phase::Ready,
+    }
 }
 
-fn gem_at(pair: Option<[PlacedGem; 2]>, row: usize, column: usize) -> Option<Gem> {
-    pair?
+fn fresh_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| time.as_nanos() as u64)
+}
+
+fn gem_at(cells: Option<[PlacedGem; 2]>, row: usize, column: usize) -> Option<Gem> {
+    cells?
         .into_iter()
         .find(|cell| cell.row == row && cell.column == column)
         .map(|cell| cell.gem)
 }
 
-fn slot(size: f32) -> Div {
-    div().size(px(size)).flex_none().rounded_md().border_1()
+fn caption(text: impl Into<gpui::SharedString>, p: Palette) -> Div {
+    div()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_size(px(12.))
+        .line_height(px(17.))
+        .text_color(rgb(p.muted))
+        .child(text.into())
 }
 
-enum Appearance {
-    Active,
-    Settled,
-    Landing,
-}
-
-fn gem_tile(gem: Gem, size: f32, appearance: Appearance) -> Div {
-    let (symbol, color, edge) = match gem {
-        Gem::Ruby => ("◆", 0xed8894, 0xb75268),
-        Gem::Amber => ("●", 0xf3bf60, 0xc38c38),
-        Gem::Jade => ("▲", 0x83c6a8, 0x4c9779),
-        Gem::Amethyst => ("■", 0xc4aae5, 0x8c6dba),
+fn clear_status(clear: Clear, p: Palette) -> Stateful<Div> {
+    let message = match clear.chain {
+        0 => "Outlines show the landing".to_owned(),
+        1 => format!("{} gems cleared", clear.gems),
+        chain => format!("Chain ×{chain} · {} gems", clear.gems),
     };
-    let (fill, border, ink) = match appearance {
-        Appearance::Active => (color, t::SURFACE, t::RAIL),
-        Appearance::Settled => (color, edge, t::RAIL),
-        Appearance::Landing => (WELL, edge, color),
+    let spoken = if clear.points > 0 {
+        format!("{message}. {} points.", clear.points)
+    } else {
+        message.clone()
     };
-    slot(size)
+    div()
+        .id("gem-clear-status")
+        .role(Role::Status)
+        .aria_label(spoken)
         .flex()
+        .justify_between()
         .items_center()
-        .justify_center()
-        .bg(rgb(fill))
-        .border_color(rgb(border))
-        .text_color(rgb(ink))
-        .text_size(px(size * 0.53))
-        .line_height(px(size))
-        .child(symbol)
+        .min_h(px(26.))
+        .text_size(px(13.))
+        .line_height(px(17.))
+        .text_color(rgb(if clear.chain > 0 { p.ink } else { p.muted }))
+        .child(message)
+        .when(clear.points > 0, |status| {
+            status.child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(p.gold_text))
+                    .child(format!("+{}", clear.points)),
+            )
+        })
+}
+
+fn shortcut(action: Action) -> Option<(&'static str, &'static str)> {
+    match action {
+        Action::Play(Move::Left) => Some(("←", "ArrowLeft")),
+        Action::Play(Move::Right) => Some(("→", "ArrowRight")),
+        Action::Play(Move::TurnLeft) => Some(("Z", "Z")),
+        Action::Play(Move::TurnRight) => Some(("↑", "ArrowUp")),
+        Action::Play(Move::Fall) => Some(("↓", "ArrowDown")),
+        Action::Play(Move::Drop) => Some(("Space", "Space")),
+        Action::Toggle | Action::Pause => Some(("P", "P")),
+        Action::Retry => Some(("R", "R")),
+        Action::Select(_) | Action::NewDeal => None,
+    }
 }
