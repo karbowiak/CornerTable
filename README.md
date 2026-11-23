@@ -4,7 +4,7 @@ An offline desktop collection of 21 classic card, board, and puzzle games, with 
 
 ![Corner Table’s illustrated game library](docs/screenshots/library.jpg)
 
-[Browse all games](games/README.md) · [Download Corner Table](https://github.com/karbowiak/games/releases/latest) · [Share feedback](https://github.com/karbowiak/games/issues/new)
+[Browse all games](games/README.md) · [Download Corner Table](https://github.com/karbowiak/CornerTable/releases/latest) · [Share feedback](https://github.com/karbowiak/CornerTable/issues/new)
 
 ## Play
 
